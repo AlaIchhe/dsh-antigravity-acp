@@ -19,6 +19,7 @@ import {
   QuotaError,
 } from '../src/runtime/quota.js'
 import type { QuotaDeps, QuotaSnapshot } from '../src/runtime/quota.js'
+import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from '@cortexkit/antigravity-auth-core'
 
 const CLIENT_ID = ['1234567890', '-abcdef.apps.googleusercontent.com'].join('')
 const CLIENT_SECRET = ['GOCSPX-', 'AbCdEfGhIjKlMnOpQrStUvWxYz01'].join('')
@@ -158,6 +159,23 @@ describe('OAuth client 元数据提取', () => {
     // 把本该配给 CLIENT_ID 的那份误判成「在 id 之前」。
     const text = `${otherId} ${shared} ... ${CLIENT_ID} ${shared} ... tail`
     expect(parseOAuthClientFromBinary(text)).toEqual({ clientId: CLIENT_ID, clientSecret: shared })
+  })
+
+  it('分发物含已审计的 Antigravity client 时优先选它（位置配对会选错组）', () => {
+    const decoyId = ['9876543210', '-zzzzzz.apps.googleusercontent.com'].join('')
+    const decoySecret = ['GOCSPX-', 'ZzYyXxWwVvUuTtSsRrQqPpOoNn01'].join('')
+    // 实测 agy 1.5.9 Linux 分发物里同时有三组 client，Antigravity 那份不是最后一条；
+    // 位置配对照样返回一对「看起来合法」的参数，换发却被 OAuth 端点拒绝。
+    const text = `${ANTIGRAVITY_CLIENT_ID} ${ANTIGRAVITY_CLIENT_SECRET} ... ${decoyId} ${decoySecret} ... tail`
+    expect(parseOAuthClientFromBinary(text)).toEqual({
+      clientId: ANTIGRAVITY_CLIENT_ID,
+      clientSecret: ANTIGRAVITY_CLIENT_SECRET,
+    })
+    // 只命中一半时仍按原规则配对，不把两半拼成一对编造出来的 client。
+    expect(parseOAuthClientFromBinary(`${ANTIGRAVITY_CLIENT_ID} ${decoySecret}`)).toEqual({
+      clientId: ANTIGRAVITY_CLIENT_ID,
+      clientSecret: decoySecret,
+    })
   })
 })
 
