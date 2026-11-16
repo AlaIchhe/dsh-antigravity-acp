@@ -179,6 +179,27 @@ describe('OAuth client 元数据提取', () => {
   })
 })
 
+describe('Code Assist 请求的线身份', () => {
+  it('loadCodeAssist 带上 agy 的 User-Agent 与 Accept-Encoding，授权仍以显式 Bearer 为准', async () => {
+    const sent: Array<Record<string, string>> = []
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      sent.push({ ...((init?.headers ?? {}) as Record<string, string>) })
+      return json({ cloudaicompanionProject: 'project-test' })
+    }
+    const project = await loadCodeAssist(ACCESS_TOKEN, { fetchImpl })
+    expect(project.projectId).toBe('project-test')
+    const headers = at(sent, 0)
+    // 少这一条时上游回 200 但没有 cloudaicompanionProject，只在 ineligibleTiers 里给
+    // UNSUPPORTED_CLIENT；因此这是「额度能不能读到」的必要条件，不是装饰。
+    expect(headers['User-Agent']).toMatch(/^antigravity\/cli\//)
+    expect(headers['User-Agent']).toContain('aidev_client')
+    expect(headers['Accept-Encoding']).toBeTruthy()
+    expect(headers.Authorization).toBe(`Bearer ${ACCESS_TOKEN}`)
+    expect(headers['Content-Type']).toBe('application/json')
+    expect(headers.Accept).toBe('application/json')
+  })
+})
+
 describe('token 换发', () => {
   it('用 refresh_token 换发并把过期时间按 expires_in 推算', async () => {
     const { fetchImpl, calls } = fakeFetch([

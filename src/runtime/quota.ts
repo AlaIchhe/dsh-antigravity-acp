@@ -19,7 +19,11 @@
 import { readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from '@cortexkit/antigravity-auth-core'
+import {
+  ANTIGRAVITY_CLIENT_ID,
+  ANTIGRAVITY_CLIENT_SECRET,
+  buildAntigravityHarnessBootstrapHeaders,
+} from '@cortexkit/antigravity-auth-core'
 import { redactSensitiveText } from './redact.js'
 import { resolveInstallRoot, versionCachePaths, DEFAULT_ACP_SERVER_VERSION } from './binary.js'
 import { agyCliCandidates } from './agy-cli.js'
@@ -523,15 +527,21 @@ async function postCodeAssist(
 ): Promise<Record<string, unknown>> {
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch
   const base = (deps.baseUrl ?? CODE_ASSIST_BASE_URL).replace(/\/+$/, '')
+  // Cloud Code Assist 按调用方的线身份判定客户端：只发 `metadata.ideType` 时上游回
+  // HTTP 200 但没有 `cloudaicompanionProject`，并在 ineligibleTiers 里给出
+  // `UNSUPPORTED_CLIENT`（实测 2026-11-17）。复用代理模式已经在用的 agy 线头
+  // （User-Agent + Accept-Encoding）后同一账户正常返回项目与套餐。
+  const headers: Record<string, string> = {
+    ...buildAntigravityHarnessBootstrapHeaders(accessToken),
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  }
   let response: Response
   try {
     response = await fetchImpl(`${base}:${method}`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: timeoutSignal(deps),
     })

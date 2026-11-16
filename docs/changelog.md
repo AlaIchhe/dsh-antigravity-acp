@@ -8,6 +8,8 @@
 
 - **OAuth client 元数据优先取已审计的 Antigravity 一份**：官方分发物里同时打包多组 client（实测 agy 1.5.9 Linux 有三组），原实现按位置配对；在真实二进制上选中的那一对换发会被 OAuth 端点回 `invalid_client` / `unauthorized_client`，表现为「换发 access token 失败（HTTP 401）」，随后退回浏览器登录并卡在 `error`（设置页「连接需要检查」）。现在只要分发物里同时存在已审计的 `ANTIGRAVITY_CLIENT_ID` 与 `ANTIGRAVITY_CLIENT_SECRET` 就优先这一对；不在时保留原位置配对，`AGY_OAUTH_CLIENT_ID` / `AGY_OAUTH_CLIENT_SECRET` 的优先级不变。
 
+- **额度请求带上 agy 线身份**：`loadCodeAssist` / `retrieveUserQuotaSummary` 原先只发 `metadata.ideType`，上游回 HTTP 200 但不含 `cloudaicompanionProject`，只在 `ineligibleTiers` 里给 `UNSUPPORTED_CLIENT`，插件因此报 `bad-response: loadCodeAssist 未返回 cloudaicompanionProject`，额度药丸永远为空。现在与代理模式复用同一组 `buildAntigravityHarnessBootstrapHeaders()` 线头（`User-Agent` + `Accept-Encoding`，`Authorization` 仍以显式 Bearer 为准），同一账户可正常读到分组、窗口与剩余百分比。
+
 ## 0.1.38 · 2026-11-12
 
 - **无档位模型不再产出非法元数据**：目录里没有思考强度变体的家族 id 之前返回 `reasoning: { efforts: [] }`，宿主把空数组判为 `INVALID_MODEL_REASONING` 并让该模型完全不可用；现在改为省略 `reasoning`（不支持档位就是不声明菜单）。
