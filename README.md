@@ -1,122 +1,55 @@
-# Antigravity ACP for DSH · 二次开源分支
+# dsh-antigravity-acp
 
-> 本项目基于 **[KouzakiUmi/dsh-antigravity-acp](https://github.com/KouzakiUmi/dsh-antigravity-acp)** 的
-> 代码，由 `AlaIchhe` 独立维护，**不是官方版本**，与原作者没有隶属或授权关系。
->
-> **自 2026-11-17 起，本仓库是这条线的唯一维护处**：不再向上游提交改动，也不再跟随上游发版。
->
-> 上游 README 原文完整保留在 [README.upstream.md](./README.upstream.md)。
-> 许可证沿用上游的 MIT，版权归原作者及贡献者。
+在 [DeepSeek Harness](https://github.com/deepseek-ai/dsh) 里接入 Google 官方 **Antigravity ACP agent**：
+用 DSH 的界面选模型、发任务，工具调用仍由 DSH 审批和执行。
 
----
+> 基于 [KouzakiUmi/dsh-antigravity-acp](https://github.com/KouzakiUmi/dsh-antigravity-acp)（MIT）的独立分支，
+> 2026-11-17 起由 `AlaIchhe` 维护。上游原文见 [README.upstream.md](./README.upstream.md)；
+> 原作者如认为本分支不妥，提 [issue](https://github.com/AlaIchhe/dsh-antigravity-acp/issues) 即可，我会归档该仓库。
 
-## 关于下架
+## 功能
 
-这个分支之所以存在，只因为我需要两处上游尚未合并的行为修复（见下）。它不是要替代上游，
-也不是要分叉生态。
-
-**如果原作者认为本分支的存在不妥：**
-
-- 在 [Issues](https://github.com/AlaIchhe/dsh-antigravity-acp/issues) 提一条即可（标题写「下架」两个字就行，不用说明理由）；
-- 我会在 48 小时内把仓库归档或删除。
-
-不需要理由，也不会讨价还价。
-
-同理，如果上游后续合并了等价修复，我会主动归档本分支并引导使用者回到上游。
-
----
-
-## 为什么有这个分支
-
-两处问题都在上游 issue 里有记录，修复都很小，但会影响日常使用。
-
-### 1. `xhigh` 档位被当成一个独立模型
-
-官方 1.5.x 给 Gemini 4 Hydrogen 增加了 `-xhigh` 后缀。上游的档位正则只认
-`low|medium|high`，于是 `gemini-4-hydrogen-xhigh` 匹配不到后缀，被折叠成**一个独立家族**，
-模型选择器里会多出一行「Gemini 4 Hydrogen (XHigh)」。
-
-但直接把 `xhigh` 加进档位表又会走向另一个坑：模型会声明四档，而宿主侧的 reasoning 校验
-只接受已注册的档位，选中「极高」后调用直接以 `UNSUPPORTED_REASONING_EFFORT` 失败。
-
-本分支的做法是**只折叠、不路由**：
-
-- 新增 `AgyModelTier = AgyReasoningEffort | 'xhigh'`，仅用于识别与家族折叠；
-- `AGY_REASONING_EFFORTS` 仍是 `low / medium / high`，思考强度菜单里不会出现选中就报错的选项。
-
-### 上游 PR（历史）
-
-xhigh 这一项曾在 2026-11-17 向提过上游 PR
-[#11](https://github.com/KouzakiUmi/dsh-antigravity-acp/pull/11)（对应 issue
-[#10](https://github.com/KouzakiUmi/dsh-antigravity-acp/issues/10)）。
-
-**该 PR 已不再跟进**：是否合并由上游决定，本仓库不等待、也不依赖它的结果。
-上游若合并了等价修复，本仓库的对应改动会原样保留——它不冲突。
-
-### 2. 上下文显示一直是 100%
-
-宿主的上下文占用投影需要一个「上一次请求的 prompt 用量」作为锚点。上游的注释写的是
-「官方 `agy_acp_server` 1.4.0 实测不返回 `PromptResponse.usage`，因此通常不上报」——
-于是锚点长期不更新，投影只按消息增长累加，很快顶到窗口上限并**一直显示 100%**。
-
-本分支在 `usage_update` 到达时记录 `used`（ACP 定义：当前上下文已用 token），
-回合结束时若官方没有给出 `usage`，就用它作为本轮样本上报：
-
-```ts
-this.finishRound(mapUsage(response.usage) ?? this.#observedUsage)
-```
-
----
-
-## 与上游的差异清单
-
-| 文件 | 改动 |
-|---|---|
-| `src/runtime/agy-cli.ts` | 新增 `AgyModelTier`；`tierForModelId` / `stripTierLabel` 认识 `xhigh`；档位表保持三档 |
-| `src/adapter/antigravity-adapter.ts` | 家族档位集合类型放宽到 `AgyModelTier`；`usage_update.used` 记入本轮 |
-| `src/adapter/prompt-turn.ts` | 新增 `noteUsage()`；回合结束时用 `response.usage ?? #observedUsage` 上报 |
-| `README.md` | 本文件（上游原文见 `README.upstream.md`） |
-
-除此之外**没有任何改动**：没有改桥、没有改提示词、没有改代理模式。
-
----
+- **官方 agent，不是转发 API**：走 ACP 协议驱动官方 `agy` 二进制，账号、额度、模型目录都来自官方
+- **工具留在 DSH**：agent 的工具调用经私有 MCP 桥回到 DSH，由 DSH 校验、审批、执行
+- **模型选择器直连**：Gemini 4 Argon / Hydrogen、Claude Opus 5.5、Sonnet 5.5 等家族一行，思考强度由 DSH 菜单路由
+- **额度可见**：按额度组显示窗口、剩余百分比与重置时间
+- **可选代理模式**：不启动官方进程、直连上游（不需要 CLI）
 
 ## 安装
 
 ```bash
-# 直接从仓库安装
 dsh plugin --profile <profile> add github:AlaIchhe/dsh-antigravity-acp
 ```
 
-安装后按上游文档在「设置 → Antigravity ACP」里连接账号即可，使用方式与上游完全一致
-（详见 [README.upstream.md](./README.upstream.md)）。
+安装后重载 DSH 服务，在「设置 → Antigravity ACP」里点 **连接 / 登录 ACP** 完成授权。
 
----
+## 使用
 
-## 自行合并上游（可选）
+1. **连接**：设置页 →「连接」，点击「连接 / 登录 ACP」。已在本机登录过官方 CLI 的话会复用登录态。
+2. **选模型**：对话里打开模型选择器，选 `Antigravity (ACP)` 下的模型家族。
+3. **调强度**：模型家族的思考强度在 DSH 的思考强度菜单里选，插件自动路由到官方档位。
+4. **看额度**：设置页「额度」拉取，或直接看输入框旁的额度药丸。
 
-```bash
-git remote add upstream https://github.com/KouzakiUmi/dsh-antigravity-acp.git
-git fetch upstream
-git rebase upstream/main
-```
+配置项、边界与排障见 [docs/reference.md](docs/reference.md) 与 [docs/configuration.md](docs/configuration.md)。
 
-本仓库平时不跟随上游。只有当你确实想要上游的新功能时，才需要手动执行上面的命令；
-冲突以本仓库的改动为准（xhigh 折叠、usage 锚点）。
+## 本分支的改动
 
----
+只修了两处上游行为问题，其余与上游一致：
 
-## 开发与验证
+| 问题 | 处理 |
+|---|---|
+| 官方 1.5.x 给 Hydrogen 加了 `-xhigh` 档，上游正则不认，被折叠成独立家族 | 识别 `xhigh` 用于折叠，但不加进档位表（避免选中即 `UNSUPPORTED_REASONING_EFFORT`） |
+| 上下文占用锚点缺失，投影只增不减，一直显示 100% | 用 `usage_update.used` 作为回合用量样本兜底 |
+
+详见 [CHANGELOG](docs/changelog.md)。
+
+## 开发
 
 ```bash
 npm ci
 npx tsc --noEmit     # 类型检查
-npx vitest run       # 47 个文件 / 843 项测试
+npx vitest run       # 47 个文件 / 846 项测试
 ```
-
-本分支提交时上述两项均通过。
-
----
 
 ## 许可
 
