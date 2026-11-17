@@ -513,21 +513,39 @@ describe('模型目录来自 ACP 会话配置', () => {
     expect((await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'gemini-test')).name).toBe('自定义名称')
   })
 
-  it('resolveModel 不声明 reasoning：模型选择页里不出现思考等级', async () => {
+  it('思考强度来自 agent 的 thought_level 选项：标签与缺省档位都取 agent 声明', async () => {
     const harness = createHarness({ configOptions: THOUGHT_CONFIG_OPTIONS })
     await harness.adapter.discoverModels()
-    const resolved = await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')
-    // 声明 reasoning 会让宿主在 /model 菜单里加一列思考强度，并把它显示在模型按钮上。
-    expect(resolved.reasoning).toBeUndefined()
-    // 目录本身仍然只有模型。
-    expect((await harness.adapter.listModels(AGY_PROVIDER_ID)).map((model) => model.id))
-      .toEqual(['gemini-3.8-flash', 'claude-opus-5-5', 'gemini-4-hydrogen'])
+    const reasoning = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
+    expect(reasoning?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high'])
+    // 标签用 agent 自己声明的（Low/Medium/High），不是插件编的中文。
+    expect(reasoning?.efforts.map((entry) => entry.name)).toEqual(['Low', 'Medium', 'High'])
+    expect(reasoning?.defaultEffort?.toString()).toBe('medium')
   })
 
-  it('agent 声明了 xhigh 也不进 UI：声明项一律省略 reasoning', async () => {
+  it('agent 声明了 xhigh 时 reasoning 就包含 xhigh（不再被三档白名单截断）', async () => {
     const harness = createHarness({ configOptions: THOUGHT_CONFIG_OPTIONS_WITH_XHIGH })
     await harness.adapter.discoverModels()
-    expect((await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'gemini-4-hydrogen')).reasoning).toBeUndefined()
+    const reasoning = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'gemini-4-hydrogen')).reasoning
+    expect(reasoning?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(reasoning?.efforts.at(-1)?.name).toBe('Extra')
+    expect(reasoning?.defaultEffort?.toString()).toBe('xhigh')
+  })
+
+  it('当前档位不在新模型的选项里时缺省档位退回 medium，不指向不存在的选项', async () => {
+    const harness = createHarness({ configOptions: [
+      { id: 'model', type: 'select', name: 'Model', category: 'model', currentValue: 'claude-opus-5-5', options: [
+        { value: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
+      ] },
+      { id: 'thought_level', type: 'select', name: 'Thinking Level', category: 'thought_level', currentValue: 'xhigh', options: [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+      ] },
+    ] })
+    await harness.adapter.discoverModels()
+    const reasoning = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
+    expect(reasoning?.defaultEffort?.toString()).toBe('medium')
   })
 
   it('session/new 的 model select 配置项被映射为 LlmModelInfo 目录', async () => {
@@ -791,15 +809,12 @@ describe('模型目录来自 ACP 会话配置', () => {
     expect(models.map((model) => model.id)).toEqual(['gemini-3-pro'])
   })
 
-  it('没有会话观测时同样不声明 reasoning', async () => {
-    const harness = createHarness({
-      loadCliCatalog: async () => [
-        { id: 'claude-opus-5-5-low', name: 'Claude Opus 5.5 (Low)' },
-        { id: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
-      ],
-    })
+  it('resolveModel 声明思考强度菜单（低/中/高），默认档位 medium', async () => {
+    const harness = createHarness()
     const resolved = await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')
-    expect(resolved.reasoning).toBeUndefined()
+    expect(resolved.reasoning?.efforts.map((effort) => String(effort.id))).toEqual(['low', 'medium', 'high'])
+    expect(String(resolved.reasoning?.defaultEffort)).toBe('medium')
+    expect(resolved.reasoning?.efforts.map((effort) => effort.name)).toEqual(['低', '中', '高'])
   })
 
   it('思考强度路由：选 high 就落到 claude-opus-5-5-high', async () => {
@@ -1155,7 +1170,7 @@ describe('不支持的请求项', () => {
 })
 
 describe('模型元数据一致性', () => {
-  it('观测到的档位选择器随目录落盘，重启后读缓存仍能写入档位（零 ACP 交互）', async () => {
+  it('观测到的档位选择器随目录落盘，重启后读缓存就能声明菜单（零 ACP 交互）', async () => {
     const saved: CachedCatalog[] = []
     const source = createHarness({
       configOptions: THOUGHT_CONFIG_OPTIONS,
@@ -1166,36 +1181,24 @@ describe('模型元数据一致性', () => {
     expect(snapshot?.thoughtLevel).toMatchObject({ configId: 'thought_level', currentValue: 'medium' })
     expect(snapshot?.thoughtLevel?.options.map((option) => option.value)).toEqual(['low', 'medium', 'high'])
 
-    // 缓存只恢复「怎么写档位」；UI 仍然不声明 reasoning。
     const restored = createHarness({ loadCachedCatalog: async () => snapshot })
-    expect((await restored.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning).toBeUndefined()
-    const streaming = collect(restored.adapter.stream(baseOptions({
-      model: 'claude-opus-5-5', reasoningEffort: 'high' as never,
-    })))
-    await waitForRequest(restored.agent, 'session/set_config_option', 2)
-    await restored.agent.reply('session/prompt', { stopReason: 'end_turn' })
-    await streaming
-    const calls = restored.agent.requestsFor('session/set_config_option').map((request) => request.params as { configId: string; value: string })
-    expect(calls.at(-1)).toMatchObject({ configId: 'thought_level', value: 'high' })
+    const reasoning = (await restored.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
+    expect(reasoning?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high'])
+    expect(reasoning?.defaultEffort?.toString()).toBe('medium')
+    expect(restored.agent.requests).toHaveLength(0)
   })
 
-  it('档位选择器随元数据在 worker 之间共享，不因为没建过会话而丢写入通道', async () => {
+  it('档位选择器随元数据在 worker 之间共享，不因为没建过会话而丢菜单', async () => {
     const source = createHarness({ configOptions: THOUGHT_CONFIG_OPTIONS })
     await source.adapter.discoverModels()
     const target = createHarness()
     target.adapter.importMetadata(source.adapter.exportMetadata())
-    expect((await target.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning).toBeUndefined()
-    const streaming = collect(target.adapter.stream(baseOptions({
-      model: 'claude-opus-5-5', reasoningEffort: 'low' as never,
-    })))
-    await waitForRequest(target.agent, 'session/set_config_option', 2)
-    await target.agent.reply('session/prompt', { stopReason: 'end_turn' })
-    await streaming
-    const calls = target.agent.requestsFor('session/set_config_option').map((request) => request.params as { configId: string; value: string })
-    expect(calls.at(-1)).toMatchObject({ configId: 'thought_level', value: 'low' })
+    const reasoning = (await target.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
+    expect(reasoning?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high'])
+    expect(target.agent.requests).toHaveLength(0)
   })
 
-  it('仅导入目录、尚未列目录时也能解析家族显示名', async () => {
+  it('仅导入目录、尚未列目录时也能解析家族名称与真实档位', async () => {
     const loadCliCatalog = async () => [
       { id: 'claude-opus-5-5-low', name: 'Claude Opus 5.5 (Low)' },
       { id: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
@@ -1211,7 +1214,9 @@ describe('模型元数据一致性', () => {
     target.adapter.importMetadata(source.adapter.exportMetadata())
     const resolved = await target.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')
     expect(resolved.name).toBe('Claude Opus 5.5')
-    // CLI-only 的家族兜底不能覆盖另一个 worker 的完整 ACP 目录观测。
+    expect(resolved.reasoning?.efforts.map(entry => entry.id.toString())).toEqual(['low', 'high'])
+    expect(resolved.reasoning?.defaultEffort?.toString()).not.toBe('medium')
+    // CLI-only 的家族兜底不能覆盖另一个 worker 的完整 ACP 档位观测。
     const observed = createHarness()
     await observed.adapter.discoverModels()
     const original = observed.adapter.exportMetadata()
@@ -1230,9 +1235,8 @@ describe('模型元数据一致性', () => {
     await fallback.adapter.listModels(AGY_PROVIDER_ID)
     const target = createHarness({ loadCachedCatalog })
     target.adapter.importMetadata(fallback.adapter.exportMetadata())
-    // 目录来源优先级不变：磁盘 ACP 目录优先于其它 worker 的 CLI 家族兜底。
-    expect((await target.adapter.listModels(AGY_PROVIDER_ID)).map((model) => model.name))
-      .toEqual(['Claude Opus 5.5'])
+    const resolved = await target.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')
+    expect(resolved.reasoning?.efforts.map(entry => entry.id.toString())).toEqual(['low', 'high'])
   })
 })
 
