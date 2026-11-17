@@ -7,6 +7,9 @@
 ## 未发布
 
 - **`mcpCapabilities` 缺省不再判为「不支持」**：ACP v1 没有要求 agent 声明该字段，而官方 `agy acp`（Antigravity CLI 1.5.x）正是这种情况——`initialize` 不带 `mcpCapabilities`，却会在 `session/new` 里正常接受 `http` `mcpServers`（实测拿到注册后立刻对桥做 `server/discover` → `initialize` → `tools/list`）。原实现按 `!== true` 判死，凡是带工具的新会话都直接抛 `UNSUPPORTED_CAPABILITY`「ACP 服务端未声明 HTTP MCP 支持，无法安全接入 DSH 工具」，把官方 CLI 这条接入路径整条堵死。现在只在服务端**明确声明** `http` / `sse` 为 `false` 时拒绝；图像等其它能力声明的口径不变。
+- **OAuth client 元数据优先取已审计的 Antigravity 一份**：官方分发物里同时打包多组 client（实测 agy 1.5.9 Linux 有三组），原实现按位置配对；在真实二进制上选中的那一对换发会被 OAuth 端点回 `invalid_client` / `unauthorized_client`，表现为「换发 access token 失败（HTTP 401）」，随后退回浏览器登录并卡在 `error`（设置页「连接需要检查」）。现在只要分发物里同时存在已审计的 `ANTIGRAVITY_CLIENT_ID` 与 `ANTIGRAVITY_CLIENT_SECRET` 就优先这一对；不在时保留原位置配对，`AGY_OAUTH_CLIENT_ID` / `AGY_OAUTH_CLIENT_SECRET` 的优先级不变。
+
+- **额度请求带上 agy 线身份**：`loadCodeAssist` / `retrieveUserQuotaSummary` 原先只发 `metadata.ideType`，上游回 HTTP 200 但不含 `cloudaicompanionProject`，只在 `ineligibleTiers` 里给 `UNSUPPORTED_CLIENT`，插件因此报 `bad-response: loadCodeAssist 未返回 cloudaicompanionProject`，额度药丸永远为空。现在与代理模式复用同一组 `buildAntigravityHarnessBootstrapHeaders()` 线头（`User-Agent` + `Accept-Encoding`，`Authorization` 仍以显式 Bearer 为准），同一账户可正常读到分组、窗口与剩余百分比。
 
 ## 0.1.38 · 2026-11-12
 
