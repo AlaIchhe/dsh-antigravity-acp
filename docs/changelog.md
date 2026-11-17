@@ -4,12 +4,9 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
-## 未发布 · 2026-11-17
+## 0.1.51 · 2026-11-17
 
 - **修复 Hydrogen 的 xhigh 消失**：`thought_level` 的选项跟随 agent **当前模型**——会话停在 Argon/Claude 时只有 low/medium/high，0.1.50 只按它声明档位，于是 Hydrogen 少了 Extra/`xhigh`。现在把 agent 当前选项与官方 CLI 目录里该家族真实存在的档位取并集（`gemini-4-hydrogen-xhigh`），并按 low → medium → high → xhigh 排序；没有 xhigh 变体的家族不受影响。
-
-## 未发布 · 2026-11-17
-
 - **额度详情搬到设置页**：账号卡片里的额度块改成直接铺开胶囊面板的内容——每个额度组一节，窗口名 + 百分比 + 余量条 + 重置倒计时，末尾是 AI Credits；不再有「详情」折叠，也不需要点开弹层。
 - **对话页胶囊改为纯展示**：只显示当前所选模型**所属家族**的额度（族名 + 最低窗口百分比 + 迷你条），不再可点击、没有弹层；Argon 有独立额度组时只读自己的组，不再借用 Gemini 组。缓存的旧值变淡显示。
 
