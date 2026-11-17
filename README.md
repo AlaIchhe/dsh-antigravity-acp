@@ -41,6 +41,11 @@
 - 新增 `AgyModelTier = AgyReasoningEffort | 'xhigh'`，仅用于识别与家族折叠；
 - `AGY_REASONING_EFFORTS` 仍是 `low / medium / high`，思考强度菜单里不会出现选中就报错的选项。
 
+### 上游状态
+
+- 第 1 项已向上游提 PR：[#11 fix(model): 识别 xhigh 档位但不暴露](https://github.com/KouzakiUmi/dsh-antigravity-acp/pull/11)（对应 issue [#10](https://github.com/KouzakiUmi/dsh-antigravity-acp/issues/10)）
+- 第 2 项尚未提 PR；先在本分支验证，稳定后再提
+
 ### 2. 上下文显示一直是 100%
 
 宿主的上下文占用投影需要一个「上一次请求的 prompt 用量」作为锚点。上游的注释写的是
