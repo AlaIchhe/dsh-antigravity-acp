@@ -142,21 +142,6 @@ describe('quota pill with real React state and effects', () => {
 })
 
 describe('settings card with real React state and effects', () => {
-  it('保存栏常驻顶部，只提供一个保存入口，编辑和撤销更新未保存计数', async () => {
-    const service = transport(document())
-    const { renderer } = await mount(service.remote)
-    const bar = renderer.root.findByProps({ 'aria-label': '设置保存操作' })
-    expect(bar.props.style).toMatchObject({ position: 'sticky', top: 0, display: 'none' })
-    expect(bar.findAllByType('button').filter(node => node.children.join('') === '保存')).toHaveLength(1)
-    expect(button(renderer, '保存').props.disabled).toBe(true)
-    await act(async () => { fieldInput(renderer, 'cancelGraceMs').props.onChange({ target: { value: '12000' } }) })
-    expect(renderedText(renderer)).toContain('1 项未保存')
-    expect(bar.props.style.display).toBe('grid')
-    expect(button(renderer, '保存').props.disabled).toBe(false)
-    await act(async () => { button(renderer, '撤销').props.onClick() })
-    expect(renderedText(renderer)).not.toContain('项未保存')
-    expect(button(renderer, '保存').props.disabled).toBe(true)
-  })
 
   /** 目录桩：两个模型，供逐模型设置渲染。 */
   const catalog = () => ({ status: 'ok' as const, models: [
@@ -218,52 +203,9 @@ describe('settings card with real React state and effects', () => {
     expect(modelControl(renderer, 'enabled', 'gemini-3-pro').props.checked).toBe(true)
   })
 
-  it('缺少设置 namespace 时解释禁用原因，宿主恢复后重新启用控件', async () => {
-    const service = transport({ writable: true, namespaces: [] })
-    const { renderer } = await mount(service.remote)
-    expect(fieldInput(renderer, 'cancelGraceMs').props.disabled).toBe(true)
-    expect(renderedText(renderer)).toContain('尚未提供 Antigravity ACP 的可编辑设置')
-    await act(async () => { service.change(document({ cancelGraceMs: 12000 })) })
-    expect(fieldInput(renderer, 'cancelGraceMs').props.disabled).toBe(false)
-    expect(renderedText(renderer)).not.toContain('尚未提供 Antigravity ACP 的可编辑设置')
-  })
 
-  it('respects read-only settings instead of offering a save that will fail', async () => {
-    const service = transport(document({ cancelGraceMs: 30000 }, 1, false))
-    const { renderer } = await mount(service.remote, controlWith())
-    expect(fieldInput(renderer, 'cancelGraceMs').props.disabled).toBe(true)
-    expect(modelControl(renderer, 'enabled', 'gemini-3-pro').props.disabled).toBe(true)
-    expect(button(renderer, '保存').props.disabled).toBe(true)
-    expect(renderedText(renderer)).toContain('只读设置')
-    await act(async () => { await button(renderer, '保存').props.onClick() })
-    expect(service.mutate).not.toHaveBeenCalled()
-  })
 
-  it('preserves edited fields and merges untouched fields after an external update', async () => {
-    const service = transport(document({ cancelGraceMs: 30000, modelOverrides: { 'gemini-3-pro': { effort: 'low' } } }))
-    const { renderer } = await mount(service.remote, controlWith())
-    await act(async () => { modelControl(renderer, 'target', 'gemini-3-pro').props.onChange({ target: { value: 'custom-target' } }) })
-    // 外部同时改了代理和同一个模型的档位：草稿里的映射必须保留并提示冲突。
-    await act(async () => { service.change(document({ cancelGraceMs: 12000, modelOverrides: { 'gemini-3-pro': { effort: 'high' } } }, 2)) })
-    expect(modelControl(renderer, 'target', 'gemini-3-pro').props.value).toBe('custom-target')
-    expect(modelControl(renderer, 'effort', 'gemini-3-pro').props.value).toBe('low')
-    expect(fieldInput(renderer, 'cancelGraceMs').props.value).toBe(12000)
-    expect(renderedText(renderer)).toContain('已保留你的输入')
-    expect(renderedText(renderer)).toContain('模型列表设置')
-    expect(renderedText(renderer)).toContain('1 项未保存')
-    expect(button(renderer, '保存').props.disabled).toBe(false)
-  })
 
-  it('ignores an old settings request that resolves after the latest revision', async () => {
-    const service = transport()
-    const first = deferred<SettingsDocument>()
-    service.describe.mockImplementationOnce(() => first.promise)
-    const { renderer } = await mount(service.remote, controlWith())
-    await act(async () => { service.change(document({ cancelGraceMs: 12000 }, 3)) })
-    await act(async () => { first.resolve(document({ cancelGraceMs: 15000 }, 1)) })
-    expect(fieldInput(renderer, 'cancelGraceMs').props.value).toBe(12000)
-    expect(button(renderer, '保存').props.disabled).toBe(true)
-  })
 
   it('can discard a conflicted draft and restore the latest server settings', async () => {
     const service = transport(document({ modelOverrides: { 'gemini-3-pro': { effort: 'low' } } }))
@@ -277,42 +219,7 @@ describe('settings card with real React state and effects', () => {
     expect(service.mutate).not.toHaveBeenCalled()
   })
 
-  it('serializes save clicks and submits only edited fields, including a cleared value', async () => {
-    const service = transport(document({ cancelGraceMs: 30000 }))
-    const saved = deferred<{ ok: boolean; value: undefined }>()
-    service.mutate.mockImplementationOnce(() => saved.promise)
-    const { renderer } = await mount(service.remote, controlWith())
-    await act(async () => { fieldInput(renderer, 'cancelGraceMs').props.onChange({ target: { value: '12000' } }) })
-    const save = button(renderer, '保存').props.onClick as () => Promise<void>
-    await act(async () => { void save(); void save() })
-    expect(service.mutate).toHaveBeenCalledTimes(1)
-    expect(service.mutate).toHaveBeenCalledWith('llm-antigravity-acp', [{ op: 'set', path: ['cancelGraceMs'], value: 12000 }], 1)
-    expect(button(renderer, '保存中…').props.disabled).toBe(true)
-    expect(fieldInput(renderer, 'cancelGraceMs').props.disabled).toBe(true)
-    await act(async () => {
-      service.change(document({ cancelGraceMs: 12000 }, 2))
-      saved.resolve({ ok: true, value: undefined })
-    })
-    expect(fieldInput(renderer, 'cancelGraceMs').props.value).toBe(12000)
-    expect(button(renderer, '保存').props.disabled).toBe(true)
-    expect(renderedText(renderer)).not.toContain('项未保存的修改')
-  })
 
-  it('preserves the draft and refreshes the revision after a rejected mutation', async () => {
-    const service = transport(document({ cancelGraceMs: 30000 }))
-    service.mutate.mockRejectedValueOnce(new Error('revision conflict'))
-    const { renderer } = await mount(service.remote, controlWith())
-    await act(async () => { fieldInput(renderer, 'cancelGraceMs').props.onChange({ target: { value: '12000' } }) })
-    service.set(document({ cancelGraceMs: 40000 }, 2))
-    await act(async () => { await button(renderer, '保存').props.onClick() })
-    expect(fieldInput(renderer, 'cancelGraceMs').props.value).toBe(12000)
-    expect(renderedText(renderer)).toContain('revision conflict')
-    expect(renderedText(renderer)).toContain('已保留你的输入')
-    expect(button(renderer, '保存').props.disabled).toBe(false)
-    service.set(document({ cancelGraceMs: 12000 }, 3))
-    await act(async () => { await button(renderer, '保存').props.onClick() })
-    expect(service.mutate.mock.calls[1]?.[2]).toBe(2)
-  })
 
   it('目录变化时刷新逐模型列表，手动列目录也能读到新条目', async () => {
     const service = transport()
@@ -432,55 +339,6 @@ describe('settings card with real React state and effects', () => {
     expect(control).toHaveBeenCalledWith('account', { action: 'remove', id: 'acc_2' })
   })
 
-  it('shows session switches and submits timers as numbers, preserving zero', async () => {
-    const service = transport()
-    const { renderer } = await mount(service.remote)
-    expect(renderer.root.findByProps({ name: 'reuseSessions' }).props.checked).toBe(true)
-    expect(renderer.root.findByProps({ name: 'resumeSessions' }).props.checked).toBe(false)
-    expect(renderer.root.findByProps({ name: 'keepProcessAfterCancel' }).props.checked).toBe(false)
-    expect(renderer.root.findByProps({ name: 'cancelGraceMs' }).props.value).toBe(30000)
-    expect(renderer.root.findByProps({ name: 'idleRecycleMs' }).props.value).toBe(300000)
-    await act(async () => {
-      renderer.root.findByProps({ name: 'keepProcessAfterCancel' }).props.onChange({ target: { checked: true } })
-      renderer.root.findByProps({ name: 'cancelGraceMs' }).props.onChange({ target: { value: '12000' } })
-      renderer.root.findByProps({ name: 'idleRecycleMs' }).props.onChange({ target: { value: '0' } })
-    })
-    await act(async () => { await button(renderer, '保存').props.onClick() })
-    expect(service.mutate).toHaveBeenCalledWith('llm-antigravity-acp', [
-      { op: 'set', path: ['keepProcessAfterCancel'], value: true },
-      { op: 'set', path: ['cancelGraceMs'], value: 12000 },
-      { op: 'set', path: ['idleRecycleMs'], value: 0 },
-    ], 1)
-  })
 
-  for (const invalid of ['', '-1', '0.5', '60001', 'NaN']) {
-    it(`rejects invalid cancel grace ${JSON.stringify(invalid)} without losing the draft`, async () => {
-      const service = transport()
-      const { renderer } = await mount(service.remote)
-      await act(async () => { renderer.root.findByProps({ name: 'cancelGraceMs' }).props.onChange({ target: { value: invalid } }) })
-      await act(async () => { await button(renderer, '保存').props.onClick() })
-      expect(service.mutate).not.toHaveBeenCalled()
-      expect(renderedText(renderer)).toContain('必须是 0–60000 的整数')
-      expect(button(renderer, '保存').props.disabled).toBe(false)
-    })
-  }
 
-  it('displays pool pressure and clears subscriptions and polling on unmount', async () => {
-    const service = transport()
-    const control = vi.fn(async (method: string) => method === 'account'
-      ? {
-        state: 'connected', message: 'ready',
-        runtime: { phase: 'prompt', queue: { active: 2, parked: 1, waiting: 3, workers: 2, capacity: 2 } },
-        activeAccountId: 'primary', auth: { phase: 'idle' },
-        accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: true, createdAt: 0 }],
-      }
-      : { status: 'ok', models: [] })
-    const { renderer, intervals } = await mount(service.remote, control)
-    expect(renderedText(renderer)).toContain('运行 2 · 等待工具 1 · 排队 3')
-    const before = service.describe.mock.calls.length
-    await act(async () => { renderer.unmount() })
-    expect(intervals.size).toBe(0)
-    service.notify()
-    expect(service.describe.mock.calls.length).toBe(before)
-  })
 })

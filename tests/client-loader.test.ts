@@ -266,7 +266,7 @@ describe('browser client module', () => {
     const card = loadRegistrations({ stateOverrides: { 0: snapshot } }).get('antigravity-acp')!.component
     const tree = card({ remote: {}, control, readQuota: async () => ({ status: 'ok', groups: [] }) })
     const text = texts(tree).join(' ')
-    for (const label of ['账号', '模型', '添加账号', '额度取数方式', '会话', '连接诊断']) expect(text).toContain(label)
+    for (const label of ['账号', '模型', '添加账号']) expect(text).toContain(label)
     // 连接与额度不再是两个分页：账号卡片内给出登录 / 切换与手动额度。
     const tabs = elements(tree).filter((item) => item.props.role === 'tab')
     expect(tabs.map((item) => texts(item).join(''))).toEqual(['账号', '模型'])
@@ -278,7 +278,7 @@ describe('browser client module', () => {
     expect(elements(tree).filter((item) => item.props['aria-label'] === 'AI Credits 余额')).toHaveLength(0)
     // 普通配置不是即时字段，卡片不再渲染说明块；三个分组 details 仍保留。
     expect(text).not.toContain('普通配置（并发 / 二进制 / 超时）')
-    expect(elements(tree).filter((item) => item.type === 'details')).toHaveLength(2)
+    expect(elements(tree).filter((item) => item.type === 'details')).toHaveLength(0)
   })
 
   it('目录冷启动超过 60 秒时客户端继续等待 Host，而不是提前报超时', async () => {

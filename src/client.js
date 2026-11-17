@@ -25,15 +25,8 @@ window.__ModuleLoader__.load({
     const PROVIDER = 'antigravity-acp'
     /** Settings namespace projected from Config's volatile fields in src/settings.ts. */
     const ENTRY_ID = 'llm-antigravity-acp'
-    /** Live fields owned by this card; ordinary fields stay in the host config editor. */
-    const FIELDS = [
-      { key: 'cliQuotaEnabled', group: 'quota', checkbox: true, label: '使用 agy CLI 补充额度', hint: '默认不启动 agy；开启后才读取 AI Credits。' },
-      { key: 'reuseSessions', group: 'session', checkbox: true, defaultChecked: true, label: '复用 ACP 会话', hint: '只发送新增消息；上下文不一致时自动重建。' },
-      { key: 'resumeSessions', group: 'session', checkbox: true, label: '重启后恢复 ACP 会话', hint: '需开启会话复用；恢复失败时自动重建。' },
-      { key: 'keepProcessAfterCancel', group: 'session', checkbox: true, label: '取消后保留进程', hint: '仅在官方进程确认停止后保留。' },
-      { key: 'cancelGraceMs', group: 'session', numeric: true, defaultValue: 30000, min: 0, max: 60000, label: '取消确认宽限（毫秒）', hint: '0 表示立即回收。' },
-      { key: 'idleRecycleMs', group: 'session', numeric: true, defaultValue: 300000, min: 0, max: 3600000, label: '进程空闲回收（毫秒）', hint: '默认 5 分钟；0 表示禁用。' },
-    ]
+    /** 账号页只保留账号卡片；取数与进程调优全部走配置或自动行为。 */
+    const FIELDS = []
 
     /** 逐模型设置：键是 DSH 选择器里的模型 ID，值是开关、默认档位、显示名与官方 ID 映射。 */
     const OVERRIDES_KEY = 'modelOverrides'
@@ -705,12 +698,9 @@ window.__ModuleLoader__.load({
         setStatus({ kind: 'ok', text: '已撤销未保存修改。' })
       }
 
-      const connection = connectionStatus(account, registered)
       const accounts = Array.isArray(account?.accounts) ? account.accounts : []
       const authBusy = ['preparing', 'waiting', 'exchanging'].includes(account?.auth?.phase)
       // CLI 开关是额度取数方式：保存前沿用已生效值，草稿不改变当前来源。
-      const fieldsFor = (group) => FIELDS.filter((field) => field.group === group)
-      const fieldProps = { draft, dirtyKeys, conflicts, disabled: editingDisabled, editField }
       const pageStyle = (id) => ({ display: settingsPage === id ? 'flex' : 'none', flexDirection: 'column', gap: '14px' })
       const pageButton = (id, label) => h('button', {
         type: 'button', role: 'tab', 'aria-selected': settingsPage === id, 'aria-controls': 'agy-settings-page-' + id,
@@ -768,18 +758,7 @@ window.__ModuleLoader__.load({
               : h('p', { role: 'status', style: { margin: 0, fontSize: '12px', lineHeight: 1.5 } }, '正在读取账号列表…'),
             null),
 
-          h('section', { style: PANEL, 'aria-label': '额度取数方式' },
-            h(SectionHeading, { title: '额度取数方式' }),
-            h(SettingsFields, { ...fieldProps, fields: fieldsFor('quota') })),
-          h(SettingsGroup, { title: '会话', fields: fieldsFor('session'), fieldProps }),
-          h('details', { style: PANEL, 'aria-label': '连接诊断' },
-            h('summary', { style: SUMMARY },
-              h('span', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
-                h(StatusDot, { color: connection.color }),
-                h('span', { style: { fontSize: '13px', fontWeight: 650 } }, '连接诊断'))),
-            account?.runtime
-              ? h('div', { style: { marginTop: '16px', paddingTop: '14px', borderTop: '1px solid rgba(128,128,128,.14)' } }, RuntimeDetails({ runtime: account.runtime }))
-              : null)),
+          ),
 
         h('div', { id: 'agy-settings-page-models', role: 'tabpanel', style: pageStyle('models') },
           h('section', { style: PANEL, 'aria-label': '模型列表' },
