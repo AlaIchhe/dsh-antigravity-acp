@@ -153,5 +153,6 @@ describe('套餐额度与余额独立状态/缓存', () => {
     const result = await api.read()
     expect(result.credits).toMatchObject({ status: 'unavailable', error: { code: 'cli-unavailable' } })
     expect(result.credits?.error?.message).toContain('未找到官方 agy CLI')
-  })
+    // 解析 CLI 路径会走一遍文件系统搜索；慢机器上可能接近默认 5s 上限。
+  }, 30_000)
 })

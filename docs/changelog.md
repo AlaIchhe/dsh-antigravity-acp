@@ -4,6 +4,12 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.1.47 · 2026-11-17
+
+- **思考强度回归模型元数据**：官方 ACP 1.5 起把档位声明成独立的 `thought_level` 配置项（选项随模型变化，Hydrogen 多一档 `xhigh`）。现在 `reasoning.efforts` 直接取 agent 声明的档位与标签，选模只发家族 id，档位另写一次 `session/set_config_option`；请求值不在当前选项里时按 low → medium → high → xhigh 就近收敛。没有 `thought_level` 的旧 agent 才退回「档位后缀」路由。
+- **`modelOverrides.effort` 移除**：设置里不再有按模型的默认档位，旧配置文件里残留的 `effort` 键会被忽略；显示名与官方 ID 映射保留。
+- **档位随目录落盘**：`catalog.json` 升级到格式 v2，连同 `thoughtLevel`（configId / 选项 / 当前值）一起持久化并在 worker 间共享，重启后首次会话之前菜单就是 agent 上次声明的那一档。
+
 ## 0.1.46 · 2026-11-17
 
 - **模型按家族分组**：模型标签按 Gemini / Claude / GPT / Argon / 其它分组展示，仍只做显示 / 隐藏切换。

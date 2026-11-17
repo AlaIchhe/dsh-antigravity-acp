@@ -621,7 +621,7 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
     if (!cliDiskRead) {
       cliDiskRead = true
       const cached = await readCachedCatalog({ cacheDir, acpVersion, fileName: 'cli-models.json' })
-      if (cached) cliModelRows = cached.map((row) => ({ id: row.id, name: row.name }))
+      if (cached) cliModelRows = cached.models.map((row) => ({ id: row.id, name: row.name }))
     }
     if (cliPath && cliRefresh === undefined && (force || !cliRefreshDone)) {
       cliRefresh = (async () => {
@@ -699,7 +699,7 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       },
       // 冷启动目录：真实目录只能观测到之后才有，先用磁盘缓存兜住模型选择器。
       loadCachedCatalog: () => readCachedCatalog({ cacheDir, acpVersion }),
-      saveCatalog: (models) => writeCachedCatalog({ cacheDir, acpVersion, models }),
+      saveCatalog: (catalog) => writeCachedCatalog({ cacheDir, acpVersion, ...catalog }),
       // 官方清单补齐会话观测之外的型号（Opus 5.5 / Sonnet 5.5 / Argon 等）。
       loadCliCatalog: () => loadCliModels(),
       // 自诊断：模型路由与 set_config_option 失败会写进宿主日志（宿主对 typert /

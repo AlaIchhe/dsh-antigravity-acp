@@ -33,9 +33,10 @@ import {
   routeTieredModelId,
   tierForModelId,
 } from '../runtime/agy-cli.js'
-import type { AgyModelTier, AgyReasoningEffort } from '../runtime/agy-cli.js'
-import { findModelSelector, toModelCatalog } from './model-catalog.js'
-import type { ModelSelector } from './model-catalog.js'
+import type { AgyModelTier } from '../runtime/agy-cli.js'
+import { findModelSelector, findThoughtLevelSelector, toModelCatalog } from './model-catalog.js'
+import type { ModelSelector, ThoughtLevelSelector } from './model-catalog.js'
+import type { CachedCatalog, CachedThoughtLevel } from '../runtime/catalog-cache.js'
 import { applyModelSettings, modelDisplayName, modelSettingFor, normalizeModelSettings, resolveModelTarget } from './model-settings.js'
 import type { ModelSetting } from './model-settings.js'
 import { buildPromptDeltaWithImages, buildPromptWithImages, buildToolResultContent } from './image-content.js'
@@ -91,7 +92,7 @@ export interface AntigravityAcpAdapterOptions {
   /** session/new 使用的工作目录；缺省为进程 cwd。 */
   cwd?: string
   /**
-   * 按模型 ID 的目录设置：显示开关、默认思考档位、显示名与官方模型 ID 映射。
+   * 按模型 ID 的目录设置：显示开关、显示名与官方模型 ID 映射。
    * 只作用于目录中已存在的条目，不新增自造模型。
    */
   modelOverrides?: Record<string, ModelOverride>
@@ -99,9 +100,9 @@ export interface AntigravityAcpAdapterOptions {
    * 冷启动目录读取（磁盘缓存）。返回 undefined 表示没有可用缓存；**不得**抛错。
    * 元数据方法不得触网，因此这里只能读本地文件。
    */
-  loadCachedCatalog?: () => Promise<CachedModel[] | undefined>
+  loadCachedCatalog?: () => Promise<CachedCatalog | undefined>
   /** 观测到真实目录后的落盘回调；失败由实现方自行吞掉。 */
-  saveCatalog?: (models: readonly CachedModel[]) => Promise<void> | void
+  saveCatalog?: (catalog: CachedCatalog) => Promise<void> | void
   /** Metadata only, for sharing catalog/context observations across isolated workers. */
   onMetadataChanged?: (metadata: AdapterMetadata) => void
   readImage?: ImageReader
@@ -167,6 +168,8 @@ export interface AdapterMetadata {
   /** 区分真实 ACP 档位观测与 CLI 家族兜底，避免弱快照覆盖完整目录。 */
   catalogSource: 'acp' | 'fallback'
   imageSupported?: boolean
+  /** 观测到的思考强度选择器；跨 worker 共享，菜单在没建过会话的 worker 上也一致。 */
+  thoughtLevel?: CachedThoughtLevel
 }
 
 /**
@@ -288,6 +291,17 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   #catalog: LlmModelInfo[] = []
   #modelSelector: ModelSelector | undefined
   /**
+   * 观测到的思考强度选择器（ACP 1.5 起是独立 config option，options 随当前
+   * 模型变化）。有它时选模只发家族 id，档位单独设置；没有它（旧 agent）才走
+   * 「档位编进模型 id」的兼容路由。
+   */
+  #thoughtLevel: ThoughtLevelSelector | undefined
+  /**
+   * 已经为某个 ACP 会话确认写入过的档位值；与 `#sessionModelValues` 同理，
+   * 只能用于本会话自己的短路判断。
+   */
+  #sessionThoughtValues = new Map<string, string>()
+  /**
    * 已经为某个 ACP 会话确认写入过的模型值。`#modelSelector.currentValue` 是
    * **连接级**缓存（可能来自别的会话、也可能来自上一次 `session/new`），新会话
    * 省略 configOptions 时它不代表本会话的实际模型；用它短路会让新会话静默跑在
@@ -396,6 +410,32 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       catalogSource: this.#catalogSource,
       contextWindows: [...this.#contextWindows],
       ...(this.#imageSupported === undefined ? {} : { imageSupported: this.#imageSupported }),
+      ...(this.#thoughtLevelSnapshot() === undefined ? {} : { thoughtLevel: this.#thoughtLevelSnapshot() }),
+    }
+  }
+
+  /** 档位选择器的可缓存快照（只含 agent 声明的档位与当前值，无凭据）。 */
+  #thoughtLevelSnapshot(): CachedThoughtLevel | undefined {
+    const thought = this.#thoughtLevel
+    if (!thought) return undefined
+    return {
+      configId: thought.configId,
+      options: thought.options.map((option) => ({
+        value: option.value,
+        name: option.name,
+        ...(option.description === undefined || option.description === null ? {} : { description: option.description }),
+      })),
+      ...(thought.currentValue === undefined ? {} : { currentValue: thought.currentValue }),
+    }
+  }
+
+  /** 用缓存或别的 worker 的快照恢复档位选择器；已有观测时不覆盖。 */
+  #restoreThoughtLevel(snapshot: CachedThoughtLevel | undefined): void {
+    if (snapshot === undefined || this.#thoughtLevel !== undefined) return
+    this.#thoughtLevel = {
+      configId: snapshot.configId,
+      options: snapshot.options,
+      ...(snapshot.currentValue === undefined ? {} : { currentValue: snapshot.currentValue }),
     }
   }
 
@@ -414,6 +454,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       this.#catalogObserved = true
       this.#cacheLoad = undefined
     }
+    this.#restoreThoughtLevel(metadata.thoughtLevel)
     for (const [model, size] of metadata.contextWindows) {
       if (Number.isFinite(size) && size > 0) this.#rememberContextWindow(model, size)
     }
@@ -617,8 +658,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#cacheLoad ??= (async () => {
       if (!this.#loadCachedCatalog) return []
       try {
-        const rows = await this.#loadCachedCatalog()
-        if (!rows || rows.length === 0) return []
+        const cached = await this.#loadCachedCatalog()
+        if (!cached) return []
+        // 档位选择器也随目录一起恢复：重启后、首次会话之前，思考强度菜单就已经
+        // 是 agent 上次声明的那一档，而不是凭空编的三档。
+        this.#restoreThoughtLevel(cached.thoughtLevel)
+        const rows = cached.models
+        if (rows.length === 0) return []
         return rows.map((row) => {
           // 缓存里若带实测上下文容量，重启后压缩引擎无需等下一次 usage_update。
           if (typeof row.contextWindow === 'number' && Number.isFinite(row.contextWindow) && row.contextWindow > 0) {
@@ -679,19 +725,42 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       ...(this.#inputModalities() === undefined ? {} : { inputModalities: this.#inputModalities() }),
       ...(known?.description === undefined ? {} : { description: known.description }),
       ...(contextWindow === undefined ? {} : { context: { contextWindow } }),
-      // 思考强度菜单：官方把强度编码进模型 id 后缀，本 provider 只出家族条目，
-      // 由菜单选择路由到对应档位（2026-10-16 用户指示）。
+      // 思考强度菜单：优先取 agent 声明的 thought_level 选项（ACP 1.5+），
+      // 旧 agent 才退回「档位编进模型 id」的目录推断。
       ...(reasoning === undefined ? {} : { reasoning }),
     }
   }
 
   /**
-   * 该路由可选的思考强度（low/medium/high，弱→强）；缺省档位为 medium。
+   * 该路由可选的思考强度；缺省档位取 agent 声明的当前值，否则官方默认 medium。
+   *
+   * 有两个来源，优先级固定：
+   * 1. **agent 的 `thought_level` 选择器**（ACP 1.5+）：档位是模型元数据，
+   *    每个模型能选哪几档由 agent 声明，标签也用它自己的（Low/Medium/High/Extra）。
+   * 2. 旧 agent 没有独立档位通道：用官方档位化目录推出的三档 + 中文标签。
+   *
    * 返回 undefined 表示「此模型没有思考强度菜单」；宿主把 `efforts: []` 判为
    * 非法元数据（INVALID_MODEL_REASONING）并使该模型不可用，所以不支持档位的
    * 模型必须**省略 reasoning 字段**，不能给空数组。
    */
   #reasoningInfo(model: string, familyTiers = this.#familyTiers): LlmModelReasoningInfo | undefined {
+    const thought = this.#thoughtLevel
+    if (thought) {
+      const efforts = thought.options.map((option) => ({
+        id: ReasoningEffortId(option.value),
+        name: option.name,
+        ...(option.description === undefined || option.description === null ? {} : { description: option.description }),
+      }))
+      if (efforts.length === 0) return undefined
+      const preferred = thought.currentValue === undefined
+        ? undefined
+        : efforts.find((entry) => entry.id === ReasoningEffortId(thought.currentValue as string))
+      // 当前值可能来自别的模型（例如 Hydrogen 的 xhigh 切到 Claude 后不在选项里），
+      // 这时退回官方默认 medium，不指向不存在的选项。
+      const fallback = preferred ?? efforts.find((entry) => entry.id === ReasoningEffortId(DEFAULT_AGY_REASONING_EFFORT))
+      return { efforts, ...(fallback ? { defaultEffort: fallback.id } : {}) }
+    }
+    // 旧协议兼容：档位被编进模型 id，只能从目录里推断有哪些档位。
     const tiers = familyTiers.get(modelFamilyId(model))
     // 已知该 id 没有档位变体（目录里的普通 id）：强度菜单不适用，不声明 reasoning。
     if (tiers !== undefined && tiers.size === 0) return undefined
@@ -701,11 +770,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         id: ReasoningEffortId(effort),
         name: AGY_REASONING_EFFORT_NAMES[effort],
       }))
-    // 默认档位：用户为该模型配置的档位优先，其次官方默认（medium）。
-    // 配置的档位未被官方声明时退回官方默认，不指向不存在的选项。
-    const preferred = modelSettingFor(this.#modelSettingsSnapshot(), modelFamilyId(model)).effort
-    const fallback = (preferred === undefined ? undefined : efforts.find((entry) => entry.id === ReasoningEffortId(preferred)))
-      ?? efforts.find((entry) => entry.id === ReasoningEffortId(DEFAULT_AGY_REASONING_EFFORT))
+    const fallback = efforts.find((entry) => entry.id === ReasoningEffortId(DEFAULT_AGY_REASONING_EFFORT))
     return { efforts, ...(fallback ? { defaultEffort: fallback.id } : {}) }
   }
 
@@ -773,11 +838,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   /** 只把真正影响官方路由的覆盖项纳入指纹，改名和显示开关不触发无谓重建。 */
   #sessionRouteFingerprint(options: GenerateOptions): string {
     const setting = modelSettingFor(this.#modelSettingsSnapshot(), options.model)
-    const override = setting.target !== undefined
-      ? { target: setting.target }
-      : options.reasoningEffort === undefined && setting.effort !== undefined
-        ? { effort: setting.effort }
-        : undefined
+    const override = setting.target === undefined ? undefined : { target: setting.target }
     return routeFingerprint(options, override)
   }
 
@@ -963,6 +1024,18 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       if (oldest === undefined) break
       this.#sessionModelDeclared.delete(oldest)
       this.#sessionModelValues.delete(oldest)
+      this.#sessionThoughtValues.delete(oldest)
+    }
+  }
+
+  /** 记录某 ACP 会话已确认写入的档位值；上限与模型值记录一致。 */
+  #rememberSessionThoughtValue(sessionId: string, value: string): void {
+    this.#sessionThoughtValues.delete(sessionId)
+    this.#sessionThoughtValues.set(sessionId, value)
+    while (this.#sessionThoughtValues.size > 64) {
+      const oldest = this.#sessionThoughtValues.keys().next().value
+      if (oldest === undefined) break
+      this.#sessionThoughtValues.delete(oldest)
     }
   }
 
@@ -973,6 +1046,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#sessionStore?.delete(record.key, this.#sessionOwner)
     this.#sessionModelValues.delete(record.sessionId)
     this.#sessionModelDeclared.delete(record.sessionId)
+    this.#sessionThoughtValues.delete(record.sessionId)
     this.#log?.info(`antigravity-acp: 放弃 ACP 会话复用（${reason}）`)
     this.#closeSession(record.link, record.sessionId)
   }
@@ -999,6 +1073,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       this.#sessions.delete(record.key)
       this.#sessionModelValues.delete(record.sessionId)
       this.#sessionModelDeclared.delete(record.sessionId)
+      this.#sessionThoughtValues.delete(record.sessionId)
       this.#log?.info(`antigravity-acp: 关闭 ACP 会话（${reason}）`)
       this.#closeSession(record.link, record.sessionId)
     }
@@ -1604,21 +1679,30 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   }
 
   /**
-   * 观察一次 ACP 会话配置：刷新模型目录缓存与 model 选择器。
+   * 观察一次 ACP 会话配置：刷新模型目录缓存、model 选择器与思考强度选择器。
    * `session/new`、`session/set_config_option` 与 `config_option_update` 共用。
    */
   observeSessionConfigOptions(configOptions: readonly SessionConfigOption[] | null | undefined): void {
     ++this.#catalogFoldGeneration
     const selector = findModelSelector(configOptions)
+    const thought = findThoughtLevelSelector(configOptions)
     this.#catalogObserved = true
     // session/new 与 session/load 允许省略 configOptions。一次不完整观测
     // 不能抹掉已知目录或选择器，否则后续会话会无故失去模型路由能力。
+    let changed = false
     if (selector) {
       this.#modelSelector = selector
       this.#catalog = toModelCatalog(AGY_PROVIDER_ID, selector)
       this.#catalogSource = 'acp'
-      this.#onMetadataChanged?.(this.exportMetadata())
+      changed = true
     }
+    // 档位选择器的 options 随当前模型变化（Hydrogen 多一档 xhigh），每次观测都
+    // 整体替换；agent 没声明 `thought_level` 时保留上一次的，让旧协议路径继续可用。
+    if (thought) {
+      this.#thoughtLevel = thought
+      changed = true
+    }
+    if (changed) this.#onMetadataChanged?.(this.exportMetadata())
     // 观测到真实目录后缓存不再参与 listModels，避免配置变更后仍读到旧磁盘目录。
     this.#cacheLoad = undefined
     // 真实目录只在会话建立后才能观测到；落盘后重启不必退化成占位模型。
@@ -1626,21 +1710,24 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     if (selector) this.#persistCatalog()
   }
 
-  /** 把当前目录（含实测上下文容量）落盘；写失败不影响功能。 */
+  /** 把当前目录（含实测上下文容量）与档位选择器落盘；写失败不影响功能。 */
   #persistCatalog(): void {
     if (!this.#saveCatalog || this.#catalog.length === 0) return
-    const payload = this.#catalog.map((model) => {
-      // `usage_update` 归属的是 DSH 路由键（家族 id），而目录条目是 ACP 的档位
-      // id；按家族 id 兜底查询，否则折叠目录永远落盘不到 contextWindow。
-      const contextWindow = this.#contextWindows.get(model.id)
-        ?? this.#contextWindows.get(modelFamilyId(model.id))
-      return {
-        id: model.id,
-        name: model.name,
-        ...(model.description === undefined ? {} : { description: model.description }),
-        ...(contextWindow === undefined ? {} : { contextWindow }),
-      }
-    })
+    const payload: CachedCatalog = {
+      models: this.#catalog.map((model) => {
+        // `usage_update` 归属的是 DSH 路由键（家族 id），而目录条目是 ACP 的档位
+        // id；按家族 id 兜底查询，否则折叠目录永远落盘不到 contextWindow。
+        const contextWindow = this.#contextWindows.get(model.id)
+          ?? this.#contextWindows.get(modelFamilyId(model.id))
+        return {
+          id: model.id,
+          name: model.name,
+          ...(model.description === undefined ? {} : { description: model.description }),
+          ...(contextWindow === undefined ? {} : { contextWindow }),
+        }
+      }),
+      ...(this.#thoughtLevelSnapshot() === undefined ? {} : { thoughtLevel: this.#thoughtLevelSnapshot() }),
+    }
     void Promise.resolve().then(() => this.#saveCatalog?.(payload)).catch(() => undefined)
   }
 
@@ -1650,17 +1737,20 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   }
 
   /**
-   * 把 DSH 选定的模型写进 ACP 会话配置。
+   * 把 DSH 选定的模型与思考强度写进 ACP 会话配置。
    *
    * ACP v1 的 `session/set_config_option` 需要既有 sessionId，因此顺序是
    * `session/new` → `set_config_option` → `session/prompt`（initialize 响应
    * 不携带 configOptions，没有「new 之前设置」的通道）。
    *
-   * **优先级**：设置页的官方模型 ID 映射（`modelOverrides[id].target`）→ 家族 +
-   * 思考强度路由。模型选择只出家族（`claude-opus-5-5`），思考强度菜单
-   * （low/medium/high）决定路由到哪个官方档位模型（`claude-opus-5-5-high`）；
-   * 未选强度时用该模型的默认档位，再退回官方默认（medium）。显式钉住档位 id
-   * 时尊重该 id。
+   * 两条路径，按 agent 能力选择：
+   * 1. **agent 声明了 `thought_level`**（ACP 1.5+，官方 1.5.10 实测）：模型只发
+   *    家族 id（`claude-opus-5-5`），档位单独写进 `thought_level`。请求的档位不在
+   *    agent 声明的选项里时按 low→high 就近收敛，不把未知值发出去。
+   * 2. **旧 agent 没有独立档位通道**：档位被编进模型 id，发
+   *    `claude-opus-5-5-high` 这样的档位 id（官方仍在解析这种旧值）。
+   *
+   * 设置页的官方模型 ID 映射（`modelOverrides[id].target`）在两条路径下都优先。
    */
   async #applyModelSelection(
     link: AgentLink,
@@ -1675,22 +1765,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     const settings = this.#modelSettingsSnapshot()
     // 旧会话的占位路由：只按显式映射处理，没有映射就沿用官方会话默认模型。
     if (model === AGY_PLACEHOLDER_MODEL_ID && modelSettingFor(settings, model).target === undefined) return
-    const family = modelFamilyId(model)
-    const pinnedTier = tierForModelId(model)
-    const effortTier = normalizeEffort(effort)
-    const tiers = this.#familyTiers.get(family)
-    const requested = resolveModelTarget({
-      settings,
-      model,
-      effort: effortTier,
-      route: (tier) => tier !== undefined
-        ? routeTieredModelId(family, tier, tiers)
-        : pinnedTier !== undefined
-          ? model
-          : tiers !== undefined && tiers.size > 0
-            ? routeTieredModelId(family, DEFAULT_AGY_REASONING_EFFORT, tiers)
-            : family,
-    })
     const selector = this.#modelSelector
     if (!selector) {
       throw new LlmError(
@@ -1698,33 +1772,81 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         AGY_ADAPTER_ERROR.NO_MODEL_SELECTOR,
       )
     }
+    const family = modelFamilyId(model)
+    const pinnedTier = tierForModelId(model)
+    const effortId = normalizeEffort(effort) ?? pinnedTier
+    const thought = this.#thoughtLevel
+    const tiers = this.#familyTiers.get(family)
+    const target = modelSettingFor(settings, model).target
+    const modelValue = resolveModelTarget({
+      settings,
+      model,
+      effort: effortId,
+      route: (tier) => {
+        // 有独立档位通道时模型只发家族 id；若模型 id 本身就是旧会话钉住的档位 id，
+        // 也折回家族，档位交给 thought_level。
+        if (thought) return family
+        const legacyTier = tier === undefined ? undefined : AGY_REASONING_EFFORTS.find((candidate) => candidate === tier)
+        return legacyTier !== undefined
+          ? routeTieredModelId(family, legacyTier, tiers)
+          : pinnedTier !== undefined
+            ? model
+            : tiers !== undefined && tiers.size > 0
+              ? routeTieredModelId(family, DEFAULT_AGY_REASONING_EFFORT, tiers)
+              : family
+      },
+    })
     // 两种短路都只认本会话自己的证据：已确认写入过的值，或本会话建立时自己
     // 声明的选择器当前值。连接级选择器可能来自别的会话，不能用。
-    if (this.#sessionModelValues.get(sessionId) === requested) return
-    if (this.#sessionModelDeclared.has(sessionId) && selector.currentValue === requested) return
-    // 自诊断：把路由结果落进宿主日志（模型选择出问题时，这是唯一能看到「DSH
-    // 给的 id → 我们发出去的 configId/value」的地方）。
-    this.#log?.info(
-      `antigravity-acp: 模型路由 dsh=${model} → configId=${selector.configId} value=${requested}` +
-        `（family=${family}${effortTier ? ` effort=${effortTier}` : ''}${pinnedTier ? ' 档位已钉住' : ''}` +
-        `${modelSettingFor(settings, model).target === undefined ? '' : ' 已按映射改写'}）`,
-    )
-    // 目录成员资格按 dsh-llm 语义是建议性的：未登记的 id 仍然照发，由 ACP
-    // agent 自己判定是否接受，而不是在这里静默改写成别的模型。
-    let response: { configOptions?: readonly SessionConfigOption[] }
-    try {
-      response = await link.setConfigOption({ sessionId, configId: selector.configId, value: requested }, { signal })
-    } catch (error) {
-      this.#log?.warn(
-        `antigravity-acp: session/set_config_option 失败（configId=${selector.configId} value=${requested}）`,
-        error,
+    const modelSettled = this.#sessionModelValues.get(sessionId) === modelValue
+      || (this.#sessionModelDeclared.has(sessionId) && selector.currentValue === modelValue)
+    if (!modelSettled) {
+      // 自诊断：把路由结果落进宿主日志（模型选择出问题时，这是唯一能看到「DSH
+      // 给的 id → 我们发出去的 configId/value」的地方）。
+      this.#log?.info(
+        `antigravity-acp: 模型路由 dsh=${model} → configId=${selector.configId} value=${modelValue}` +
+          `（family=${family}${effortId ? ` effort=${effortId}` : ''}${pinnedTier ? ' 档位已钉住' : ''}` +
+          `${target === undefined ? '' : ' 已按映射改写'}${thought ? ' 档位走 thought_level' : ''}）`,
       )
+      // 目录成员资格按 dsh-llm 语义是建议性的：未登记的 id 仍然照发，由 ACP
+      // agent 自己判定是否接受，而不是在这里静默改写成别的模型。
+      const response = await this.#setConfigOption(link, sessionId, selector.configId, modelValue, signal)
+      // RPC 成功即接受选模；服务端可归一化模型 ID，不再额外要求回显逐字一致。
+      this.#rememberSessionModelValue(sessionId, modelValue)
+      if (response.configOptions?.length) this.observeSessionConfigOptions(response.configOptions)
+    }
+    if (!thought) return
+    // agent 可能在 set model 之后换了一套档位选项（Hydrogen 多一档 xhigh），
+    // 所以用观测到的最新选项收敛，而不是选模那一刻的旧快照。
+    const fresh = this.#thoughtLevel ?? thought
+    const desired = effortId === undefined ? undefined : clampEffort(effortId, fresh.options)
+    if (desired === undefined) return
+    const settled = this.#sessionThoughtValues.get(sessionId) === desired
+      || (this.#sessionModelDeclared.has(sessionId) && fresh.currentValue === desired)
+    if (settled) return
+    this.#log?.info(
+      `antigravity-acp: 档位路由 dsh=${model} effort=${effortId} → configId=${fresh.configId} value=${desired}` +
+        `${desired === effortId ? '' : '（已收敛到 agent 声明的档位）'}`,
+    )
+    const response = await this.#setConfigOption(link, sessionId, fresh.configId, desired, signal)
+    this.#rememberSessionThoughtValue(sessionId, desired)
+    if (response.configOptions?.length) this.observeSessionConfigOptions(response.configOptions)
+  }
+
+  /** 写一个会话配置项；失败原因带 configId 落进宿主日志后再抛。 */
+  async #setConfigOption(
+    link: AgentLink,
+    sessionId: string,
+    configId: string,
+    value: string,
+    signal?: AbortSignal,
+  ): Promise<{ configOptions?: readonly SessionConfigOption[] }> {
+    try {
+      return await link.setConfigOption({ sessionId, configId, value }, { signal })
+    } catch (error) {
+      this.#log?.warn(`antigravity-acp: session/set_config_option 失败（configId=${configId} value=${value}）`, error)
       throw error
     }
-    // RPC 成功即接受选模；服务端可归一化模型 ID，不再额外要求回显逐字一致。
-    // 缺少模型配置时保留现有目录，后续 config_option_update 仍可更新它。
-    this.#rememberSessionModelValue(sessionId, requested)
-    if (findModelSelector(response.configOptions)) this.observeSessionConfigOptions(response.configOptions)
   }
 }
 
@@ -1765,10 +1887,43 @@ function purposeTimeoutMs(purpose: string | undefined, fallback: number): number
   return fallback
 }
 
-/** 把 DSH 传来的思考强度归一到官方档位；无法识别时返回 undefined（走默认档位）。 */
-function normalizeEffort(effort?: { toString(): string }): AgyReasoningEffort | undefined {
-  const raw = effort === undefined ? undefined : effort.toString().toLowerCase()
-  return AGY_REASONING_EFFORTS.find((candidate) => candidate === raw)
+/**
+ * 把 DSH 传来的思考强度归一到小写档位名；空值返回 undefined（沿用会话当前档位）。
+ *
+ * 这里**不收窄**到 low/medium/high：ACP 1.5 起档位由 agent 声明的
+ * `thought_level` 选项决定，实测 Gemini 4 Hydrogen 还多一档 `xhigh`。合法性在
+ * 真正写配置时按当时的选项收敛（见 `clampEffort`），而不是在入口猜。
+ */
+function normalizeEffort(effort?: { toString(): string }): string | undefined {
+  const raw = effort === undefined ? undefined : effort.toString().trim().toLowerCase()
+  return raw === undefined || raw === '' ? undefined : raw
+}
+
+/** 档位的强弱顺序，用于「请求的档位不在声明里」时就近收敛。 */
+const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
+/**
+ * 把请求的档位收敛到 agent 实际声明的选项：完全匹配优先，否则按强弱顺序取最近
+ * 的一档；都不在已知顺序里时退到声明列表的第一项。声明为空返回 undefined。
+ */
+function clampEffort(requested: string, options: readonly { value: string }[]): string | undefined {
+  const values = options.map((option) => option.value)
+  if (values.length === 0) return undefined
+  if (values.includes(requested)) return requested
+  const wanted = (EFFORT_ORDER as readonly string[]).indexOf(requested)
+  if (wanted === -1) return values[0]
+  let best: string | undefined
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const value of values) {
+    const index = (EFFORT_ORDER as readonly string[]).indexOf(value)
+    if (index === -1) continue
+    const distance = Math.abs(index - wanted)
+    if (distance < bestDistance) {
+      best = value
+      bestDistance = distance
+    }
+  }
+  return best ?? values[0]
 }
 
 /**

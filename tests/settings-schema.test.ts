@@ -7,7 +7,7 @@ describe('live settings schema and runtime references', () => {
     const parsed = Config({ modelOverrides: { before: { enabled: false } }, proxyUrl: 'http://old:7890' })
     const config = liveHostConfig(parsed)
     const snapshot = { ...config }
-    const next = Config({ modelOverrides: { after: { effort: 'high', target: 'gemini-3-pro-high' } }, proxyUrl: '', reuseSessions: false, resumeSessions: true, keepProcessAfterCancel: true, cancelGraceMs: 0, idleRecycleMs: 0, agyCliPath: '/new/agy', proxyBypass: '*.internal' })
+    const next = Config({ modelOverrides: { after: { target: 'gemini-3-pro-high' } }, proxyUrl: '', reuseSessions: false, resumeSessions: true, keepProcessAfterCancel: true, cancelGraceMs: 0, idleRecycleMs: 0, agyCliPath: '/new/agy', proxyBypass: '*.internal' })
     for (const key of LIVE_SETTING_KEYS) {
       const beforeRef = parsed[key]
       const afterRef = next[key]
@@ -19,7 +19,7 @@ describe('live settings schema and runtime references', () => {
       updateVolatile(beforeRef, afterRef)
       expect(parsed[key]).toBe(beforeRef)
     }
-    expect(config).toMatchObject({ modelOverrides: { after: { enabled: true, effort: 'high', target: 'gemini-3-pro-high' } }, proxyUrl: '', reuseSessions: false, resumeSessions: true, keepProcessAfterCancel: true, cancelGraceMs: 0, idleRecycleMs: 0, agyCliPath: '/new/agy', proxyBypass: '*.internal' })
+    expect(config).toMatchObject({ modelOverrides: { after: { enabled: true, target: 'gemini-3-pro-high' } }, proxyUrl: '', reuseSessions: false, resumeSessions: true, keepProcessAfterCancel: true, cancelGraceMs: 0, idleRecycleMs: 0, agyCliPath: '/new/agy', proxyBypass: '*.internal' })
     expect(snapshot.modelOverrides).toEqual({ before: { enabled: false } })
     expect(snapshot.proxyUrl).toBe('http://old:7890')
   })
@@ -38,10 +38,10 @@ describe('live settings schema and runtime references', () => {
     expect(config.modelOverrides).toEqual({})
   })
 
-  it('模型设置缺省启用，未知档位由 schema 拒绝而不是静默改写成别的值', () => {
+  it('模型设置缺省启用；档位不再是配置字段，手写配置里的 effort 被保留但不参与路由', () => {
     expect(Config({ modelOverrides: { 'gemini-3-pro': {} } }).modelOverrides.get()).toEqual({ 'gemini-3-pro': { enabled: true } })
-    // 配置可能来自手写 JSON，档位拼错必须在装载期失败，不能静默退回默认档位。
-    const mistyped = { modelOverrides: { 'gemini-3-pro': { effort: 'max' } } } as unknown as Parameters<typeof Config>[0]
-    expect(() => Config(mistyped)).toThrow()
+    // 兼容旧配置文件：多出来的键不报错，也不会被静默改写成某个档位。
+    const legacy = { modelOverrides: { 'gemini-3-pro': { effort: 'max' } } } as unknown as Parameters<typeof Config>[0]
+    expect(() => Config(legacy)).not.toThrow()
   })
 })

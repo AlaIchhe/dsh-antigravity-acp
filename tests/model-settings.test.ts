@@ -2,16 +2,21 @@ import { describe, expect, it } from 'vitest'
 import { applyModelSettings, modelSettingFor, modelVisible, normalizeModelSettings, resolveModelTarget } from '../src/adapter/model-settings.js'
 
 describe('模型目录用户设置', () => {
-  it('收敛非法配置：丢掉空键、非对象条目与未声明的档位', () => {
+  it('收敛非法配置：丢掉空键、非对象条目与空串', () => {
     const settings = normalizeModelSettings({
       '': { enabled: false },
       'gemini-3-pro': 'nope',
-      'claude-opus-5-5': { effort: 'max', name: '  ', target: '  ', enabled: 'yes' },
-      'gemini-4-argon': { effort: 'high', name: ' Argon ', target: ' gemini-4-argon-preview ' },
+      'claude-opus-5-5': { name: '  ', target: '  ', enabled: 'yes' },
+      'gemini-4-argon': { name: ' Argon ', target: ' gemini-4-argon-preview ' },
     })
     expect([...settings.keys()]).toEqual(['claude-opus-5-5', 'gemini-4-argon'])
     expect(settings.get('claude-opus-5-5')).toEqual({ enabled: true })
-    expect(settings.get('gemini-4-argon')).toEqual({ enabled: true, effort: 'high', name: 'Argon', target: 'gemini-4-argon-preview' })
+    expect(settings.get('gemini-4-argon')).toEqual({ enabled: true, name: 'Argon', target: 'gemini-4-argon-preview' })
+  })
+
+  it('旧配置里的 effort 字段被忽略（档位已改为 agent 声明的元数据）', () => {
+    const settings = normalizeModelSettings({ 'claude-opus-5-5': { effort: 'high', target: 'official-x' } })
+    expect(settings.get('claude-opus-5-5')).toEqual({ enabled: true, target: 'official-x' })
   })
 
   it('非对象配置整体降级为空设置，不让一份坏配置击穿目录', () => {
@@ -36,13 +41,11 @@ describe('模型目录用户设置', () => {
     expect(rows).toEqual([{ id: 'gemini-3-pro', name: '改名', description: '质量优先' }])
   })
 
-  it('映射优先于档位路由，其次才是默认档位与官方默认', () => {
-    const settings = normalizeModelSettings({ mapped: { target: 'official-x', effort: 'high' }, preferring: { effort: 'low' } })
+  it('映射优先于路由回调；没有映射时把本次档位原样交给路由', () => {
+    const settings = normalizeModelSettings({ mapped: { target: 'official-x' } })
     const route = (tier: string | undefined) => `auto:${tier ?? 'none'}`
     expect(resolveModelTarget({ settings, model: 'mapped', effort: 'low', route })).toBe('official-x')
-    expect(resolveModelTarget({ settings, model: 'preferring', route })).toBe('auto:low')
-    // 显式选择优先于默认档位。
-    expect(resolveModelTarget({ settings, model: 'preferring', effort: 'high', route })).toBe('auto:high')
+    expect(resolveModelTarget({ settings, model: 'plain', effort: 'high', route })).toBe('auto:high')
     expect(resolveModelTarget({ settings, model: 'plain', route })).toBe('auto:none')
   })
 })

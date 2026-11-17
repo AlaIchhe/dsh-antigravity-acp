@@ -23,6 +23,23 @@ export interface ModelSelector {
   currentValue?: string
 }
 
+/**
+ * 一个被识别为「思考强度选择器」的 select 配置项。
+ *
+ * ACP 1.5 起官方把思考强度从模型 id 里拆出来，声明成 `category: "thought_level"`
+ * 的独立 select（本机 `agy acp` 1.5.10 的 id 就是 `thought_level`）。它的
+ * `options` 会随当前模型变化：Gemini 4 Hydrogen 多一档 `xhigh`，Claude 只有三档。
+ * 模型选择只发家族 id，档位由这个选择器单独设置。
+ */
+export interface ThoughtLevelSelector {
+  /** 设置该选项用的 configId。 */
+  configId: string
+  /** agent 声明的可选档位（随当前模型变化），按声明顺序。 */
+  options: readonly SessionConfigSelectOption[]
+  /** 当前档位；会话建立前可能为 undefined。 */
+  currentValue?: string
+}
+
 function isSelect(option: SessionConfigOption): option is SessionConfigOption & SessionConfigSelect & { type: 'select' } {
   return option.type === 'select'
 }
@@ -61,6 +78,34 @@ export function findModelSelector(configOptions: readonly SessionConfigOption[] 
   const picked = tagged ?? selects.find((option) => /model/i.test(option.id) || /model/i.test(option.name))
   if (!picked) return undefined
   const selector: ModelSelector = {
+    configId: picked.id,
+    options: flattenSelectOptions(picked.options),
+  }
+  return picked.currentValue === undefined ? selector : { ...selector, currentValue: picked.currentValue }
+}
+
+/**
+ * 从 configOptions 中找出思考强度选择器。
+ *
+ * 判定顺序：显式 `category === "thought_level"` 优先（ACP 规范标签）；没有标签
+ * 时退回「非 model 类 select，且 id/name 含 thought|effort|reason」的启发式。
+ * 都匹配不到返回 undefined——调用方据此走「这台 agent 没有独立档位通道」的
+ * 兼容路径（旧协议把档位编进模型 id），而不是编一份档位。
+ */
+export function findThoughtLevelSelector(
+  configOptions: readonly SessionConfigOption[] | null | undefined,
+): ThoughtLevelSelector | undefined {
+  if (!configOptions?.length) return undefined
+  const selects = configOptions.filter(isSelect)
+  const tagged = selects.find((option) => option.category === 'thought_level')
+  const picked = tagged ?? selects.find((option) => (
+    option.category !== 'model' && !/model/i.test(option.id)
+    && (/thought/i.test(option.id) || /thought/i.test(option.name)
+      || /effort/i.test(option.id) || /effort/i.test(option.name)
+      || /reason/i.test(option.id) || /reason/i.test(option.name))
+  ))
+  if (!picked) return undefined
+  const selector: ThoughtLevelSelector = {
     configId: picked.id,
     options: flattenSelectOptions(picked.options),
   }

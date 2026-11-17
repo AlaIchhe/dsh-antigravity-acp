@@ -57,7 +57,7 @@ const settings = render('antigravity-acp', {
     round: { model: 'gemini-3.8-flash-low', elapsedMs: 4800, timings: { connection: 1, session: 1200, model: 10 }, firstChunkMs: 1800, firstToolMs: 2100, continuations: 2, lastContinuationMs: 1200 },
   }, accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: true, createdAt: 0 }, { id: 'acc_demo', alias: '备用账号', email: 'backup@example.com', system: false, active: false, ready: true, createdAt: 1 }], activeAccountId: 'primary', auth: { phase: 'idle' } },
   3: models,
-  6: { revision: 1 }, 7: true, 8: { autoWarmup: true, reuseSessions: true, proxyUrl: '', agyCliPath: '', cliQuotaEnabled: false, modelOverrides: { 'gemini-4-argon': { effort: 'high' }, 'claude-sonnet-5-5': { name: 'Claude Sonnet（长上下文）' } } },
+  6: { revision: 1 }, 7: true, 8: { autoWarmup: true, reuseSessions: true, proxyUrl: '', agyCliPath: '', cliQuotaEnabled: false, modelOverrides: { 'gemini-4-argon': { target: 'gemini-4-argon-high' }, 'claude-sonnet-5-5': { name: 'Claude Sonnet（长上下文）' } } },
   10: false, 11: true, 15: 'account',
   // 账号页：卡片内额度（16 data / 17 refreshing），模型列表搜索 / 筛选（18 / 19）。
   16: quota, 17: false, 19: false, 20: '', 21: 'all',

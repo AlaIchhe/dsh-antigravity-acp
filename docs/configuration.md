@@ -20,7 +20,7 @@
 | `authTimeoutMs` | `300000` | 交互式 `authenticate` 等待上限（毫秒），独立于普通请求超时。 |
 | `promptTimeoutMs` | `1800000` | 单个 `session/prompt` 上限（毫秒）；工具 park 不表示上游 prompt 已结束。 |
 | `bridgeParkSettleMs` | `50` | 并发 MCP 工具调用聚合窗口（毫秒）；不是工具执行超时。 |
-| `modelOverrides` | `{}` | 按模型 ID 的目录设置，键是 DSH 选择器里的模型 ID：`enabled`（默认 `true`）决定是否出现在选择器，`effort` 是该模型未选思考强度时的默认档位，`name` 覆盖显示名，`target` 把该 ID 映射到官方模型 ID。只作用于目录中已存在的条目，不新增自造模型。 |
+| `modelOverrides` | `{}` | 按模型 ID 的目录设置，键是 DSH 选择器里的模型 ID：`enabled`（默认 `true`）决定是否出现在选择器，`name` 覆盖显示名，`target` 把该 ID 映射到官方模型 ID。思考强度不在这里（见下）。只作用于目录中已存在的条目，不新增自造模型。 |
 | `proxyUrl` | 未设置 | 显式出网代理；留空先继承 Host 代理环境，再自动检测系统代理（Windows 注册表 / macOS scutil / Linux GNOME），都没有才直连。支持 HTTP/HTTPS CONNECT、SOCKS5、SOCKS5H。 |
 | `proxyBypass` | 未设置 | 兼容既有配置的逗号分隔排除列表，支持域名匹配，不支持 CIDR；始终合并 localhost、127.0.0.1、::1。设置页不提供此控制项。 |
 | `reuseSessions` | `true` | 复用同一个 ACP 会话：同一 DSH 对话的后续回合只发送**新增消息**，不再每轮 `session/new` 并重放全部历史。历史被压缩、回退或编辑，模型/思考强度变化，工具目录变化，或 MCP 桥被其他对话接管时自动重建。关闭后回到旧的「每轮新会话 + 全量重放」。 |
@@ -115,4 +115,4 @@ ACP 官方 agent 在同一会话内会保留上下文（2026-10-23 真机验证�
 - **额度**：HTTP 额度按账号 HOME 读取；开启 `cliQuotaEnabled` 时，`agy -p /usage|/credits` 也带该账号的 HOME 启动。药丸只跟随当前账号，面板可逐账号拉取；切换 / 登录 / 删除后药丸会重新取数。
 - **已知边界**：面板登录的 OAuth 回调固定在 Host 的 `127.0.0.1:51121`，要求**浏览器与 Host 在同一台机器**；从另一台设备访问 DSH Web 时，浏览器会把 localhost 指向自己，回调到不了 Host（本版本没有手工粘贴授权码的回退，可先在本机完成登录或用系统账号）。macOS 的官方 CLI 可能优先使用系统钥匙串，隔离 HOME 未必能完全隔离 token；Linux 上通过把 `DBUS_SESSION_BUS_ADDRESS` 指向账号目录内不存在路径来阻断桌面 Secret Service；Windows 同时改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`。OAuth 使用官方二进制里审计过的 client；从二进制提取不到时回落到 `@cortexkit/antigravity-auth-core` 的同一对。
 
-不提供目录条目删除或付费 Credits 开关；账号切换与删除见上。停用只是不列入选择器，已知模型的显示名、上下文容量与路由仍保留。思考强度由 DSH 会话菜单选择，不在此维护第二份独立档位配置。只读 Profile 禁止修改；外部刷新不会覆盖未保存草稿，保存失败保留输入。
+不提供目录条目删除或付费 Credits 开关；账号切换与删除见上。停用只是不列入选择器，已知模型的显示名、上下文容量与路由仍保留。思考强度不在配置里：它是 agent 声明的模型元数据（`thought_level` 选项），由 DSH 思考强度菜单选择后逐个会话写入，不维护第二份档位配置；旧配置文件里残留的 `effort` 键会被忽略。只读 Profile 禁止修改；外部刷新不会覆盖未保存草稿，保存失败保留输入。

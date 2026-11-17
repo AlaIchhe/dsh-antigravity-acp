@@ -175,14 +175,14 @@ describe('apply wiring with real pool and SettingsControl', () => {
     const instance = harness()
     const parsed = Config({ modelOverrides: { before: { enabled: false } } })
     apply(instance.ctx, parsed)
-    const next = Config({ modelOverrides: { after: { effort: 'high' } }, reuseSessions: false })
+    const next = Config({ modelOverrides: { after: { target: 'gemini-3-pro-high' } }, reuseSessions: false })
     for (const key of ['modelOverrides', 'reuseSessions'] as const) {
       const before = parsed[key]
       const after = next[key]
       if (!isVolatile(before) || !isVolatile(after)) throw new Error('Expected live setting')
       updateVolatile(before, after)
     }
-    expect(external.workers[0]!.options.readSettings?.()).toMatchObject({ modelOverrides: { after: { enabled: true, effort: 'high' } }, reuseSessions: false })
+    expect(external.workers[0]!.options.readSettings?.()).toMatchObject({ modelOverrides: { after: { enabled: true, target: 'gemini-3-pro-high' } }, reuseSessions: false })
     const beforeRevision = instance.control().account().runtime!.modelCatalogRevision!
     instance.updateSettings([['modelOverrides']])
     expect(instance.control().account().runtime!.modelCatalogRevision).toBe(beforeRevision + 1)

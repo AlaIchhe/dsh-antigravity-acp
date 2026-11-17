@@ -102,10 +102,6 @@ function button(renderer: ReactTestRenderer, label: string): ReactTestInstance {
 function fieldInput(renderer: ReactTestRenderer, name: string): ReactTestInstance {
   return renderer.root.findByProps({ name })
 }
-/** 逐模型列表里某一行的控件。 */
-function modelControl(renderer: ReactTestRenderer, kind: 'enabled' | 'effort' | 'target' | 'name', id: string): ReactTestInstance {
-  return renderer.root.findByProps({ name: `model-${kind}-${id}` })
-}
 function renderedText(renderer: ReactTestRenderer): string { return JSON.stringify(renderer.toJSON()) }
 
 describe('quota pill with real React state and effects', () => {
@@ -159,7 +155,8 @@ describe('settings card with real React state and effects', () => {
     expect(chip.props['aria-pressed']).toBe(true)
     await act(async () => { chip.props.onClick() })
     expect(button(renderer, 'Gemini 3 Pro').props['aria-pressed']).toBe(false)
-    expect(renderer.root.findAllByProps({ name: 'model-effort-gemini-3-pro' })).toHaveLength(0)
+    // 思考强度不再是逐模型设置项（它是模型元数据，由会话菜单选择）。
+    expect(renderedText(renderer)).not.toContain('思考档位')
   })
 
   it('模型目录为空时提示先发一次对话', async () => {

@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     const PROVIDER = 'antigravity-acp'
     /** Settings namespace projected from Config's volatile fields in src/settings.ts. */
     const ENTRY_ID = 'llm-antigravity-acp'
-    /** 逐模型设置：键是 DSH 选择器里的模型 ID，值是开关、默认档位、显示名与官方 ID 映射。 */
+    /** 逐模型设置：键是 DSH 选择器里的模型 ID，值是显示开关、显示名与官方 ID 映射。 */
     const OVERRIDES_KEY = 'modelOverrides'
     const OVERRIDES_LABEL = '模型列表设置'
 
@@ -34,7 +34,6 @@ window.__ModuleLoader__.load({
       const source = row && typeof row === 'object' ? row : {}
       const result = {}
       if (source.enabled === false) result.enabled = false
-      if (typeof source.effort === 'string' && source.effort.trim()) result.effort = source.effort.trim()
       const name = typeof source.name === 'string' ? source.name.trim() : ''
       if (name) result.name = name
       const target = typeof source.target === 'string' ? source.target.trim() : ''

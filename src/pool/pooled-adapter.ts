@@ -302,7 +302,8 @@ function hasImageInput(options: GenerateOptions): boolean {
     : Array.isArray(message.content) && message.content.some(block => block.type === 'image'))
 }
 
-const effortOrder: Record<string, number> = { low: 0, medium: 1, high: 2 }
+/** 已知档位的强弱顺序；agent 声明的其它值（含 xhigh）排在最后，不参与猜测。 */
+const effortOrder: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3 }
 function mergeReasoning(models: readonly LlmResolvedModelInfo[]): LlmResolvedModelInfo['reasoning'] {
   const known = models.filter(model => model.reasoning !== undefined)
   if (known.length === 0) return undefined

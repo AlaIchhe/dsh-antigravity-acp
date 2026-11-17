@@ -22,6 +22,7 @@ import type { ModelOverride } from '../src/settings.js'
 import type { AdapterLog, AntigravityAcpAdapterOptions } from '../src/adapter/antigravity-adapter.js'
 import type { ImageReader } from '../src/adapter/image-content.js'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { SessionConfigSelectOption } from '@agentclientprotocol/sdk'
 import { SessionMapStore } from '../src/runtime/session-map.js'
 import type { SessionMapEntry } from '../src/runtime/session-map.js'
 import { outputHash, prefixHash, routeFingerprint } from '../src/adapter/session-reuse.js'
@@ -29,6 +30,7 @@ import { AGY_TURN_ERROR } from '../src/adapter/prompt-turn.js'
 import { AGY_BRIDGE_ERROR } from '../src/bridge/mcp-bridge.js'
 import { AgentLink, AGY_LINK_ERROR } from '../src/protocol/agent-link.js'
 import { AGY_CLIENT_CAPABILITIES } from '../src/index.js'
+import type { CachedCatalog } from '../src/runtime/catalog-cache.js'
 import { parsePromptTranscript } from '../src/adapter/prompt-transcript.js'
 import { FakeAcpAgent, NO_REPLY } from './helpers/fake-acp-agent.js'
 
@@ -47,6 +49,47 @@ const MODEL_CONFIG_OPTIONS: SessionConfigOption[] = [
     ],
   },
 ]
+
+/** agent 声明的档位选项（弱 → 强），与官方 1.5.10 的 thought_level 一致。 */
+const THOUGHT_OPTIONS: SessionConfigSelectOption[] = [
+  { value: 'low', name: 'Low' },
+  { value: 'medium', name: 'Medium' },
+  { value: 'high', name: 'High' },
+]
+const THOUGHT_OPTIONS_WITH_XHIGH: SessionConfigSelectOption[] = [
+  ...THOUGHT_OPTIONS,
+  { value: 'xhigh', name: 'Extra' },
+]
+
+/** ACP 1.5 形态：模型是家族 id，思考强度是独立 config option。 */
+const THOUGHT_CONFIG_OPTIONS: SessionConfigOption[] = [
+  {
+    id: 'model',
+    type: 'select',
+    name: 'Model',
+    category: 'model',
+    // 会话默认停在第三个模型，测试里选前两个都必须真的发生一次选模 RPC。
+    currentValue: 'gemini-3.8-flash',
+    options: [
+      { value: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
+      { value: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
+      { value: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen' },
+    ],
+  },
+  {
+    id: 'thought_level',
+    type: 'select',
+    name: 'Thinking Level',
+    category: 'thought_level',
+    currentValue: 'medium',
+    options: THOUGHT_OPTIONS,
+  },
+]
+
+const THOUGHT_CONFIG_OPTIONS_WITH_XHIGH: SessionConfigOption[] = THOUGHT_CONFIG_OPTIONS.map((option) => (
+  option.id === 'thought_level' && option.type === 'select'
+    ? { ...option, currentValue: 'xhigh', options: THOUGHT_OPTIONS_WITH_XHIGH }
+    : option))
 
 const SESSION_1 = 'acp-session-1'
 const SESSION_2 = 'acp-session-2'
@@ -99,8 +142,10 @@ function createHarness(
     holdRecycle?: Promise<void>
     holdRecycleAttempts?: number[]
     onRecycleAttempt?: (count: number) => void
-    loadCachedCatalog?: () => Promise<{ id: string; name: string; description?: string }[] | undefined>
-    saveCatalog?: (models: readonly { id: string; name: string; description?: string }[]) => Promise<void> | void
+    loadCachedCatalog?: () => Promise<CachedCatalog | undefined>
+    saveCatalog?: (catalog: CachedCatalog) => Promise<void> | void
+    /** 模型切换后 agent 重新声明的档位选项（真实 agent 会随模型增减 xhigh）。 */
+    thoughtLevelByModel?: Record<string, SessionConfigSelectOption[]>
     loadCliCatalog?: () => Promise<readonly { id: string; name: string }[]>
     readImage?: ImageReader
     canReadImages?: () => boolean
@@ -147,6 +192,12 @@ function createHarness(
         option.id === params.configId && option.type === 'select'
           ? { ...option, currentValue: params.value as string }
           : option)
+      // 真实 agent 切模型时会换掉 thought_level 的选项（Hydrogen 多一档 xhigh）。
+      const nextOptions = params.configId === 'model' ? options.thoughtLevelByModel?.[params.value as string] : undefined
+      if (nextOptions) {
+        configOptions = (configOptions ?? []).map((option) => (
+          option.id === 'thought_level' && option.type === 'select' ? { ...option, options: nextOptions } : option))
+      }
       return { configOptions }
     })
     agent.on('session/prompt', () => NO_REPLY)
@@ -462,19 +513,39 @@ describe('模型目录来自 ACP 会话配置', () => {
     expect((await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'gemini-test')).name).toBe('自定义名称')
   })
 
-  it('设置的默认档位成为该模型的 reasoning 缺省档位，未声明的档位退回官方默认', async () => {
-    const harness = createHarness({
-      modelOverrides: { 'claude-test': { effort: 'high' }, 'gemini-test': { effort: 'low' } },
-      loadCliCatalog: async () => [
-        { id: 'claude-test-low', name: 'Claude (Low)' },
-        { id: 'claude-test-high', name: 'Claude (High)' },
-        { id: 'gemini-test-medium', name: 'Gemini (Medium)' },
-      ],
-    })
-    const reasoning = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-test')).reasoning
-    expect(reasoning?.defaultEffort?.toString()).toBe('high')
-    // 官方只声明 medium 时，用户配置的 low 不能指向不存在的选项。
-    expect((await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'gemini-test')).reasoning?.defaultEffort?.toString()).toBe('medium')
+  it('思考强度来自 agent 的 thought_level 选项：标签与缺省档位都取 agent 声明', async () => {
+    const harness = createHarness({ configOptions: THOUGHT_CONFIG_OPTIONS })
+    await harness.adapter.discoverModels()
+    const reasoning = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
+    expect(reasoning?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high'])
+    // 标签用 agent 自己声明的（Low/Medium/High），不是插件编的中文。
+    expect(reasoning?.efforts.map((entry) => entry.name)).toEqual(['Low', 'Medium', 'High'])
+    expect(reasoning?.defaultEffort?.toString()).toBe('medium')
+  })
+
+  it('agent 声明了 xhigh 时 reasoning 就包含 xhigh（不再被三档白名单截断）', async () => {
+    const harness = createHarness({ configOptions: THOUGHT_CONFIG_OPTIONS_WITH_XHIGH })
+    await harness.adapter.discoverModels()
+    const reasoning = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'gemini-4-hydrogen')).reasoning
+    expect(reasoning?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(reasoning?.efforts.at(-1)?.name).toBe('Extra')
+    expect(reasoning?.defaultEffort?.toString()).toBe('xhigh')
+  })
+
+  it('当前档位不在新模型的选项里时缺省档位退回 medium，不指向不存在的选项', async () => {
+    const harness = createHarness({ configOptions: [
+      { id: 'model', type: 'select', name: 'Model', category: 'model', currentValue: 'claude-opus-5-5', options: [
+        { value: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
+      ] },
+      { id: 'thought_level', type: 'select', name: 'Thinking Level', category: 'thought_level', currentValue: 'xhigh', options: [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+      ] },
+    ] })
+    await harness.adapter.discoverModels()
+    const reasoning = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
+    expect(reasoning?.defaultEffort?.toString()).toBe('medium')
   })
 
   it('session/new 的 model select 配置项被映射为 LlmModelInfo 目录', async () => {
@@ -504,7 +575,7 @@ describe('模型目录来自 ACP 会话配置', () => {
     const harness = createHarness({
       loadCachedCatalog: async () => {
         reads.push(1)
-        return [{ id: 'gemini-3-flash-cached', name: 'Gemini 3 Flash (缓存)', description: '上次会话观测到' }]
+        return { models: [{ id: 'gemini-3-flash-cached', name: 'Gemini 3 Flash (缓存)', description: '上次会话观测到' }] }
       },
     })
     const models = await harness.adapter.listModels(AGY_PROVIDER_ID)
@@ -536,8 +607,8 @@ describe('模型目录来自 ACP 会话配置', () => {
   it.each([false, true])('观测目录后缓存写入失败不影响本轮（同步抛错=%s）', async (synchronous) => {
     const saved: { id: string; name: string; description?: string }[][] = []
     const harness = createHarness({
-      saveCatalog: (models) => {
-        saved.push([...models])
+      saveCatalog: (catalog) => {
+        saved.push([...catalog.models])
         if (synchronous) throw new Error('disk full')
         return Promise.reject(new Error('disk full'))
       },
@@ -703,7 +774,7 @@ describe('模型目录来自 ACP 会话配置', () => {
 
   it('listModels 折叠成家族（Opus 5.5 / Sonnet 5.5 / Argon），不把思考强度放进模型', async () => {
     const harness = createHarness({
-      loadCachedCatalog: async () => [{ id: 'gemini-3-flash', name: 'Gemini 3 Flash' }],
+      loadCachedCatalog: async () => ({ models: [{ id: 'gemini-3-flash', name: 'Gemini 3 Flash' }] }),
       loadCliCatalog: async () => [
         { id: 'gemini-3-flash', name: '重复条目以目录为准' },
         { id: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
@@ -729,7 +800,7 @@ describe('模型目录来自 ACP 会话配置', () => {
 
   it('CLI 清单取数失败时目录主体不受影响', async () => {
     const harness = createHarness({
-      loadCachedCatalog: async () => [{ id: 'gemini-3-pro', name: 'Gemini 3 Pro' }],
+      loadCachedCatalog: async () => ({ models: [{ id: 'gemini-3-pro', name: 'Gemini 3 Pro' }] }),
       loadCliCatalog: async () => {
         throw new Error('cli 不可用')
       },
@@ -795,23 +866,51 @@ describe('模型目录来自 ACP 会话配置', () => {
     expect(requested).toEqual(['gemini-4-argon-preview-x'])
   })
 
-  it('默认思考档位设置决定未选强度时的路由结果', async () => {
+  it('有 thought_level 时模型只发家族 id，档位单独写进 thought_level', async () => {
     const harness = createHarness({
-      modelOverrides: { 'gemini-4-argon': { effort: 'high' } },
+      configOptions: THOUGHT_CONFIG_OPTIONS,
       loadCliCatalog: async () => [
-        { id: 'gemini-4-argon-low', name: 'Gemini 4 Argon (Low)' },
-        { id: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
-        { id: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+        { id: 'claude-opus-5-5-low', name: 'Claude Opus 5.5 (Low)' },
+        { id: 'claude-opus-5-5-medium', name: 'Claude Opus 5.5 (Medium)' },
+        { id: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
       ],
     })
-    const streaming = collect(harness.adapter.stream(baseOptions({ model: 'gemini-4-argon' })))
-    await waitForRequest(harness.agent, 'session/set_config_option')
+    const streaming = collect(harness.adapter.stream(baseOptions({ model: 'claude-opus-5-5', reasoningEffort: 'high' as never })))
+    await waitForRequest(harness.agent, 'session/set_config_option', 2)
     await harness.agent.reply('session/prompt', { stopReason: 'end_turn' })
     await streaming
-    const requested = harness.agent.requests
-      .filter((request) => request.method === 'session/set_config_option')
-      .map((request) => (request.params as { value: string }).value)
-    expect(requested).toEqual(['gemini-4-argon-high'])
+    const calls = harness.agent.requestsFor('session/set_config_option').map((request) => request.params as { configId: string; value: string })
+    // 不再合成 claude-opus-5-5-high：模型发家族，档位走自己的配置项。
+    expect(calls).toEqual([
+      { sessionId: SESSION_1, configId: 'model', value: 'claude-opus-5-5' },
+      { sessionId: SESSION_1, configId: 'thought_level', value: 'high' },
+    ])
+  })
+
+  it('thought_level 没声明该档位时就近收敛（xhigh → high），不把未知值发出去', async () => {
+    const harness = createHarness({ configOptions: THOUGHT_CONFIG_OPTIONS })
+    const streaming = collect(harness.adapter.stream(baseOptions({ model: 'claude-opus-5-5', reasoningEffort: 'xhigh' as never })))
+    await waitForRequest(harness.agent, 'session/set_config_option', 2)
+    await harness.agent.reply('session/prompt', { stopReason: 'end_turn' })
+    await streaming
+    const calls = harness.agent.requestsFor('session/set_config_option').map((request) => request.params as { configId: string; value: string })
+    expect(calls.at(-1)).toMatchObject({ configId: 'thought_level', value: 'high' })
+  })
+
+  it('切到支持 xhigh 的模型后按新声明的选项发 xhigh', async () => {
+    const harness = createHarness({
+      configOptions: THOUGHT_CONFIG_OPTIONS,
+      thoughtLevelByModel: { 'gemini-4-hydrogen': THOUGHT_OPTIONS_WITH_XHIGH },
+    })
+    const streaming = collect(harness.adapter.stream(baseOptions({ model: 'gemini-4-hydrogen', reasoningEffort: 'xhigh' as never })))
+    await waitForRequest(harness.agent, 'session/set_config_option', 2)
+    await harness.agent.reply('session/prompt', { stopReason: 'end_turn' })
+    await streaming
+    const calls = harness.agent.requestsFor('session/set_config_option').map((request) => request.params as { configId: string; value: string })
+    expect(calls).toEqual([
+      { sessionId: SESSION_1, configId: 'model', value: 'gemini-4-hydrogen' },
+      { sessionId: SESSION_1, configId: 'thought_level', value: 'xhigh' },
+    ])
   })
 
   it('设置里映射的占位路由按映射写入，未映射时沿用会话默认', async () => {
@@ -1007,8 +1106,8 @@ describe('StreamChunk 序列映射', () => {
     const saved: Array<Array<{ id: string; contextWindow?: number }>> = []
     const harness = createHarness({
       configOptions: tiered,
-      saveCatalog: (models) => {
-        saved.push(models.map((model) => ({ ...model })))
+      saveCatalog: (catalog) => {
+        saved.push(catalog.models.map((model) => ({ ...model })))
       },
     })
     const streaming = collect(harness.adapter.stream(baseOptions({ model: 'claude-opus-5-5' })))
@@ -1071,6 +1170,34 @@ describe('不支持的请求项', () => {
 })
 
 describe('模型元数据一致性', () => {
+  it('观测到的档位选择器随目录落盘，重启后读缓存就能声明菜单（零 ACP 交互）', async () => {
+    const saved: CachedCatalog[] = []
+    const source = createHarness({
+      configOptions: THOUGHT_CONFIG_OPTIONS,
+      saveCatalog: (catalog) => { saved.push(catalog) },
+    })
+    await source.adapter.discoverModels()
+    const snapshot = saved.at(-1)
+    expect(snapshot?.thoughtLevel).toMatchObject({ configId: 'thought_level', currentValue: 'medium' })
+    expect(snapshot?.thoughtLevel?.options.map((option) => option.value)).toEqual(['low', 'medium', 'high'])
+
+    const restored = createHarness({ loadCachedCatalog: async () => snapshot })
+    const reasoning = (await restored.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
+    expect(reasoning?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high'])
+    expect(reasoning?.defaultEffort?.toString()).toBe('medium')
+    expect(restored.agent.requests).toHaveLength(0)
+  })
+
+  it('档位选择器随元数据在 worker 之间共享，不因为没建过会话而丢菜单', async () => {
+    const source = createHarness({ configOptions: THOUGHT_CONFIG_OPTIONS })
+    await source.adapter.discoverModels()
+    const target = createHarness()
+    target.adapter.importMetadata(source.adapter.exportMetadata())
+    const reasoning = (await target.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
+    expect(reasoning?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high'])
+    expect(target.agent.requests).toHaveLength(0)
+  })
+
   it('仅导入目录、尚未列目录时也能解析家族名称与真实档位', async () => {
     const loadCliCatalog = async () => [
       { id: 'claude-opus-5-5-low', name: 'Claude Opus 5.5 (Low)' },
@@ -1098,10 +1225,10 @@ describe('模型元数据一致性', () => {
   })
 
   it('磁盘 ACP 原始档位优先于其它 worker 的 CLI 家族兜底', async () => {
-    const loadCachedCatalog = async () => [
+    const loadCachedCatalog = async () => ({ models: [
       { id: 'claude-opus-5-5-low', name: 'Claude Opus 5.5 (Low)' },
       { id: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
-    ]
+    ] })
     const fallback = createHarness({ loadCliCatalog: async () => [
       { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
     ] })
@@ -2407,27 +2534,43 @@ describe('ACP 会话复用与跨进程恢复', () => {
     expect(harness.agent.requestsFor('session/new')).toHaveLength(1)
   })
 
-  it.each([
-    { kind: 'target' as const, before: { target: 'gemini-3-pro' }, after: { target: 'gemini-3-flash' }, expected: 'gemini-3-flash' },
-    { kind: 'effort' as const, before: { effort: 'low' as const }, after: { effort: 'high' as const }, expected: 'gemini-3-pro-high' },
-  ])('会话复用时 $kind 变化会重建并采用新官方路由', async ({ before, after, expected }) => {
-    let modelOverrides: Record<string, ModelOverride> = { 'gemini-3-pro': before }
-    const configOptions = MODEL_CONFIG_OPTIONS.map(option => option.id === 'model' && option.type === 'select'
-      ? { ...option, options: [...option.options.flatMap(item => 'value' in item ? [item] : []), { value: 'gemini-3-pro-low', name: 'Pro Low' }, { value: 'gemini-3-pro-high', name: 'Pro High' }] }
-      : option)
-    const harness = createHarness({ readSettings: () => ({ modelOverrides }), configOptions })
+  /** 带档位化模型 id 的旧协议配置（没有 thought_level 选择器）。 */
+  const tieredConfigOptions = MODEL_CONFIG_OPTIONS.map(option => option.id === 'model' && option.type === 'select'
+    ? { ...option, options: [...option.options.flatMap(item => 'value' in item ? [item] : []), { value: 'gemini-3-pro-low', name: 'Pro Low' }, { value: 'gemini-3-pro-high', name: 'Pro High' }] }
+    : option)
+
+  it('会话复用时映射变化会重建并采用新官方路由', async () => {
+    let modelOverrides: Record<string, ModelOverride> = { 'gemini-3-pro': { target: 'gemini-3-pro' } }
+    const harness = createHarness({ readSettings: () => ({ modelOverrides }), configOptions: tieredConfigOptions })
     const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
     await waitForRequest(harness.agent, 'session/prompt')
     await replyWithText(harness, '第一轮回答')
     await first
 
-    modelOverrides = { 'gemini-3-pro': after }
+    modelOverrides = { 'gemini-3-pro': { target: 'gemini-3-flash' } }
     const second = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
     await waitForRequest(harness.agent, 'session/new', 2)
     await replyWithText(harness, '第二轮回答', 1)
     await second
     expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
-    expect(harness.agent.requestsFor('session/set_config_option').at(-1)?.params.value).toBe(expected)
+    expect(harness.agent.requestsFor('session/set_config_option').at(-1)?.params.value).toBe('gemini-3-flash')
+  })
+
+  it('会话复用时思考强度变化会重建并按新档位路由', async () => {
+    const harness = createHarness({ configOptions: tieredConfigOptions })
+    const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, reasoningEffort: 'low' as never })))
+    await waitForRequest(harness.agent, 'session/prompt')
+    await replyWithText(harness, '第一轮回答')
+    await first
+
+    const second = collect(harness.adapter.stream(baseOptions({
+      sessionId: DSH_SESSION, messages: secondRoundMessages(), reasoningEffort: 'high' as never,
+    })))
+    await waitForRequest(harness.agent, 'session/new', 2)
+    await replyWithText(harness, '第二轮回答', 1)
+    await second
+    expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
+    expect(harness.agent.requestsFor('session/set_config_option').at(-1)?.params.value).toBe('gemini-3-pro-high')
   })
 
   it('同一对话换模型时重建，不复用旧会话', async () => {

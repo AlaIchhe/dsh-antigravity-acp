@@ -10,8 +10,6 @@ import { DEFAULT_ACP_SERVER_VERSION } from './runtime/binary.js'
 export interface ModelOverride {
   /** 是否出现在 DSH 模型选择器；省略等同启用。停用不删除目录条目，仍可被会话请求。 */
   enabled?: boolean
-  /** 该模型的默认思考档位；未在 DSH 思考强度菜单选择时使用，省略按官方默认（medium）。 */
-  effort?: 'low' | 'medium' | 'high'
   /** 显示名覆盖；省略用官方目录名称。 */
   name?: string
   /** 映射到官方模型 ID，原样写入 ACP 会话，优先于家族 + 档位路由。 */
@@ -48,8 +46,10 @@ export interface AntigravityHostConfig {
   /** 并发 MCP tools/call 的聚合窗口（毫秒），决定同一轮携带多少 tool-call block。 */
   bridgeParkSettleMs?: number
   /**
-   * 按模型 ID 的目录设置：是否出现在 DSH 模型选择器、默认思考档位、显示名、
-   * 官方模型 ID 映射。只作用于目录中已存在的条目，不新增自造模型。
+   * 按模型 ID 的目录设置：是否出现在 DSH 模型选择器、显示名与官方模型 ID 映射。
+   * 思考强度不在配置里：它是模型的元数据，由 ACP agent 的 `thought_level`
+   * 独立选项声明（旧 agent 才退回「档位编进模型 id」的目录推断）。
+   * 只作用于目录中已存在的条目，不新增自造模型。
    */
   modelOverrides?: Record<string, ModelOverride>
   /**
@@ -126,9 +126,6 @@ export function liveHostConfig(config: AntigravityPluginConfig): AntigravityHost
   }
 }
 
-/** 官方思考档位；与 runtime/agy-cli.ts 的 AGY_REASONING_EFFORTS 一致。 */
-export const MODEL_EFFORTS = ['low', 'medium', 'high'] as const
-
 /**
  * modelOverrides 的 schema。
  *
@@ -140,7 +137,6 @@ export const MODEL_EFFORTS = ['low', 'medium', 'high'] as const
  */
 const ModelOverrideSchema = Schema.object({
   enabled: Schema.boolean().default(true).description('是否出现在 DSH 模型选择器'),
-  effort: Schema.union(MODEL_EFFORTS).description('默认思考档位：low / medium / high'),
   name: Schema.string().description('显示名覆盖'),
   target: Schema.string().description('映射到的官方模型 ID，优先于家族 + 档位路由'),
 })
@@ -158,7 +154,7 @@ export const Config = Schema.object({
   authTimeoutMs: Schema.natural().default(300_000).description('authenticate（需人工在浏览器完成 OAuth 授权）的等待上限（毫秒）'),
   promptTimeoutMs: Schema.natural().default(1_800_000).description('单轮 session/prompt 的等待上限（毫秒）'),
   bridgeParkSettleMs: Schema.natural().default(50).description('并发 MCP tools/call 的聚合窗口（毫秒）'),
-  modelOverrides: Schema.dict(ModelOverrideSchema).default({}).volatile().description('按模型 ID 的目录设置（是否显示、默认思考档位、显示名、官方模型 ID 映射）；只作用于目录中已存在的模型') as Schema<
+  modelOverrides: Schema.dict(ModelOverrideSchema).default({}).volatile().description('按模型 ID 的目录设置（是否显示、显示名、官方模型 ID 映射）；只作用于目录中已存在的模型') as Schema<
     Record<string, ModelOverride>,
     Record<string, ModelOverride>,
     'volatile-defined'

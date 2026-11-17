@@ -19,7 +19,7 @@ describe('catalog cache', () => {
     const dir = join(root, 'new', 'catalog')
     try {
       await writeCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0', models: MODELS })
-      await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toEqual(MODELS)
+      await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toEqual({ models: MODELS })
       await expect(readdir(dir)).resolves.toEqual(['catalog.json'])
     } finally { await rm(root, { recursive: true, force: true }) }
   })
@@ -31,7 +31,7 @@ describe('catalog cache', () => {
     }])
     try {
       await writeCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0', models: MODELS })
-      const valid = new Set([JSON.stringify(MODELS), ...snapshots.map((models) => JSON.stringify(models))])
+      const valid = new Set([JSON.stringify({ models: MODELS }), ...snapshots.map((models) => JSON.stringify({ models }))])
       await Promise.all([
         ...snapshots.map((models) => writeCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0', models })),
         (async () => {
@@ -46,7 +46,7 @@ describe('catalog cache', () => {
       // must still produce one complete new snapshot.
       await Promise.all(snapshots.map((models) => writeCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0', models })))
       const final = await readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })
-      expect(snapshots.map((models) => JSON.stringify(models))).toContain(JSON.stringify(final))
+      expect(snapshots.map((models) => JSON.stringify({ models }))).toContain(JSON.stringify(final))
       await expect(readdir(dir)).resolves.toEqual(['catalog.json'])
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
@@ -67,7 +67,7 @@ describe('catalog cache', () => {
     const dir = await tempDir()
     try {
       await writeCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0', models: MODELS })
-      await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toEqual(MODELS)
+      await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toEqual({ models: MODELS })
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -101,8 +101,44 @@ describe('catalog cache', () => {
       await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toBeUndefined()
       await writeFile(join(dir, 'catalog.json'), JSON.stringify({ format: 999, acpVersion: '1.4.0', models: MODELS }), 'utf8')
       await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toBeUndefined()
-      await writeFile(join(dir, 'catalog.json'), JSON.stringify({ format: 1, acpVersion: '1.4.0', models: [{ id: 1 }] }), 'utf8')
+      // 旧格式（无 thoughtLevel 的 v1 文件）同样作废，避免把档位当模型。
+      await writeFile(join(dir, 'catalog.json'), JSON.stringify({ format: 1, acpVersion: '1.4.0', models: MODELS }), 'utf8')
       await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toBeUndefined()
+      await writeFile(join(dir, 'catalog.json'), JSON.stringify({ format: 2, acpVersion: '1.4.0', models: [{ id: 1 }] }), 'utf8')
+      await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('思考强度选择器随目录一起落盘并可读回（含 xhigh 这种非三档值）', async () => {
+    const dir = await tempDir()
+    const thoughtLevel = {
+      configId: 'thought_level',
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+        { value: 'xhigh', name: 'Extra' },
+      ],
+      currentValue: 'xhigh',
+    }
+    try {
+      await writeCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0', models: MODELS, thoughtLevel })
+      await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toEqual({ models: MODELS, thoughtLevel })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('档位选择器读坏时只丢这一项，模型目录仍然可用', async () => {
+    const dir = await tempDir()
+    try {
+      await writeFile(join(dir, 'catalog.json'), JSON.stringify({
+        format: 2, acpVersion: '1.4.0', models: MODELS,
+        thoughtLevel: { configId: '', options: [{ value: '', name: '' }] },
+      }), 'utf8')
+      await expect(readCachedCatalog({ cacheDir: dir, acpVersion: '1.4.0' })).resolves.toEqual({ models: MODELS })
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

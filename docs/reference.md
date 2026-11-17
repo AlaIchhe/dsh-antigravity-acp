@@ -57,16 +57,18 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 模型目录来自会话 `configOptions`、`config_option_update` 与官方 CLI 的只读 `agy models`。`initialize` 本身不是无需登录即可获取完整模型目录的接口。没有缓存时目录可以为空，应先显式连接或刷新。
 
 - 观测目录写入 `$DSH_HOME/cache/antigravity-acp/catalog.json`，只含模型信息，不含凭据；CLI 目录使用同目录的 `cli-models.json`。版本不符或损坏的缓存不作为有效目录。
-- 设置页的模型列表按 Gemini / Claude / GPT / Argon / 其它家族分组，只做显示 / 隐藏：点击模型标签切换，隐藏项不在选择器中列出。停用不删除目录条目；`modelOverrides` 里的档位 / 显示名 / 官方 ID 映射仍按配置生效，但不再提供 UI 编辑。
-- 映射优先于家族 + 档位路由；没有映射时才按「显式选择 → 该模型默认档位 → 官方默认档位」决定最终模型。默认档位未被官方声明时退回官方默认，不指向不存在的选项。
+- 设置页的模型列表按 Gemini / Claude / GPT / Argon / 其它家族分组，只做显示 / 隐藏：点击模型标签切换，隐藏项不在选择器中列出。停用不删除目录条目；`modelOverrides` 里的显示名 / 官方 ID 映射仍按配置生效，但不再提供 UI 编辑。
+- 映射（`target`）优先于路由回调；没有映射时才按「显式选择 → `thought_level` 选项」决定最终配置值。
+- **思考强度是模型的元数据，不是模型 ID 的一部分**：ACP 1.5 起官方把档位声明成独立的 `thought_level` 选择器（本机 `agy acp` 1.5.10 实测：`model` 只给家族 id，`thought_level` 给 Low / Medium / High，切到 Gemini 4 Hydrogen 后选项多一档 Extra/`xhigh`）。插件据此声明 `reasoning.efforts`（id 与名称都取 agent 声明），选模只发家族 id，档位另写一次 `session/set_config_option`；请求的档位不在当前选项里时按 low → medium → high → xhigh 就近收敛，不把未知值发出去。
+- 兼容旧 agent：没有 `thought_level` 时，官方档位化目录（`claude-opus-5-5-high`）折叠成家族并退回「档位后缀」路由，缺档取最近档位，未指定通常使用 `medium`。`gpt-oss-120b` 家族不列入选择器。
+- 目录里没有任何档位变体、agent 也没声明 `thought_level` 的家族 id **不声明**思考强度菜单（省略 `reasoning` 字段）：宿主把 `efforts: []` 判为非法元数据（`INVALID_MODEL_REASONING`）并使该模型不可用，空数组不等于「没有档位」。
 - 旧 `server-default` 路由仍兼容：默认沿用上游模型，配置了映射时才写入映射目标；不再新增占位选择项。
-- 官方将思考档位编码进 ID 时，选择器折叠为模型家族；DSH 思考强度低 / 中 / 高路由至 `-low` / `-medium` / `-high`。缺档取最近档位，未指定通常使用 `medium`；显式钉住档位 ID 时尊重该 ID。`gpt-oss-120b` 家族不列入选择器。目录里没有任何档位变体的家族 id **不声明**思考强度菜单（省略 `reasoning` 字段）：宿主把 `efforts: []` 判为非法元数据（`INVALID_MODEL_REASONING`）并使该模型不可用，空数组不等于「没有档位」。
 - 上下文容量不填猜测值。收到官方 `usage_update.size` 后才记录到模型上下文并缓存；首次观测前未知。
 - 模型、容量与图片能力在 worker 间同步；不因增加 worker 就虚构新模型权益。
 
 | 请求项 | 行为 |
 |---|---|
-| `reasoningEffort` | 官方档位路由键，不是采样参数 |
+| `reasoningEffort` | 思考强度；有 `thought_level` 时直接写入该配置项，旧 agent 则是档位路由键 |
 | `maxTokens` | 忽略；宿主标题等内建流程也会携带此项，输出限制由官方 agent 决定 |
 | `temperature` / `stop` | 记录警告并忽略；值不生效，不冒充采样控制已满足 |
 

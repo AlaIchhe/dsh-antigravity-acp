@@ -21,6 +21,7 @@ interface CatalogCacheFile {
   acpVersion: string
   format: number
   models: CachedModelRow[]
+  thoughtLevel?: CachedThoughtLevel
 }
 
 /** 单条缓存记录；contextWindow 来自实测（usage_update.size），可缺省。 */
@@ -31,8 +32,26 @@ interface CachedModelRow {
   contextWindow?: number
 }
 
-/** 缓存格式版本：字段语义变化时 +1，旧文件自然作废。 */
-const CACHE_FORMAT = 1
+/** 缓存的思考强度选择器：agent 声明过的档位与当时的值。 */
+export interface CachedThoughtLevel {
+  /** `session/set_config_option` 用的 configId。 */
+  configId: string
+  /** agent 声明的档位，按声明顺序（可能含 `xhigh` 等非三档值）。 */
+  options: Array<{ value: string; name: string; description?: string }>
+  currentValue?: string
+}
+
+/** 一份观测快照：模型目录 + 当时的思考强度选择器。 */
+export interface CachedCatalog {
+  models: CachedModelRow[]
+  thoughtLevel?: CachedThoughtLevel
+}
+
+/**
+ * 缓存格式版本：字段语义变化时 +1，旧文件自然作废。
+ * 2：加入 `thoughtLevel`（ACP 1.5 起档位是独立 config option）。
+ */
+const CACHE_FORMAT = 2
 
 /** 读取观测过的模型目录；任何异常都返回 undefined（调用方降级为占位模型）。 */
 export async function readCachedCatalog(options: {
@@ -40,7 +59,7 @@ export async function readCachedCatalog(options: {
   acpVersion: string
   /** 缓存文件名（默认 catalog.json）；CLI 清单另存一份时用它区分。 */
   fileName?: string
-}): Promise<CachedModelRow[] | undefined> {
+}): Promise<CachedCatalog | undefined> {
   const file = join(options.cacheDir, options.fileName ?? 'catalog.json')
   let raw: string
   try {
@@ -56,9 +75,28 @@ export async function readCachedCatalog(options: {
     const models = parsed.models.filter((entry): entry is CachedModelRow => (
       typeof entry?.id === 'string' && entry.id !== '' && typeof entry.name === 'string'
     ))
-    return models.length > 0 ? models : undefined
+    if (models.length === 0) return undefined
+    const thoughtLevel = normalizeThoughtLevel(parsed.thoughtLevel)
+    return thoughtLevel === undefined ? { models } : { models, thoughtLevel }
   } catch {
     return undefined
+  }
+}
+
+/** 缓存里的档位选择器同样是「读坏了就当没有」，不因为一条脏数据让整份目录作废。 */
+function normalizeThoughtLevel(input: unknown): CachedThoughtLevel | undefined {
+  if (!input || typeof input !== 'object') return undefined
+  const record = input as CachedThoughtLevel
+  if (typeof record.configId !== 'string' || record.configId === '') return undefined
+  if (!Array.isArray(record.options)) return undefined
+  const options = record.options.filter((entry): entry is { value: string; name: string; description?: string } => (
+    typeof entry?.value === 'string' && entry.value !== '' && typeof entry.name === 'string' && entry.name !== ''
+  ))
+  if (options.length === 0) return undefined
+  return {
+    configId: record.configId,
+    options,
+    ...(typeof record.currentValue === 'string' && record.currentValue !== '' ? { currentValue: record.currentValue } : {}),
   }
 }
 
@@ -70,6 +108,8 @@ export async function writeCachedCatalog(options: {
   cacheDir: string
   acpVersion: string
   models: readonly CachedModelRow[]
+  /** 观测到的思考强度选择器；没有（旧 agent）时不写这一项。 */
+  thoughtLevel?: CachedThoughtLevel
   /** 缓存文件名（默认 catalog.json）。 */
   fileName?: string
 }): Promise<void> {
@@ -77,6 +117,7 @@ export async function writeCachedCatalog(options: {
   const payload: CatalogCacheFile = {
     acpVersion: options.acpVersion,
     format: CACHE_FORMAT,
+    ...(options.thoughtLevel === undefined ? {} : { thoughtLevel: options.thoughtLevel }),
     models: options.models.map((model) => ({
       id: model.id,
       name: model.name,
