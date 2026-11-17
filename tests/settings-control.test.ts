@@ -120,17 +120,6 @@ describe('设置页账户与目录控制', () => {
     await control.dispose()
   })
 
-  it('代理模式从控制层拒绝 ACP 登录与预热', async () => {
-    const connect = vi.fn(async () => {})
-    const warmup = vi.fn(async () => {})
-    const control = new SettingsControl({ connect, warmup, acpEnabled: () => false, models: async () => [] })
-    expect(() => control.account('login')).toThrow('ACP 连接与预热功能已停用')
-    expect(() => control.account('warmup')).toThrow('ACP 连接与预热功能已停用')
-    expect(connect).not.toHaveBeenCalled()
-    expect(warmup).not.toHaveBeenCalled()
-    await control.dispose()
-  })
-
   it('模型显式刷新传 force；失败保留上次目录', async () => {
     const forced: boolean[] = []
     const control = new SettingsControl({ connect: async () => {}, models: async (force) => {

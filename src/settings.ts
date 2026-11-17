@@ -86,10 +86,10 @@ export interface AntigravityHostConfig {
   idleRecycleMs?: number
   /**
    * 是否允许额度取数调用本机官方 agy CLI（默认关闭）。
-   * 关闭时任何模式都不 spawn agy：代理模式套餐额度用代理账户，ACP 模式走
-   * Cloud Code Assist HTTP，AI Credits 不查询。
-   * 开启后 ACP 模式才运行 `agy -p /usage` 与 `agy -p /credits`；代理模式
-   * 套餐额度仍用代理账户，只有 AI Credits 调用 `agy -p /credits`。
+   * 关闭时不 spawn agy：套餐额度走 Cloud Code Assist HTTP（读该账号 HOME 下
+   * 的 CLI 登录态），AI Credits 不查询。
+   * 开启后运行 `agy -p /usage` 与 `agy -p /credits`；未找到 CLI 时套餐额度
+   * 回落 HTTP，AI Credits 报 `cli-unavailable`。
    */
   cliQuotaEnabled?: boolean
 }
@@ -173,5 +173,5 @@ export const Config = Schema.object({
   keepProcessAfterCancel: Schema.boolean().default(false).volatile().description('用户取消后保留官方进程：宽限内确认 agent 已停止就只丢弃会话，下一轮不必冷启动；默认关闭'),
   cancelGraceMs: Schema.natural().max(60_000).default(30_000).volatile().description('取消后等待 agent 确认停止的上限（毫秒）；0 表示不等待、立即回收'),
   idleRecycleMs: Schema.natural().max(3_600_000).default(300_000).volatile().description('保留进程的最长空闲时间（毫秒），超时回收；0 表示不设上限。默认 5 分钟是本插件的资源回收策略，不代表上游缓存 TTL'),
-  cliQuotaEnabled: Schema.boolean().default(false).volatile().description('允许额度取数调用本机 agy CLI（默认关闭）。关闭时不启动 agy，套餐额度走内置直连，AI Credits 不查询。开启后 ACP 模式运行 agy -p /usage 与 agy -p /credits；代理模式套餐额度仍用代理账户，仅 AI Credits 调用 agy -p /credits'),
+  cliQuotaEnabled: Schema.boolean().default(false).volatile().description('允许额度取数调用本机 agy CLI（默认关闭）。关闭时不启动 agy，套餐额度走内置直连，AI Credits 不查询。开启后运行 agy -p /usage 与 agy -p /credits；未找到 CLI 时套餐额度回落直连'),
 })

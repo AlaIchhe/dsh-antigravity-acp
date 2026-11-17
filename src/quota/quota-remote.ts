@@ -206,10 +206,8 @@ export interface AgYQuotaServiceOptions {
   resolveCli?: () => { run: CliRun; cliPath: string } | undefined
   /** 是否允许调用本机 agy CLI 取数；默认不允许（实时读取，可随设置即时切换）。 */
   cliQuotaEnabled?: () => boolean
-  /** 当前生成模式；代理模式下套餐额度改走代理账户取数。 */
   /** 已保存的官方模型映射，供药丸按实际家族选择额度组。 */
   modelTarget?: (model: string) => string | undefined
-  /** 代理模式额度取数面（凭据 + agy 线传输）；缺省时代理模式回落 ACP 口径。 */
   /** 多账号管理器：账号列表、登录与当前账号解析。 */
   accounts?: AccountsManager
   /** 宿主日志（index.ts 接 `ctx.logger`）；用于记录每次取数的来源与结果。 */

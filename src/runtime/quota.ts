@@ -529,8 +529,8 @@ async function postCodeAssist(
   const base = (deps.baseUrl ?? CODE_ASSIST_BASE_URL).replace(/\/+$/, '')
   // Cloud Code Assist 按调用方的线身份判定客户端：只发 `metadata.ideType` 时上游回
   // HTTP 200 但没有 `cloudaicompanionProject`，并在 ineligibleTiers 里给出
-  // `UNSUPPORTED_CLIENT`（实测 2026-11-17）。复用代理模式已经在用的 agy 线头
-  // （User-Agent + Accept-Encoding）后同一账户正常返回项目与套餐。
+  // `UNSUPPORTED_CLIENT`（实测 2026-11-17）。补上 agy 线头（User-Agent +
+  // Accept-Encoding）后同一账户正常返回项目与套餐。
   const headers: Record<string, string> = {
     ...buildAntigravityHarnessBootstrapHeaders(accessToken),
     Authorization: `Bearer ${accessToken}`,

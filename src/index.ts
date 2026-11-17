@@ -758,7 +758,7 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
   const registration = ctx.llm.registerAdapter([AGY_PROVIDER_ID], adapter)
 
   // 额度监控：套餐额度取数服务 + Typert remote（供浏览器端药丸读取）。
-  // 默认不调用本机 agy：ACP 模式走 Cloud Code Assist HTTP，代理模式走代理账户。
+  // 默认不调用本机 agy：套餐额度走 Cloud Code Assist HTTP（按账号 HOME）。
   // 仅当设置显式开启 cliQuotaEnabled 时才 spawn `agy -p /usage` 与 `/credits`
   // （AI Credits 只能这样读）。取数只读，凭据不写回、不进日志。
   registerAgYQuotaRemote(ctx)

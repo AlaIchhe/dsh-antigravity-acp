@@ -13,7 +13,6 @@ export interface AccountSnapshot {
   activeAccountId?: string
   /** 面板内 OAuth 登录流程状态。 */
   auth?: AccountAuthView
-  generationMode?: { requested: 'acp' | 'proxy'; active: 'acp' | 'proxy'; proxyRouterReady: boolean }
 }
 export interface ModelSnapshot {
   status: 'ok' | 'error'
@@ -25,9 +24,6 @@ export interface ControlOptions {
   warmup?(signal: AbortSignal): Promise<void>
   runtime?(): AcpLifecycleSnapshot
   modelSource?(): unknown
-  generationMode?(): AccountSnapshot['generationMode']
-  /** 代理模式下从 Host 控制层拒绝 ACP 登录与预热，避免旧客户端触发官方进程。 */
-  acpEnabled?(): boolean
   models(force: boolean): Promise<readonly { id: string; name: string; inputModalities?: readonly string[] }[]>
 }
 
@@ -45,9 +41,6 @@ export class SettingsControl {
     if (action === 'cancel' && this.controller) {
       this.set('cancelling', '正在取消官方连接…')
       this.controller.abort()
-    }
-    if ((action === 'login' || action === 'warmup') && this.options.acpEnabled?.() === false) {
-      throw new Error('代理模式已开启，ACP 连接与预热功能已停用')
     }
     if ((action === 'login' || action === 'warmup') && !this.pending) {
       const warmup = action === 'warmup'
@@ -68,8 +61,7 @@ export class SettingsControl {
         })
       this.pending = pending
     }
-    return { ...this.snapshot, ...(this.options.runtime ? { runtime: this.options.runtime() } : {}),
-      ...(this.options.generationMode ? { generationMode: this.options.generationMode() } : {}) }
+    return { ...this.snapshot, ...(this.options.runtime ? { runtime: this.options.runtime() } : {}) }
   }
 
   async models(force = false): Promise<ModelSnapshot> {
