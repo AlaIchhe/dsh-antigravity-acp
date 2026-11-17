@@ -1,5 +1,8 @@
 <div align="center">
 
+> **这是 `AlaIchhe/dsh-antigravity-acp` 的二次开源 fork**（上游：`KouzakiUmi/dsh-antigravity-acp`）。
+> 差异见文末「本 fork 的改动」。许可证沿用上游 MIT。
+
 # Antigravity ACP for DSH
 
 **在 DSH 里使用 Antigravity 模型，工具仍交给 DSH。**
@@ -137,3 +140,45 @@ flowchart LR
 本插件采用 [MIT License](LICENSE)。Google Antigravity 官方程序是独立下载的第三方软件，不随本包再分发；本插件并非 Google 官方产品。
 
 遇到问题请[提交 Issue](https://github.com/KouzakiUmi/dsh-antigravity-acp/issues)，附插件版本、**实际 DSH Core 版本**、操作系统、操作步骤和已脱敏错误码。不要附 token、Cookie、完整 OAuth URL、代理密码或凭据文件。
+
+---
+
+## 本 fork 的改动
+
+二次开源不是重写，只改两处**上游已确认的行为缺陷**，其余与上游一致，便于随时 rebase。
+
+### 1. 识别 `xhigh` 档位，但不把它暴露成可选项
+
+官方 1.5.x 给 Gemini 4 Hydrogen 增加了 `-xhigh` 后缀。上游的档位正则只认
+`low|medium|high`，于是 `gemini-4-hydrogen-xhigh` 匹配不到后缀，被当成**一个独立家族**
+出现在模型选择器里（显示为「Gemini 4 Hydrogen (XHigh)」）。
+
+但如果直接把 `xhigh` 加进 `AGY_REASONING_EFFORTS`，模型会声明四档，而宿主侧的
+reasoning 校验只接受已经注册过的档位，选中后调用会以
+`UNSUPPORTED_REASONING_EFFORT` 失败——上游 issue 里已经有这个症状。
+
+本 fork 的做法：
+
+- 新增 `AgyModelTier = AgyReasoningEffort | 'xhigh'`，只用于**识别与折叠**
+- `tierForModelId` / `stripTierLabel` 认 `xhigh`，家族折叠生效
+- `AGY_REASONING_EFFORTS` 保持三档 → 思考强度菜单仍是 低/中/高，不会出现无法执行的选项
+
+### 2. 用量样本兜底：`usage_update.used`
+
+上下文占用投影需要一个「上一次请求的 prompt 用量」作为锚点。上游注释写的是
+「官方 `agy_acp_server` 1.4.0 实测不返回 `PromptResponse.usage`，因此通常不上报」，
+于是锚点长期不更新，投影只按消息增长累加，很快顶到窗口上限并**一直显示 100%**。
+
+本 fork 在收到 `usage_update` 时记录 `used`（ACP 定义：当前上下文已用 token），
+回合结束时若官方没有给 `usage`，就用它作为本轮样本上报：
+
+```ts
+this.finishRound(mapUsage(response.usage) ?? this.#observedUsage)
+```
+
+### 与上游同步
+
+```bash
+git remote add upstream https://github.com/KouzakiUmi/dsh-antigravity-acp.git
+git fetch upstream && git rebase upstream/main
+```

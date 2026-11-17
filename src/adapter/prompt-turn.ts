@@ -121,6 +121,8 @@ export class PromptTurn {
   #nativeRefusals = 0
   #onNativeRefusal: PromptTurnOptions['onNativeRefusal']
   readonly #onPermissionDiagnostic: PromptTurnOptions['onPermissionDiagnostic']
+  /** usage_update 报的上下文已用量；官方 PromptResponse 不带 usage 时用作回合用量样本。 */
+  #observedUsage: TokenUsage | undefined
   #nextIndex = 0
   #open: OpenBlock | undefined
   #producerDone = false
@@ -178,6 +180,18 @@ export class PromptTurn {
   /** 本回合是否停在「等待 DSH 回喂工具结果」的续轮状态。 */
   get awaitingToolResults(): boolean {
     return !this.#terminated && this.#roundEnded && this.#parked.some((call) => this.#bridge.hasPending(call.callId))
+  }
+
+  /**
+   * 记下 `usage_update` 报的上下文已用量。
+   *
+   * 上下文占用投影需要一个「上一次请求的 prompt 用量」作为锚点；缺了它，宿主只能
+   * 按消息增长单调累加，很快顶到窗口上限并显示 100%。`usage_update.used` 正是
+   * 当前上下文的已用 token 数，回合结束时随 finish 上报即可让锚点每回合刷新。
+   */
+  noteUsage(usage: TokenUsage): void {
+    if (this.#terminated || this.#promptSettled) return
+    this.#observedUsage = usage
   }
 
   /** 把 session/update 交给当前回合（由 adapter 的稳定 handler 转发）。 */
@@ -416,7 +430,7 @@ export class PromptTurn {
       }, true)
       return
     }
-    this.finishRound(mapUsage(response.usage))
+    this.finishRound(mapUsage(response.usage) ?? this.#observedUsage)
   }
 
   #mapStopReason(stopReason: StopReason): LlmFailure | undefined {
