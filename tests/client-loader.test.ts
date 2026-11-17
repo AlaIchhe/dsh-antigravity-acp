@@ -270,7 +270,7 @@ describe('browser client module', () => {
     const card = loadRegistrations({ stateOverrides: { 0: snapshot } }).get('antigravity-acp')!.component
     const tree = card({ remote: {}, control, readQuota: async () => ({ status: 'ok', groups: [] }) })
     const text = texts(tree).join(' ')
-    for (const label of ['账号', '模型', '添加账号', '额度取数方式', '会话', '网络', '连接诊断']) expect(text).toContain(label)
+    for (const label of ['账号', '模型', '添加账号', '额度取数方式', '会话', '连接诊断']) expect(text).toContain(label)
     // 连接与额度不再是两个分页：账号卡片内给出登录 / 切换与手动额度。
     const tabs = elements(tree).filter((item) => item.props.role === 'tab')
     expect(tabs.map((item) => texts(item).join(''))).toEqual(['账号', '模型'])
@@ -285,7 +285,7 @@ describe('browser client module', () => {
     expect(elements(tree).filter((item) => item.props['aria-label'] === 'AI Credits 余额')).toHaveLength(0)
     // 普通配置不是即时字段，卡片不再渲染说明块；三个分组 details 仍保留。
     expect(text).not.toContain('普通配置（并发 / 二进制 / 超时）')
-    expect(elements(tree).filter((item) => item.type === 'details')).toHaveLength(3)
+    expect(elements(tree).filter((item) => item.type === 'details')).toHaveLength(2)
   })
 
   it('目录冷启动超过 60 秒时客户端继续等待 Host，而不是提前报超时', async () => {
@@ -322,11 +322,10 @@ describe('browser client module', () => {
     expect(changed).toHaveBeenCalledTimes(1)
   })
 
-  it('代理字段保留，但不再渲染灰色说明文字', () => {
+  it('出网代理不再占设置项，由系统代理检测兜底', () => {
     const tree = loadCard()({ remote: {} })
     const text = texts(tree).join('')
-    expect(text).toContain('出网代理')
-    expect(text).not.toContain('留空继承宿主代理环境')
+    expect(text).not.toContain('出网代理')
   })
 
   it('returns its plugin exports when the DSH loader supplies only require', () => {

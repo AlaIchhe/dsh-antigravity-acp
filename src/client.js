@@ -34,7 +34,6 @@ window.__ModuleLoader__.load({
       { key: 'keepProcessAfterCancel', group: 'session', checkbox: true, label: '取消后保留进程', hint: '仅在官方进程确认停止后保留。' },
       { key: 'cancelGraceMs', group: 'session', numeric: true, defaultValue: 30000, min: 0, max: 60000, label: '取消确认宽限（毫秒）', hint: '0 表示立即回收。' },
       { key: 'idleRecycleMs', group: 'session', numeric: true, defaultValue: 300000, min: 0, max: 3600000, label: '进程空闲回收（毫秒）', hint: '默认 5 分钟；0 表示禁用。' },
-      { key: 'proxyUrl', group: 'network', label: '出网代理', placeholder: 'http://127.0.0.1:7890', hint: '留空继承宿主代理环境。' },
     ]
 
     /** 逐模型设置：键是 DSH 选择器里的模型 ID，值是开关、默认档位、显示名与官方 ID 映射。 */
@@ -397,7 +396,7 @@ window.__ModuleLoader__.load({
     }
 
     /** 一个账号的卡片：身份、启停/登录/删除、额度。 */
-    function AccountCard({ account, accountState, canControl, readQuota, source, disabled, connection, busy, connectionSettingsDirty, onActivate, onRelogin, onRemove, onConnect, onWarmup, onCancel, confirmRemove, setConfirmRemove }) {
+    function AccountCard({ account, accountState, canControl, readQuota, source, disabled, connection, busy, onActivate, onRelogin, onRemove, onConnect, onWarmup, onCancel, confirmRemove, setConfirmRemove }) {
       const title = account.alias
       return h('article', { role: 'listitem', 'aria-label': '账号 ' + title, style: { padding: '11px 12px', borderRadius: '11px', border: '1px solid ' + (account.active ? 'rgba(23,124,85,.55)' : 'rgba(128,128,128,.16)'), background: account.active ? 'rgba(23,124,85,.05)' : 'rgba(128,128,128,.025)' } },
         h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: '10px' } },
@@ -409,8 +408,8 @@ window.__ModuleLoader__.load({
               !account.ready ? h(AccountTag, { color: '#b42318', background: 'rgba(180,35,24,.10)' }, '未登录') : null),
             account.email ? h('div', { style: { fontSize: '12px', marginTop: '2px', overflowWrap: 'anywhere' } }, account.email) : null),
           h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'flex-end', marginLeft: 'auto' } },
-            account.active ? h('button', { type: 'button', style: { ...PRIMARY, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || disabled || busy || connectionSettingsDirty, onClick: onConnect }, accountState === 'connecting' ? '正在连接…' : '连接 / 登录 ACP') : null,
-            account.active ? h('button', { type: 'button', style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || disabled || busy || connection.ready || connectionSettingsDirty, onClick: onWarmup }, connection.ready ? '已预热' : '立即预热') : null,
+            account.active ? h('button', { type: 'button', style: { ...PRIMARY, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || disabled || busy, onClick: onConnect }, accountState === 'connecting' ? '正在连接…' : '连接 / 登录 ACP') : null,
+            account.active ? h('button', { type: 'button', style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || disabled || busy || connection.ready, onClick: onWarmup }, connection.ready ? '已预热' : '立即预热') : null,
             account.active && ['connecting', 'cancelling'].includes(accountState) ? h('button', { type: 'button', style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || accountState === 'cancelling', onClick: onCancel }, accountState === 'cancelling' ? '正在取消…' : '取消连接') : null,
             !account.active ? h('button', { type: 'button', disabled, style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, onClick: () => onActivate(account) }, '使用此账号') : null,
             !account.system ? h('button', { type: 'button', disabled, style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, onClick: () => onRelogin(account) }, account.ready ? '重新登录' : '登录') : null,
@@ -694,7 +693,6 @@ window.__ModuleLoader__.load({
       // 目录条目 + 已配置但目录里暂时没有的 ID：正在编辑的映射不能因为目录刷新而消失。
       const rows = modelRows(models, draft[OVERRIDES_KEY])
       const editingDisabled = loading || saving || !view || !writable
-      const connectionSettingsDirty = dirtyKeys.some(key => key === 'proxyUrl' || key === 'proxyBypass')
       const discardDraft = () => {
         if (savingRef.current) return
         dirty.current.clear()
@@ -732,7 +730,6 @@ window.__ModuleLoader__.load({
           conflicts.length ? h('p', { role: 'alert', style: { margin: 0, fontSize: '12px', lineHeight: 1.5 } }, '以下内容已在其他位置更新，已保留你的输入：' + conflicts.map((key) => key === OVERRIDES_KEY ? OVERRIDES_LABEL : FIELDS.find((field) => field.key === key)?.label ?? key).join('、')) : null,
           h(StatusNotice, { status }))),
 
-        connectionSettingsDirty ? h(StatusNotice, { status: { kind: 'busy', text: '请先保存网络设置，再连接或登录。' } }) : null,
         h('div', { role: 'tablist', 'aria-label': '设置分页', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' } },
           pageButton('account', '账号'),
           pageButton('models', '模型'),
@@ -761,7 +758,6 @@ window.__ModuleLoader__.load({
                   canControl: Boolean(props.control),
                   connection,
                   busy,
-                  connectionSettingsDirty,
                   readQuota: props.readQuota,
                   source: PROVIDER,
                   disabled: authBusy,
@@ -781,7 +777,6 @@ window.__ModuleLoader__.load({
             h(SectionHeading, { title: '额度取数方式' }),
             h(SettingsFields, { ...fieldProps, fields: fieldsFor('quota') })),
           h(SettingsGroup, { title: '会话', fields: fieldsFor('session'), fieldProps }),
-          h(SettingsGroup, { title: '网络', fields: fieldsFor('network'), fieldProps }),
           h('details', { style: PANEL, 'aria-label': '连接诊断' },
             h('summary', { style: SUMMARY },
               h('span', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },

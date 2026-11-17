@@ -40,7 +40,7 @@ dsh plugin --profile web add ./dsh-bundle-antigravity-acp-0.1.39.tgz
 
 ## 第一次连接
 
-打开 **设置 → Antigravity ACP**。需要出网代理时先填写并保存，再连接。
+打开 **设置 → Antigravity ACP**。默认继承 Host 环境变量或系统代理；都不可用时在配置中设置 `proxyUrl` 后重载 Host。
 
 | 操作 | 做什么 | 不做什么 |
 |---|---|---|
@@ -168,7 +168,7 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 
 ## 出网代理
 
-`proxyUrl` 支持 `http` / `https` / `socks5` / `socks5h`，缺 scheme 按 HTTP，不支持 SOCKS4。留空继承宿主代理，宿主未配置才直连；清空此项不等于强制关闭宿主代理。
+`proxyUrl` 支持 `http` / `https` / `socks5` / `socks5h`，缺 scheme 按 HTTP，不支持 SOCKS4。留空时依次继承宿主代理环境、自动检测系统代理（Windows 注册表 / macOS scutil / Linux GNOME），都没有才直连。
 
 - 显式代理先验证，再进行下载、OAuth 或启动；非法地址不回显输入材料。**保存的地址非法不会让插件装载失败**：装载期只记一条告警并继续加载，设置卡片因此仍可打开、修正并保存，不必去手改宿主配置文件。真正用到代理的操作各自失败——启动 ACP 报 `AGY_INVALID_PROXY`，下载 / 换发 / 额度取数按各自的可读错误折叠。修正保存后下一次操作即读取新值；已有 ACP 进程保留原启动环境。
 - 官方进程通过环境注入大小写两套代理键，因为宿主受管子进程会清理父环境。
@@ -211,7 +211,7 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 | 已有解压目录却缺少有效可执行文件，下载后仍重命名失败 | 同版本缓存损坏，当前不会自动删除并覆盖该目录 | 先确认相关进程已停止，再人工核对该版本缓存；也可使用明确指定的有效 `binaryPath`。不要在官方进程活跃时清理它。 |
 | `AGY_AUTH_TIMEOUT` | 需要浏览器授权但未在期限内完成，或上游认证失败 | 检查官方登录状态、浏览器和代理；日志不要附完整 OAuth URL。 |
 | 连接已预热但目录为空 | 握手不等于已建会话 | 点击「连接 / 登录 ACP」或使用已登录 CLI 拉取目录；检查具体错误而不是反复发送聊天。 |
-| `AGY_INVALID_PROXY` / 代理相关失败（连接 Google 失败、换发或额度取数超时） | 代理格式、出口或宿主环境继承问题 | 非法地址不再阻断插件装载：直接在本插件设置卡片修正 `proxyUrl` 后重载 Host 即可。核对目标 Host 实际继承的环境；保存后已有 ACP 进程仍保留原启动环境。 |
+| `AGY_INVALID_PROXY` / 代理相关失败（连接 Google 失败、换发或额度取数超时） | 代理格式、出口或宿主环境继承问题 | 非法地址不再阻断插件装载：在配置中修正 `proxyUrl` 后重载 Host 即可。核对目标 Host 实际继承的环境；保存后已有 ACP 进程仍保留原启动环境。 |
 | `AGY_QUEUE_TIMEOUT` / `AGY_QUEUE_FULL` | worker 忙或保留工具回合，队列超时 / 已满 | 完成或取消旧工具审批；查看排队状态，按资源与账户限制调整并发。 |
 | `AGY_INCOMPATIBLE_PROTOCOL` / `AGY_UNSUPPORTED_CAPABILITY` | 协议版本或 MCP 等能力不满足 | 使用兼容 ACP v1 的官方 server；不只修改版本号就假定厂商扩展兼容。 |
 | `AGY_IMAGE_UNAVAILABLE` / `AGY_INVALID_IMAGE` | 附件服务 / image capability 不在场，或附件引用不一致 | 重新连接检查能力与附件；不要将文字描述误当已发送图片像素。 |
