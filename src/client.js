@@ -35,7 +35,6 @@ window.__ModuleLoader__.load({
       { key: 'cancelGraceMs', group: 'session', numeric: true, defaultValue: 30000, min: 0, max: 60000, label: '取消确认宽限（毫秒）', hint: '0 表示立即回收。' },
       { key: 'idleRecycleMs', group: 'session', numeric: true, defaultValue: 300000, min: 0, max: 3600000, label: '进程空闲回收（毫秒）', hint: '默认 5 分钟；0 表示禁用。' },
       { key: 'proxyUrl', group: 'network', label: '出网代理', placeholder: 'http://127.0.0.1:7890', hint: '留空继承宿主代理环境。' },
-      { key: 'agyCliPath', group: 'network', label: '官方 CLI 路径', placeholder: '留空自动查找 agy', hint: '仅用于模型目录和可选的 CLI 额度查询。' },
     ]
 
     /** 逐模型设置：键是 DSH 选择器里的模型 ID，值是开关、默认档位、显示名与官方 ID 映射。 */
@@ -782,7 +781,7 @@ window.__ModuleLoader__.load({
             h(SectionHeading, { title: '额度取数方式' }),
             h(SettingsFields, { ...fieldProps, fields: fieldsFor('quota') })),
           h(SettingsGroup, { title: '会话', fields: fieldsFor('session'), fieldProps }),
-          h(SettingsGroup, { title: '网络与 CLI', fields: fieldsFor('network'), fieldProps }),
+          h(SettingsGroup, { title: '网络', fields: fieldsFor('network'), fieldProps }),
           h('details', { style: PANEL, 'aria-label': '连接诊断' },
             h('summary', { style: SUMMARY },
               h('span', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
