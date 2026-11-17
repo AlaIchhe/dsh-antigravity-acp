@@ -4,10 +4,10 @@ import { Config, LIVE_SETTING_KEYS, liveHostConfig } from '../src/settings.js'
 
 describe('live settings schema and runtime references', () => {
   it('宿主提交即时引用后可读取下一次操作配置，同时保持已捕获快照不变', () => {
-    const parsed = Config({ autoWarmup: false, modelOverrides: { before: { enabled: false } }, proxyUrl: 'http://old:7890' })
+    const parsed = Config({ modelOverrides: { before: { enabled: false } }, proxyUrl: 'http://old:7890' })
     const config = liveHostConfig(parsed)
     const snapshot = { ...config }
-    const next = Config({ autoWarmup: false, modelOverrides: { after: { effort: 'high', target: 'gemini-3-pro-high' } }, proxyUrl: '', reuseSessions: false, resumeSessions: true, keepProcessAfterCancel: true, cancelGraceMs: 0, idleRecycleMs: 0, agyCliPath: '/new/agy', proxyBypass: '*.internal' })
+    const next = Config({ modelOverrides: { after: { effort: 'high', target: 'gemini-3-pro-high' } }, proxyUrl: '', reuseSessions: false, resumeSessions: true, keepProcessAfterCancel: true, cancelGraceMs: 0, idleRecycleMs: 0, agyCliPath: '/new/agy', proxyBypass: '*.internal' })
     for (const key of LIVE_SETTING_KEYS) {
       const beforeRef = parsed[key]
       const afterRef = next[key]
@@ -26,7 +26,6 @@ describe('live settings schema and runtime references', () => {
 
   it('启动、并发等普通配置仍保持普通类型，默认开关和零值正确', () => {
     const config = liveHostConfig(Config({ cancelGraceMs: 0, idleRecycleMs: 0 }))
-    expect(config.autoWarmup).toBe(true)
     expect(config.reuseSessions).toBe(true)
     expect(config.resumeSessions).toBe(false)
     expect(config.keepProcessAfterCancel).toBe(false)

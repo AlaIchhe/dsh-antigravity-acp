@@ -109,22 +109,18 @@ function modelControl(renderer: ReactTestRenderer, kind: 'enabled' | 'effort' | 
 function renderedText(renderer: ReactTestRenderer): string { return JSON.stringify(renderer.toJSON()) }
 
 describe('quota pill with real React state and effects', () => {
-  it('共享额度读取器通知自身时也结束刷新，可再次手动刷新', async () => {
-    const listeners = new Set<(value: unknown, source: unknown) => void>()
+  it('打开额度详情即可查看，不再出现刷新按钮', async () => {
     const snapshot = { status: 'ok', groups: [{ name: 'Gemini', buckets: [{ window: '5h', remainingPct: 82 }] }] }
-    const readQuota = Object.assign(vi.fn(async (_force: boolean, source: unknown) => {
-      for (const listener of listeners) listener(snapshot, source)
-      return snapshot
-    }), { subscribe: (listener: (value: unknown, source: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener) } })
+    const readQuota = vi.fn(async () => snapshot)
     const renderer = await mountPill(readQuota)
+    expect(readQuota).toHaveBeenCalled()
     await act(async () => { await renderer.root.findByProps({ 'aria-haspopup': 'dialog' }).props.onClick() })
-    expect(button(renderer, '刷新额度').props.disabled).toBe(false)
-    await act(async () => { await button(renderer, '刷新额度').props.onClick() })
-    expect(readQuota).toHaveBeenCalledTimes(2)
-    expect(button(renderer, '刷新额度').props.disabled).toBe(false)
+    expect(renderer.root.findAll((node) => node.type === 'button' && node.children.join('') === '刷新额度')).toHaveLength(0)
+    expect(renderedText(renderer)).toContain('82')
     await act(async () => { renderer.root.findByProps({ 'aria-label': '关闭额度详情' }).props.onClick() })
     expect(renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
   })
+
   it('跨家族官方映射使用实际路由模型的额度组', async () => {
     const renderer = await mountPill(async () => ({
       status: 'ok', requestedModel: 'gemini-flash', routeModel: 'claude-opus-5-5-low',
@@ -143,27 +139,6 @@ describe('quota pill with real React state and effects', () => {
     expect(renderedText(renderer)).toContain('remote denied')
   })
 
-  it('刷新异常保留成功快照并标缓存，后续成功清除缓存标记', async () => {
-    let fail = false
-    const snapshot = { status: 'ok', updatedAt: '2026-10-25T00:00:00Z', groups: [
-      { name: 'Gemini Models', buckets: [{ window: '5h', remainingPct: 82 }] },
-    ] }
-    const readQuota = vi.fn(async () => {
-      if (fail) throw new Error('refresh timeout')
-      return snapshot
-    })
-    const renderer = await mountPill(readQuota)
-    await act(async () => { await renderer.root.findByProps({ 'aria-haspopup': 'dialog' }).props.onClick() })
-    expect(renderedText(renderer)).toContain('82')
-    fail = true
-    await act(async () => { await button(renderer, '刷新额度').props.onClick() })
-    expect(renderedText(renderer)).toContain('缓存数据 · Error: refresh timeout')
-    expect(renderedText(renderer)).toContain('82')
-    fail = false
-    await act(async () => { await button(renderer, '刷新额度').props.onClick() })
-    expect(renderedText(renderer)).not.toContain('缓存数据')
-    expect(renderedText(renderer)).toContain('82')
-  })
 })
 
 describe('settings card with real React state and effects', () => {
@@ -391,7 +366,7 @@ describe('settings card with real React state and effects', () => {
     ? accountSnapshot
     : { status: 'ok', models: [] })
 
-  it('账号页合并连接与额度：账号卡片内登录并手动拉取该账号额度', async () => {
+  it('账号页合并连接与额度：账号卡片自动读取该账号额度', async () => {
     const service = transport()
     const control = accountControl()
     const readQuota = Object.assign(vi.fn(async () => ({
@@ -404,17 +379,15 @@ describe('settings card with real React state and effects', () => {
       })),
     })
     const { renderer } = await mount(service.remote, control, readQuota)
-    expect(button(renderer, '连接 / 登录 ACP')).toBeDefined()
     await act(async () => {})
     expect(readQuota.readAccount).toHaveBeenCalledWith(false, 'antigravity-acp', 'primary')
     expect(renderer.root.findAll((node) => node.type === 'button' && node.children.join('') === '拉取额度')).toHaveLength(0)
+    expect(renderer.root.findAll((node) => node.type === 'button' && ['连接 / 登录 ACP', '立即预热', '取消连接'].includes(node.children.join('')))).toHaveLength(0)
     expect(renderedText(renderer)).toContain('73%')
     expect(renderedText(renderer)).toContain('示例套餐')
     // 连接与额度合并；高级页并入账号页后只剩「账号 / 模型」。
     const tabs = renderer.root.findAll((node) => node.type === 'button' && node.props.role === 'tab')
     expect(tabs.map((node) => node.children.join(''))).toEqual(['账号', '模型'])
-    await act(async () => { await button(renderer, '连接 / 登录 ACP').props.onClick() })
-    expect(control).toHaveBeenCalledWith('account', { action: 'login' })
   })
 
   it('面板添加账号：显示授权链接，取消后回到空闲', async () => {
@@ -504,8 +477,6 @@ describe('settings card with real React state and effects', () => {
       : { status: 'ok', models: [] })
     const { renderer, intervals } = await mount(service.remote, control)
     expect(renderedText(renderer)).toContain('运行 2 · 等待工具 1 · 排队 3')
-    expect(button(renderer, '连接 / 登录 ACP').props.disabled).toBe(true)
-    expect(button(renderer, '立即预热').props.disabled).toBe(true)
     const before = service.describe.mock.calls.length
     await act(async () => { renderer.unmount() })
     expect(intervals.size).toBe(0)

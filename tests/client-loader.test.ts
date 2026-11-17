@@ -220,10 +220,10 @@ function modelStore(provider: string | null) {
 }
 
 describe('browser client module', () => {
-  it('设置页点击即可预热或登录，可手动拉取模型目录', async () => {
+  it('设置页不再提供手动预热或连接，模型目录可刷新', async () => {
     const control = vi.fn(async (method: string, request?: { action?: string; force?: boolean }) => method === 'account'
       ? {
-        state: request?.action === 'login' ? 'connecting' : 'idle', message: 'test',
+        state: 'idle', message: 'test',
         activeAccountId: 'primary', auth: { phase: 'idle' },
         accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: false, createdAt: 0 }],
       }
@@ -245,12 +245,8 @@ describe('browser client module', () => {
       expect(target, label).toBeDefined()
       ;(target!.props.onClick as () => void)()
     }
-    click('立即预热')
-    click('连接 / 登录 ACP')
     click('刷新模型目录')
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(control).toHaveBeenCalledWith('account', { action: 'login' })
-    expect(control).toHaveBeenCalledWith('account', { action: 'warmup' })
     expect(control).toHaveBeenCalledWith('models', { force: true })
     expect(readQuota).toHaveBeenCalled()
     expect(texts(tree).join(' ')).not.toContain('AI Credits 余额')
@@ -276,7 +272,6 @@ describe('browser client module', () => {
     expect(tabs.map((item) => texts(item).join(''))).toEqual(['账号', '模型'])
     expect(tabs.find((item) => texts(item).join('') === '账号')?.props['aria-selected']).toBe(true)
     expect(text).toContain('添加账号')
-    expect(text).toContain('连接 / 登录 ACP')
     // 默认模型由 DSH 自己的模型选择器负责，设置页不再重复维护。
     expect(text).not.toContain('默认模型')
     expect(text).not.toContain('套餐额度管理')

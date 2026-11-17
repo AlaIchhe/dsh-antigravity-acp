@@ -28,7 +28,6 @@ window.__ModuleLoader__.load({
     /** Live fields owned by this card; ordinary fields stay in the host config editor. */
     const FIELDS = [
       { key: 'cliQuotaEnabled', group: 'quota', checkbox: true, label: '使用 agy CLI 补充额度', hint: '默认不启动 agy；开启后才读取 AI Credits。' },
-      { key: 'autoWarmup', group: 'session', checkbox: true, defaultChecked: true, label: '启动时自动预热', hint: '不发送消息；下次启用插件时生效。' },
       { key: 'reuseSessions', group: 'session', checkbox: true, defaultChecked: true, label: '复用 ACP 会话', hint: '只发送新增消息；上下文不一致时自动重建。' },
       { key: 'resumeSessions', group: 'session', checkbox: true, label: '重启后恢复 ACP 会话', hint: '需开启会话复用；恢复失败时自动重建。' },
       { key: 'keepProcessAfterCancel', group: 'session', checkbox: true, label: '取消后保留进程', hint: '仅在官方进程确认停止后保留。' },
@@ -373,7 +372,7 @@ window.__ModuleLoader__.load({
             data?.stale ? h('p', { role: 'status', style: { margin: 0, fontSize: '11px', color: '#d99b28' } }, '缓存数据 · ' + (data.staleReason ?? '刷新失败')) : null,
             h('details', { style: { marginTop: '2px' } },
               h('summary', { style: { fontSize: '11px', cursor: 'pointer' } }, '详情'),
-              h('div', { style: { marginTop: '6px' } }, QuotaDetails({ data, refreshing, showHeader: false, showCredits: false }))))
+              h('div', { style: { marginTop: '6px' } }, QuotaDetails({ data, showHeader: false, showCredits: false }))))
           : data?.status === 'error'
             ? h('p', { role: 'alert', style: { margin: 0, fontSize: '12px', color: '#ef4444', overflowWrap: 'anywhere' } }, data.error?.message ?? '额度读取失败')
             : h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, refreshing ? '正在读取…' : '尚未查询'))
@@ -402,7 +401,7 @@ window.__ModuleLoader__.load({
     }
 
     /** 一个账号的卡片：身份、启停/登录/删除、额度。 */
-    function AccountCard({ account, accountState, canControl, readQuota, source, disabled, connection, busy, onActivate, onRelogin, onRemove, onConnect, onWarmup, onCancel, confirmRemove, setConfirmRemove }) {
+    function AccountCard({ account, readQuota, source, disabled, onActivate, onRelogin, onRemove, confirmRemove, setConfirmRemove }) {
       const title = account.alias
       return h('article', { role: 'listitem', 'aria-label': '账号 ' + title, style: { padding: '11px 12px', borderRadius: '11px', border: '1px solid ' + (account.active ? 'rgba(23,124,85,.55)' : 'rgba(128,128,128,.16)'), background: account.active ? 'rgba(23,124,85,.05)' : 'rgba(128,128,128,.025)' } },
         h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: '10px' } },
@@ -414,9 +413,6 @@ window.__ModuleLoader__.load({
               !account.ready ? h(AccountTag, { color: '#b42318', background: 'rgba(180,35,24,.10)' }, '未登录') : null),
             account.email ? h('div', { style: { fontSize: '12px', marginTop: '2px', overflowWrap: 'anywhere' } }, account.email) : null),
           h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'flex-end', marginLeft: 'auto' } },
-            account.active ? h('button', { type: 'button', style: { ...PRIMARY, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || disabled || busy, onClick: onConnect }, accountState === 'connecting' ? '正在连接…' : '连接 / 登录 ACP') : null,
-            account.active ? h('button', { type: 'button', style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || disabled || busy || connection.ready, onClick: onWarmup }, connection.ready ? '已预热' : '立即预热') : null,
-            account.active && ['connecting', 'cancelling'].includes(accountState) ? h('button', { type: 'button', style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || accountState === 'cancelling', onClick: onCancel }, accountState === 'cancelling' ? '正在取消…' : '取消连接') : null,
             !account.active ? h('button', { type: 'button', disabled, style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, onClick: () => onActivate(account) }, '使用此账号') : null,
             !account.system ? h('button', { type: 'button', disabled, style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, onClick: () => onRelogin(account) }, account.ready ? '重新登录' : '登录') : null,
             !account.system ? h('button', {
@@ -760,19 +756,12 @@ window.__ModuleLoader__.load({
                 ...accounts.map((row) => h(AccountCard, {
                   key: row.id,
                   account: row,
-                  accountState: account?.state,
-                  canControl: Boolean(props.control),
-                  connection,
-                  busy,
                   readQuota: props.readQuota,
                   source: PROVIDER,
                   disabled: authBusy,
                   onActivate: (target) => accountAction('activate', { id: target.id }),
                   onRelogin: (target) => accountAction('relogin', { id: target.id }),
                   onRemove: (target) => { setConfirmRemoveId(undefined); void accountAction('remove', { id: target.id }) },
-                  onConnect: () => accountAction('login'),
-                  onWarmup: () => accountAction('warmup'),
-                  onCancel: () => accountAction('cancel'),
                   confirmRemove: confirmRemoveId === row.id,
                   setConfirmRemove: setConfirmRemoveId,
                 })))
@@ -920,7 +909,7 @@ window.__ModuleLoader__.load({
         credits?.stale ? h('p', { role: 'status', style: { margin: '4px 0 0', fontSize: '11px', color: '#d99b28' } }, '余额缓存 · ' + (credits.staleReason ?? '余额刷新失败')) : null,
         credits?.error?.message ? h('p', { role: credits.status === 'error' ? 'alert' : 'status', style: { margin: '4px 0 0', fontSize: '11px', overflowWrap: 'anywhere' } }, credits.error.message) : null)
     }
-    function QuotaDetails({ data, refreshing, load, model, onClose, showHeader = true, showCredits = true }) {
+    function QuotaDetails({ data, model, onClose, showHeader = true, showCredits = true }) {
       return h('div', { style: { display: 'grid', gap: 0 } },
         showHeader ? h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', paddingBottom: '9px', borderBottom: '1px solid rgba(128,128,128,.16)' } },
           h('strong', { style: { fontSize: '14px', flex: 1 } }, 'Antigravity · 套餐额度'),
@@ -941,10 +930,7 @@ window.__ModuleLoader__.load({
               remainingBar(bucket, false, data?.stale, group.name + ' ' + windowName(bucket) + '剩余额度'),
               h('div', { title: bucket.disabled ? bucket.description : bucket.resetTime, style: { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', fontSize: '11px', lineHeight: 1.35, marginTop: '4px' } }, bucket.disabled ? bucket.description ?? '此窗口不可用' : resetCountdown(bucket.resetTime)))
           })) : h('span', { style: { fontSize: '11px' } }, data ? '未提供额度数据' : '正在读取…'))),
-        showCredits ? CreditsDetails({ credits: data?.credits, pending: !data }) : null,
-        load ? h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '8px' } },
-          h('span', { style: { flex: 1 } }),
-          h('button', { type: 'button', disabled: refreshing, onClick: () => load(true), style: { ...ACTION, minHeight: '27px', padding: '3px 9px', fontSize: '11px' } }, refreshing ? '刷新中…' : '刷新额度')) : null)
+        showCredits ? CreditsDetails({ credits: data?.credits, pending: !data }) : null)
     }
     /** 紧凑余量条与单词状态的交互参考 dsh-subusage；取数仍由本插件负责。 */
     function quotaPillStatus(data, buckets) {
@@ -1016,7 +1002,7 @@ window.__ModuleLoader__.load({
             : h('span', { 'aria-hidden': true, style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', borderRadius: '50%', background: pillStatus.color, color: '#fff', fontSize: '11px' } }, pillStatus.icon),
           pillStatus.short ? h('span', null, pillStatus.short) : null),
         expanded ? h('div', { role: 'dialog', 'aria-label': 'Antigravity 额度详情', style: { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 50, width: 'min(340px, calc(100vw - 24px))', maxHeight: 'min(70vh, calc(100vh - 72px))', overflowY: 'auto', boxSizing: 'border-box', overflowWrap: 'anywhere', padding: '12px', borderRadius: '12px', background: 'var(--dsh-surface, Canvas)', color: 'var(--dsh-text, CanvasText)', border: '1px solid rgba(128,128,128,.28)', boxShadow: '0 12px 32px rgba(0,0,0,.28)', fontSize: '12px', ...position } },
-          QuotaDetails({ ...quota, model, onClose: () => { setExpanded(false); button.current?.focus?.() } })) : null)
+          QuotaDetails({ data: quota.data, model, onClose: () => { setExpanded(false); button.current?.focus?.() } })) : null)
     }
 
     /** 给 promise 加超时：Host 侧异常时界面也要落到可读错误，而不是永远 pending。 */
