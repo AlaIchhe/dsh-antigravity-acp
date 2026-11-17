@@ -747,12 +747,17 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       await adapter.discoverModels(signal)
     },
     models: async (force) => {
-      if (force) {
-        if (findCli()) await loadCliModels(true)
-        // 排队、启动握手和 session/new 各自已有超时，不再用普通请求预算截断整个冷启动。
-        else await adapter.discoverModels(undefined, false)
+      // ACP 连接现在按需建立，设置页打开时可能还没有会话目录；官方 CLI 的
+      // `agy models` 是独立的只读来源，先合并它，避免模型页空白。
+      let cli: readonly { id: string; name: string }[] = []
+      if (findCli()) cli = await loadCliModels(force)
+      else if (force) await adapter.discoverModels(undefined, false)
+      const acp = await adapter.listModels(AGY_PROVIDER_ID)
+      const byId = new Map(acp.map((model) => [model.id, model]))
+      for (const row of cli) {
+        if (!byId.has(row.id)) byId.set(row.id, { id: row.id, name: row.name, provider: AGY_PROVIDER_ID, inputModalities: ['text'] })
       }
-      return adapter.listModels(AGY_PROVIDER_ID)
+      return [...byId.values()]
     },
   })
 

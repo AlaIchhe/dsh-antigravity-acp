@@ -220,7 +220,7 @@ function modelStore(provider: string | null) {
 }
 
 describe('browser client module', () => {
-  it('设置页不再提供手动预热或连接，模型目录可刷新', async () => {
+  it('设置页不再提供手动预热或连接，模型目录自动读取', async () => {
     const control = vi.fn(async (method: string, request?: { action?: string; force?: boolean }) => method === 'account'
       ? {
         state: 'idle', message: 'test',
@@ -240,14 +240,6 @@ describe('browser client module', () => {
     expect(elements(tree).some(item => item.props['aria-label'] === '模型列表')).toBe(true)
     expect(text).not.toContain('首次')
     expect(control.mock.calls.some(([, request]) => request?.action === 'login')).toBe(false)
-    const click = (label: string) => {
-      const target = elements(tree).find((item) => item.type === 'button' && (texts(item).join('') === label || item.props['aria-label'] === label))
-      expect(target, label).toBeDefined()
-      ;(target!.props.onClick as () => void)()
-    }
-    click('刷新模型目录')
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(control).toHaveBeenCalledWith('models', { force: true })
     expect(readQuota).toHaveBeenCalled()
     expect(texts(tree).join(' ')).not.toContain('AI Credits 余额')
   })

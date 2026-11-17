@@ -151,119 +151,30 @@ describe('settings card with real React state and effects', () => {
   const controlWith = (models: unknown = catalog(), account: Record<string, unknown> = { state: 'idle', message: 'ready' }) =>
     vi.fn(async (method: string) => method === 'account' ? account : models)
 
-  it('逐模型设置只提交有意义的字段，清空的项从配置里移除', async () => {
-    const service = transport(document({
-      modelOverrides: { 'gemini-3-pro': { enabled: false, effort: 'low', name: '旧名', target: 'gemini-3-pro-high' } },
-    }))
-    const { renderer } = await mount(service.remote, controlWith())
-    expect(modelControl(renderer, 'enabled', 'gemini-3-pro').props.checked).toBe(false)
-    expect(modelControl(renderer, 'effort', 'gemini-3-pro').props.value).toBe('low')
-    expect(modelControl(renderer, 'name', 'gemini-3-pro').props.value).toBe('旧名')
-    await act(async () => {
-      modelControl(renderer, 'enabled', 'gemini-3-pro').props.onChange({ target: { checked: true } })
-      modelControl(renderer, 'effort', 'gemini-3-pro').props.onChange({ target: { value: '' } })
-      modelControl(renderer, 'name', 'gemini-3-pro').props.onChange({ target: { value: '  ' } })
-      modelControl(renderer, 'target', 'gemini-3-pro').props.onChange({ target: { value: '' } })
-    })
-    await act(async () => { await button(renderer, '保存').props.onClick() })
-    expect(service.mutate).toHaveBeenCalledWith('llm-antigravity-acp', [{ op: 'set', path: ['modelOverrides'], value: {} }], 1)
-  })
-
-  it('全部模型被隐藏时提示 provider 会从选择器消失，重新启用后提示消失', async () => {
-    const service = transport(document({ modelOverrides: { 'gemini-3-pro': { enabled: false }, 'claude-sonnet-5-5': { enabled: false } } }))
-    const { renderer } = await mount(service.remote, controlWith())
-    expect(renderedText(renderer)).toContain('全部隐藏后')
-    await act(async () => { modelControl(renderer, 'enabled', 'gemini-3-pro').props.onChange({ target: { checked: true } }) })
-    expect(renderedText(renderer)).not.toContain('全部隐藏后')
-    expect(renderedText(renderer)).toContain('已隐藏 1')
-  })
-
-  it('已经保存但当前目录没有的模型 ID 仍可编辑，并标注不在目录', async () => {
-    const service = transport(document({ modelOverrides: { 'retired-model': { target: 'retired-model-high' } } }))
-    const { renderer } = await mount(service.remote, controlWith())
-    expect(modelControl(renderer, 'target', 'retired-model').props.value).toBe('retired-model-high')
-    expect(renderedText(renderer)).toContain('不在当前目录')
-    expect(renderedText(renderer)).toContain('全部 3')
-  })
-
-  it('模型可搜索并按启停筛选，折叠的高级映射仍可编辑', async () => {
-    const service = transport(document({ modelOverrides: { 'gemini-3-pro': { enabled: false } } }))
-    const { renderer } = await mount(service.remote, controlWith())
-    const search = renderer.root.findByProps({ 'aria-label': '搜索模型' })
-    await act(async () => { search.props.onChange({ target: { value: 'claude' } }) })
-    expect(renderer.root.findAllByProps({ name: 'model-enabled-gemini-3-pro' })).toHaveLength(0)
-    expect(modelControl(renderer, 'enabled', 'claude-sonnet-5-5')).toBeDefined()
-    await act(async () => { search.props.onChange({ target: { value: '' } }) })
-    const filter = renderer.root.findByProps({ 'aria-label': '筛选模型' })
-    await act(async () => { filter.props.onChange({ target: { value: 'hidden' } }) })
-    expect(modelControl(renderer, 'enabled', 'gemini-3-pro').props.checked).toBe(false)
-    expect(renderer.root.findAllByProps({ name: 'model-enabled-claude-sonnet-5-5' })).toHaveLength(0)
-    await act(async () => { button(renderer, '全部启用').props.onClick() })
-    await act(async () => { filter.props.onChange({ target: { value: 'all' } }) })
-    expect(modelControl(renderer, 'enabled', 'gemini-3-pro').props.checked).toBe(true)
-  })
-
-
-
-
-
-  it('can discard a conflicted draft and restore the latest server settings', async () => {
-    const service = transport(document({ modelOverrides: { 'gemini-3-pro': { effort: 'low' } } }))
-    const { renderer } = await mount(service.remote, controlWith())
-    await act(async () => { modelControl(renderer, 'effort', 'gemini-3-pro').props.onChange({ target: { value: 'high' } }) })
-    await act(async () => { service.change(document({ modelOverrides: { 'gemini-3-pro': { effort: 'medium' } } }, 2)) })
-    await act(async () => { button(renderer, '撤销').props.onClick() })
-    expect(modelControl(renderer, 'effort', 'gemini-3-pro').props.value).toBe('medium')
-    expect(button(renderer, '保存').props.disabled).toBe(true)
-    expect(renderedText(renderer)).not.toContain('其他位置更新了以下设置')
-    expect(service.mutate).not.toHaveBeenCalled()
-  })
-
-
-
-  it('目录变化时刷新逐模型列表，手动列目录也能读到新条目', async () => {
+  it('模型只以标签展示显示 / 隐藏，不再有逐模型编辑器', async () => {
     const service = transport()
-    let revision = 1
-    const control = vi.fn(async (method: string, request?: { force?: boolean }) => {
-      if (method === 'account') return { state: 'idle', message: 'ready', runtime: { phase: 'ready', modelCatalogRevision: revision } }
-      if (request?.force) return { status: 'ok', models: [{ id: 'fresh-model', name: 'Fresh' }] }
-      return revision === 1 ? { status: 'ok', models: [] } : catalog()
-    })
-    const { renderer, intervals } = await mount(service.remote, control)
-    expect(renderedText(renderer)).toContain('暂无模型')
-    revision = 2
-    await act(async () => { for (const timer of intervals.values()) if (timer.delay === 2000) timer.callback() })
-    expect(modelControl(renderer, 'target', 'gemini-3-pro').props.value).toBe('')
-    expect(renderedText(renderer)).toContain('文本 · 图片')
-    await act(async () => { await button(renderer, '刷新模型目录').props.onClick() })
-    expect(modelControl(renderer, 'enabled', 'fresh-model')).toBeDefined()
+    const { renderer } = await mount(service.remote, controlWith())
+    await act(async () => { button(renderer, '模型').props.onClick() })
+    const chip = button(renderer, 'Gemini 3 Pro')
+    expect(chip.props['aria-pressed']).toBe(true)
+    await act(async () => { chip.props.onClick() })
+    expect(button(renderer, 'Gemini 3 Pro').props['aria-pressed']).toBe(false)
+    expect(renderer.root.findAllByProps({ name: 'model-effort-gemini-3-pro' })).toHaveLength(0)
   })
 
-  it('后台目录通知不覆盖手动拉取的等待状态和失败原因，可再次点击重试', async () => {
+  it('模型目录为空时提示先发一次对话', async () => {
     const service = transport()
-    const pending = deferred<unknown>()
-    let revision = 1
-    let fail = true
-    const control = vi.fn(async (method: string, request?: { force?: boolean }) => {
-      if (method === 'account') return { state: 'idle', runtime: { modelCatalogRevision: revision } }
-      if (request?.force) return fail ? pending.promise : { status: 'ok', models: [{ id: 'new-model', name: 'New Model' }] }
-      return { status: 'ok', models: [{ id: 'old-model', name: 'Old Model' }] }
-    })
-    const { renderer, intervals } = await mount(service.remote, control)
-    await act(async () => { void button(renderer, '刷新模型目录').props.onClick() })
-    expect(renderedText(renderer)).toContain('正在拉取模型目录')
-    const calls = control.mock.calls.filter(([method]) => method === 'models').length
-    revision++
-    await act(async () => { for (const timer of intervals.values()) if (timer.delay === 2000) timer.callback() })
-    expect(control.mock.calls.filter(([method]) => method === 'models')).toHaveLength(calls)
-    expect(button(renderer, '正在刷新…').props.disabled).toBe(true)
-    await act(async () => { pending.resolve({ status: 'error', models: [{ id: 'old-model', name: 'Old Model' }], message: '目录拉取失败，请重试' }) })
-    expect(renderedText(renderer)).toContain('目录拉取失败，请重试')
-    expect(button(renderer, '刷新模型目录').props.disabled).toBe(false)
-    fail = false
-    await act(async () => { await button(renderer, '刷新模型目录').props.onClick() })
-    expect(modelControl(renderer, 'enabled', 'new-model')).toBeDefined()
+    const { renderer } = await mount(service.remote, controlWith({ status: 'ok', models: [] }))
+    await act(async () => { button(renderer, '模型').props.onClick() })
+    expect(renderedText(renderer)).toContain('模型目录还没有可用模型')
   })
+
+
+
+
+
+
+
 
   const accountSnapshot = {
     state: 'idle', message: 'ready', activeAccountId: 'primary', auth: { phase: 'idle' },

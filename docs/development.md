@@ -68,11 +68,11 @@ npm pack
 | 构建 | `npm run build` 通过 |
 | 工具 / runtime | 假 ACP / MCP、乱序工具结果、池所有权、续轮变更、取消、写入阻塞和回收 |
 | 图片 | 附件引用校验、图片内容映射与跨 worker 能力、附件缺席降级；未调用真实视觉模型 |
-| 设置交互 | React 18 renderer 覆盖全部即时字段（普通配置不在卡片内编辑，`proxyBypass` 不提供控制项）与逐模型 `modelOverrides` 的编辑、搜索、启停筛选、保存回读、草稿、冲突、只读与 namespace 恢复；账号 / 模型分页后非活动页只隐藏不卸载，账号页渲染账号卡片、添加账号的授权链接与取消、切换、两段确认删除与逐账号额度；不替代真实宿主设置服务或 GUI 验收 |
+| 设置交互 | React 18 renderer 覆盖全部即时字段（普通配置不在卡片内编辑，`proxyBypass` 不提供控制项）与逐模型 `modelOverrides` 的显示开关、保存回读、草稿、冲突、只读与 namespace 恢复；账号 / 模型分页后非活动页只隐藏不卸载，账号页渲染账号卡片、添加账号的授权链接与取消、切换、两段确认删除与逐账号额度；不替代真实宿主设置服务或 GUI 验收 |
 | 多账号 | 账号持久化 / 坏文件回退 / 跨目录记录拒绝；系统账号不可删除、不可面板重登；真实 loopback OAuth 回调（state 不匹配不消费流程）、取消清理暂存目录、换码失败与登录后自动激活；隔离 HOME 的 Linux D-Bus / Windows USERPROFILE / Unix HOME 覆盖；ACP 启动按账号 id 与登录代际回收旧链路；额度缓存与在途请求按账号隔离；不触真实 Google 账户 |
 | 面板 OAuth | PKCE / authorize URL 参数、授权码换 token、userinfo 邮箱、CLI token 文件形态与 0600、ACP 凭据文件直写；授权 URL 只含 state / challenge，不下发 code 或 token；测试使用 127.0.0.1 与假 fetch，不代表真实 Google 可达性 |
 | 无 CLI 授权闭环 | 不存在的 CLI 文件 → 实际 OAuth/PKCE → 生产监听器随机测试端口的真实 HTTP 回调 → 模拟 Google 换码/项目 → 真实临时 store → 真实适配器目录 → 重建读取；拒绝/缺码/过期/端口冲突/项目及保存失败/取消后可重试 |
-| 设置页 UX | 精简首屏、无修改时隐藏保存区、当前账户、紧凑模型列表、搜索/筛选/批量启停与完整详情、账号卡片与自动额度；未保存计数/撤销/只读/冲突，取消可用性、授权链接/阶段；自动额度、实际路由家族、账户切换及旧广播、共享刷新收尾 |
+| 设置页 UX | 精简首屏、无修改时隐藏保存区、当前账户、模型显示标签、账号卡片与自动额度；未保存计数/撤销/只读/冲突，取消可用性、授权链接/阶段；自动额度、实际路由家族、账户切换及旧广播、共享刷新收尾 |
 | 浏览器布局 | 已注册 Chrome + 既有 Playwright 1.63.0，离线真实 Client 静态夹具；320/390/1280 宽度、深浅主题及顶部/中部/底部共 36 项检查，保存栏可见且无横向溢出；静态布局不替代桌面实例验收 |
 | 桌面注册契约 | 核对当前桌面分发包内 Core 0.2.1-rc.5 / Cordis 4.0.5 的 Typert 注册实现；使用该包实际依赖隔离导入构建产物，真实 Context 中只出现一个 package-face，provider 注册生效，卸载后路由和 ready 状态清理。未连接当前运行中的 Host 或真实账户 |
 | 代理（出网） | 合成依赖、动态变更与清空、不打断旧响应、卸载释放、失败不直连、运行期地址变坏时按 Promise 拒绝、装载期非法地址不阻断插件、本地 SOCKS 测试；不是 Google 网络可达性保证 |
@@ -91,7 +91,7 @@ npm pack
 node scripts/preview-ui.mjs
 ```
 
-输出 `.local-preview/quota-ui.html`，以及有独立滚动容器的 `.local-preview/settings-ux.html`。覆盖额度药丸、账号页（账号卡片 + 逐账号自动额度 + 连接操作）、模型页、常驻保存栏与自动额度；使用真实 Client 和**模拟数据 / hooks**生成静态 HTML，按钮不执行真实操作。状态交互由 `tests/client-interaction.test.ts` 的 React 18 renderer 覆盖，布局另由离线浏览器核验。
+输出 `.local-preview/quota-ui.html`，以及有独立滚动容器的 `.local-preview/settings-ux.html`。覆盖额度药丸、账号页（账号卡片 + 逐账号自动额度 + 连接操作）、模型显示标签页、常驻保存栏与自动额度；使用真实 Client 和**模拟数据 / hooks**生成静态 HTML，按钮不执行真实操作。状态交互由 `tests/client-interaction.test.ts` 的 React 18 renderer 覆盖，布局另由离线浏览器核验。
 
 ### 本次改动的补充验证
 

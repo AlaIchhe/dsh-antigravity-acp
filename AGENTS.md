@@ -16,7 +16,7 @@ npm 包名 `dsh-bundle-antigravity-acp`、provider ID `antigravity-acp`、内部
 
 1. **对话可用**：在 DSH 里选择 `Antigravity (ACP)` 的模型即可生成，工具调用经私有 loopback MCP 桥回到 DSH 执行，结果回填同一个 ACP prompt。
 2. **连接与目录**：设置页能读取模型目录；ACP 连接在首次聊天时按需建立，不发送聊天 prompt。
-3. **模型列表由设置页管理**：用户按模型控制是否出现在 DSH 模型选择器、默认思考档位、显示名与官方模型 ID 映射。
+3. **模型列表由设置页管理**：用户按模型控制是否出现在 DSH 模型选择器；档位 / 显示名 / 官方 ID 映射只保留配置兼容，不在 UI 编辑。
 4. **不再维护「默认模型」**：DSH 自带模型选择器负责选模，插件侧不保存第二份「新对话优先模型」。
 5. **多账号与面板登录**：账号列表持久化；系统账号使用真实 HOME、只读导入官方 CLI 登录态且不可删除；新增 / 重新登录在设置页直接完成浏览器 OAuth，token 写入该账号隔离 HOME（官方 CLI 格式 + ACP 文件）；切换只影响后续连接，正在进行的回合不被打断；额度按账号读取，药丸跟随当前账号。
 6. **额度按账号读取**：套餐额度默认走 Cloud Code Assist HTTP（读该账号 HOME 下的 CLI 登录态）；`cliQuotaEnabled` 打开后改用 `agy -p /usage` 与 `agy -p /credits`，未找到 CLI 时套餐额度回落 HTTP；药丸只跟随当前账号，面板逐账号自动读取，切换 / 登录 / 删除后重新取数。
@@ -50,7 +50,7 @@ npm 包名 `dsh-bundle-antigravity-acp`、provider ID `antigravity-acp`、内部
 
 ## 维护约定
 
-- 字段以 [`src/settings.ts`](src/settings.ts) 的 `Config` 为唯一来源；`LIVE_SETTING_KEYS` 只管理即时字段。设置卡片只编辑即时字段与 `modelOverrides`（逐模型编辑器）——宿主只把 volatile 字段投影进设置文档，也会拒绝 `mutate` 非 volatile 路径，把它们渲染成可编辑控件只会得到「值不是真值、保存整批失败」；`proxyBypass` 仅保留配置兼容性、不显示控制项（有测试锁定）。
+- 字段以 [`src/settings.ts`](src/settings.ts) 的 `Config` 为唯一来源；`LIVE_SETTING_KEYS` 只管理即时字段。设置卡片只编辑即时字段与 `modelOverrides` 的显示开关——宿主只把 volatile 字段投影进设置文档，也会拒绝 `mutate` 非 volatile 路径，把它们渲染成可编辑控件只会得到「值不是真值、保存整批失败」；`proxyBypass` 仅保留配置兼容性、不显示控制项（有测试锁定）。
 - 设置页分「账号 / 模型」；账号页只保留账号卡片（切换 / 登录 / 删除）与自动额度（参考 `dsh-agy-link` 的账户卡片：状态、操作与额度是同一个账户的两面）；取数方式、会话调优与诊断只在配置文件/日志，不占 UI。
 - 模型设置的纯逻辑集中在 [`src/adapter/model-settings.ts`](src/adapter/model-settings.ts)，适配器与客户端只消费其结论。
 - 多账号在 [`src/accounts/`](src/accounts/) 下独立：`types.ts` 共享契约、`store.ts` 持久化与路径校验、`oauth.ts` 授权码 / PKCE / 回调、`manager.ts` 登录与切换。`ensureAcpRuntime` 只接受「当前账号 + 登录代际」，切换时先回收旧链路。

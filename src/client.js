@@ -28,21 +28,13 @@ window.__ModuleLoader__.load({
     /** 逐模型设置：键是 DSH 选择器里的模型 ID，值是开关、默认档位、显示名与官方 ID 映射。 */
     const OVERRIDES_KEY = 'modelOverrides'
     const OVERRIDES_LABEL = '模型列表设置'
-    const EFFORT_OPTIONS = [
-      { value: '', label: '跟随官方' },
-      { value: 'low', label: '低' },
-      { value: 'medium', label: '中' },
-      { value: 'high', label: '高' },
-    ]
-    const EFFORT_IDS = new Set(EFFORT_OPTIONS.map((entry) => entry.value).filter(Boolean))
-    const MODALITY_LABELS = { text: '文本', image: '图片', audio: '音频', video: '视频', file: '文件' }
 
     /** 只保留有意义的字段：启用是默认值，空串等于未设置。 */
     function canonicalOverride(row) {
       const source = row && typeof row === 'object' ? row : {}
       const result = {}
       if (source.enabled === false) result.enabled = false
-      if (EFFORT_IDS.has(source.effort)) result.effort = source.effort
+      if (typeof source.effort === 'string' && source.effort.trim()) result.effort = source.effort.trim()
       const name = typeof source.name === 'string' ? source.name.trim() : ''
       if (name) result.name = name
       const target = typeof source.target === 'string' ? source.target.trim() : ''
@@ -95,83 +87,30 @@ window.__ModuleLoader__.load({
           h('h3', { style: { fontSize: '14px', lineHeight: 1.4, fontWeight: 650, margin: 0 } }, title)),
         action ?? null)
     }
-    /** 紧凑列表行；完整 ID、输入能力、改名和映射集中在单条详情里。 */
-    function ModelOverrideRow({ row, override, disabled, onEdit }) {
-      const enabled = override.enabled !== false
-      const inputId = 'agy-model-' + row.id.replace(/[^\w.-]/g, '_')
-      const labelStyle = { fontSize: '11px' }
-      const inputStyle = { ...ACTION, width: '100%', minWidth: 0, boxSizing: 'border-box', background: 'rgba(128,128,128,.035)', cursor: disabled ? 'not-allowed' : 'text' }
-      const displayName = override.name?.trim() || row.name
-      return h('div', { role: 'listitem', style: { padding: '9px 0', borderBottom: '1px solid rgba(128,128,128,.12)', opacity: enabled ? 1 : .58 } },
-        h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: '8px' } },
-          h('label', { title: displayName, style: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, cursor: disabled ? 'default' : 'pointer' } },
-            h('input', { name: 'model-enabled-' + row.id, type: 'checkbox', checked: enabled, disabled,
-              onChange: (event) => onEdit(row.id, { enabled: event.target.checked }),
-              style: { width: '15px', height: '15px', flex: '0 0 auto', margin: 0, accentColor: '#177c55', cursor: disabled ? 'not-allowed' : 'pointer' } }),
-            h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12px', fontWeight: 600 } }, displayName)),
-          h('label', { htmlFor: inputId + '-effort', style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px' } },
-            h('span', null, '思考'),
-            h('select', { id: inputId + '-effort', name: 'model-effort-' + row.id, disabled, value: EFFORT_IDS.has(override.effort) ? override.effort : '',
-              'aria-label': displayName + ' 默认思考档位',
-              onChange: (event) => onEdit(row.id, { effort: event.target.value }),
-              style: { ...inputStyle, width: 'auto', minHeight: '29px', padding: '3px 7px', cursor: disabled ? 'not-allowed' : 'pointer' } },
-              ...EFFORT_OPTIONS.map((option) => h('option', { key: option.value, value: option.value }, option.label))))),
-        h('details', { style: { marginLeft: '23px', marginTop: '5px' } },
-          h('summary', { style: { ...SUMMARY, justifyContent: 'flex-start', fontSize: '11px' } }, '模型设置'),
-          h('div', { style: { display: 'grid', gap: '10px', marginTop: '10px', padding: '10px', borderRadius: '8px', background: 'rgba(128,128,128,.04)' } },
-            h('div', { style: { display: 'grid', gap: '3px' } },
-              h('span', { style: labelStyle }, '模型 ID'),
-              h('code', { style: { fontSize: '11px', overflowWrap: 'anywhere' } }, row.id)),
-            h('div', { style: { display: 'grid', gap: '10px', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' } },
-              h('div', { style: { display: 'grid', gap: '4px', minWidth: 0 } },
-                h('label', { htmlFor: inputId + '-name', style: labelStyle }, '显示名'),
-                h('input', { id: inputId + '-name', name: 'model-name-' + row.id, type: 'text', disabled, value: override.name ?? '',
-                  placeholder: row.name, onChange: (event) => onEdit(row.id, { name: event.target.value }), style: inputStyle })),
-              h('div', { style: { display: 'grid', gap: '4px', minWidth: 0 } },
-                h('label', { htmlFor: inputId + '-target', style: labelStyle }, '官方模型 ID'),
-                h('input', { id: inputId + '-target', name: 'model-target-' + row.id, type: 'text', disabled, value: override.target ?? '',
-                  placeholder: '留空自动路由', onChange: (event) => onEdit(row.id, { target: event.target.value }), style: inputStyle }))),
-            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 12px', fontSize: '11px' } },
-              h('span', null, row.inCatalog ? '当前目录' : '不在当前目录'),
-              Array.isArray(row.inputModalities) && row.inputModalities.length
-                ? h('span', null, row.inputModalities.map((modality) => MODALITY_LABELS[modality] ?? modality).join(' · ')) : null))))
-    }
-
-    function ModelOverrideList({ rows, overrides, disabled, onEdit }) {
-      const [query, setQuery] = React.useState('')
-      const [filter, setFilter] = React.useState('all')
+    /** 参考 dsh-agy-link：模型只做显示 / 隐藏，不再维护逐模型的思考档位、改名与官方 ID。 */
+    function ModelChips({ rows, overrides, disabled, onEdit }) {
       if (rows.length === 0) {
-        return h('p', { role: 'status', style: { margin: 0, fontSize: '12px', lineHeight: 1.5 } }, '暂无模型。请先连接当前账户，再刷新目录。')
+        return h('p', { role: 'status', style: { margin: 0, fontSize: '12px', lineHeight: 1.5 } },
+          '模型目录还没有可用模型，发一次对话后再来管理。')
       }
       const hidden = rows.filter((row) => overrideFor(overrides, row.id).enabled === false).length
-      const keyword = query.trim().toLowerCase()
-      const visible = rows.filter((row) => {
-        const override = overrideFor(overrides, row.id)
-        if (filter === 'enabled' && override.enabled === false) return false
-        if (filter === 'hidden' && override.enabled !== false) return false
-        return !keyword || (row.name + ' ' + row.id + ' ' + (override.name ?? '')).toLowerCase().includes(keyword)
-      })
-      const setVisible = (enabled) => { for (const row of visible) onEdit(row.id, { enabled }) }
       return h('div', { style: { display: 'grid', gap: '8px' } },
-        h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '8px' } },
-          h('input', { type: 'search', value: query, onChange: (event) => setQuery(event.target.value), placeholder: '搜索模型', 'aria-label': '搜索模型',
-            style: { ...ACTION, width: '100%', minWidth: 0, boxSizing: 'border-box', cursor: 'text' } }),
-          h('select', { value: filter, onChange: (event) => setFilter(event.target.value), 'aria-label': '筛选模型', style: ACTION },
-            h('option', { value: 'all' }, '全部 ' + rows.length),
-            h('option', { value: 'enabled' }, '已启用 ' + (rows.length - hidden)),
-            h('option', { value: 'hidden' }, '已隐藏 ' + hidden))),
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' } },
-          h('span', { style: { marginRight: 'auto' } }, '显示 ' + visible.length + ' / ' + rows.length),
-          h('button', { type: 'button', disabled: disabled || visible.length === 0, onClick: () => setVisible(true), style: { ...ACTION, minHeight: '26px', padding: '2px 7px', fontSize: '11px' } }, '全部启用'),
-          h('button', { type: 'button', disabled: disabled || visible.length === 0, onClick: () => setVisible(false), style: { ...ACTION, minHeight: '26px', padding: '2px 7px', fontSize: '11px' } }, '全部隐藏')),
+        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } }, ...rows.map((row) => {
+          const isHidden = overrideFor(overrides, row.id).enabled === false
+          const title = row.id + (row.inCatalog ? '' : ' · 不在当前目录')
+          return h('button', {
+            key: row.id, type: 'button', title, disabled,
+            'aria-pressed': !isHidden,
+            onClick: () => onEdit(row.id, { enabled: isHidden }),
+            style: { ...ACTION, padding: '3px 9px', borderRadius: '99px', fontSize: '11px', minHeight: '27px',
+              ...(isHidden ? { opacity: .45, textDecoration: 'line-through' } : {}) },
+          }, row.name)
+        })),
+        h('span', { style: { fontSize: '11px', lineHeight: 1.5 } },
+          '点击切换显示 / 隐藏；关闭的模型不在模型选择器中列出，进行中的会话不受影响。'),
         hidden === rows.length
-          ? h('p', { role: 'status', style: { margin: 0, fontSize: '11px', lineHeight: 1.5, color: '#946200' } }, '全部隐藏后，Antigravity 将从模型选择器消失。')
-          : null,
-        visible.length
-          ? h('div', { role: 'list', style: { display: 'grid' } }, ...visible.map((row) => h(ModelOverrideRow, {
-            key: row.id, row, override: overrideFor(overrides, row.id), disabled, onEdit,
-          })))
-          : h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, '没有符合条件的模型。'))
+          ? h('p', { role: 'status', style: { margin: 0, fontSize: '11px', color: '#946200' } }, '全部隐藏后，Antigravity 将从模型选择器消失。')
+          : null)
     }
 
     /** 账号卡片里的一行小徽标。 */
@@ -316,7 +255,6 @@ window.__ModuleLoader__.load({
       const [accountNotice, setAccountNotice] = React.useState(null)
       const [confirmRemoveId, setConfirmRemoveId] = React.useState(undefined)
       const [models, setModels] = React.useState([])
-      const [modelBusy, setModelBusy] = React.useState(false)
       const [modelMessage, setModelMessage] = React.useState('')
       const alive = React.useRef(true)
       const modelVersion = React.useRef(0)
@@ -328,7 +266,6 @@ window.__ModuleLoader__.load({
         if (!props.control || manualModelPull.current) return
         if (force) manualModelPull.current = true
         const version = ++modelVersion.current
-        setModelBusy(true)
         if (force) setModelMessage('正在拉取模型目录…')
         try {
           const value = unwrap(await props.control('models', force ? { force: true } : undefined))
@@ -338,7 +275,6 @@ window.__ModuleLoader__.load({
         } catch (error) { if (alive.current && version === modelVersion.current) setModelMessage(error instanceof Error ? error.message : String(error)) }
         finally {
           if (force) manualModelPull.current = false
-          if (alive.current && version === modelVersion.current) setModelBusy(false)
         }
       }, [props.control])
       const accountAction = React.useCallback(async (action = 'status', request) => {
@@ -369,7 +305,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         alive.current = true
         void accountAction('status')
-        void pullModels(false)
+        void pullModels(true)
         return () => { alive.current = false; ++modelVersion.current; ++accountVersion.current }
       }, [accountAction, pullModels])
       React.useEffect(() => {
@@ -627,9 +563,8 @@ window.__ModuleLoader__.load({
 
         h('div', { id: 'agy-settings-page-models', role: 'tabpanel', style: pageStyle('models') },
           h('section', { style: PANEL, 'aria-label': '模型列表' },
-            h(SectionHeading, { title: '模型',
-              action: h('button', { type: 'button', title: '刷新模型目录', 'aria-label': '刷新模型目录', 'aria-busy': modelBusy || undefined, style: { ...ACTION, flex: '0 0 auto', whiteSpace: 'nowrap' }, disabled: modelBusy || !props.control, onClick: () => pullModels(true) }, modelBusy ? '正在刷新…' : '刷新') }),
-            h(ModelOverrideList, { rows, overrides: draft[OVERRIDES_KEY], disabled: editingDisabled, onEdit: editOverride }),
+            h(SectionHeading, { title: '模型' }),
+            h(ModelChips, { rows, overrides: draft[OVERRIDES_KEY], disabled: editingDisabled, onEdit: editOverride }),
             modelMessage ? h('p', { role: 'status', style: { fontSize: '12px', lineHeight: 1.5, margin: 0, overflowWrap: 'anywhere' } }, modelMessage) : null)))
     }
 
