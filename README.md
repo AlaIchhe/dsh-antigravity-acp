@@ -1,7 +1,9 @@
 # Antigravity ACP for DSH · 二次开源分支
 
-> 本项目是 **[KouzakiUmi/dsh-antigravity-acp](https://github.com/KouzakiUmi/dsh-antigravity-acp)** 的
-> 二次开源分支（fork），由 `AlaIchhe` 维护，**不是官方版本**，与原作者没有隶属或授权关系。
+> 本项目基于 **[KouzakiUmi/dsh-antigravity-acp](https://github.com/KouzakiUmi/dsh-antigravity-acp)** 的
+> 代码，由 `AlaIchhe` 独立维护，**不是官方版本**，与原作者没有隶属或授权关系。
+>
+> **自 2026-11-17 起，本仓库是这条线的唯一维护处**：不再向上游提交改动，也不再跟随上游发版。
 >
 > 上游 README 原文完整保留在 [README.upstream.md](./README.upstream.md)。
 > 许可证沿用上游的 MIT，版权归原作者及贡献者。
@@ -16,8 +18,9 @@
 **如果原作者认为本分支的存在不妥：**
 
 - 在 [Issues](https://github.com/AlaIchhe/dsh-antigravity-acp/issues) 提一条即可（标题写「下架」两个字就行，不用说明理由）；
-- 我会在 48 小时内把仓库归档或删除；
-- 我的改动会改为**只向上游提 PR** 的形式，不再单独维护分支。
+- 我会在 48 小时内把仓库归档或删除。
+
+不需要理由，也不会讨价还价。
 
 同理，如果上游后续合并了等价修复，我会主动归档本分支并引导使用者回到上游。
 
@@ -41,10 +44,14 @@
 - 新增 `AgyModelTier = AgyReasoningEffort | 'xhigh'`，仅用于识别与家族折叠；
 - `AGY_REASONING_EFFORTS` 仍是 `low / medium / high`，思考强度菜单里不会出现选中就报错的选项。
 
-### 上游状态
+### 上游 PR（历史）
 
-- 第 1 项已向上游提 PR：[#11 fix(model): 识别 xhigh 档位但不暴露](https://github.com/KouzakiUmi/dsh-antigravity-acp/pull/11)（对应 issue [#10](https://github.com/KouzakiUmi/dsh-antigravity-acp/issues/10)）
-- 第 2 项尚未提 PR；先在本分支验证，稳定后再提
+xhigh 这一项曾在 2026-11-17 向提过上游 PR
+[#11](https://github.com/KouzakiUmi/dsh-antigravity-acp/pull/11)（对应 issue
+[#10](https://github.com/KouzakiUmi/dsh-antigravity-acp/issues/10)）。
+
+**该 PR 已不再跟进**：是否合并由上游决定，本仓库不等待、也不依赖它的结果。
+上游若合并了等价修复，本仓库的对应改动会原样保留——它不冲突。
 
 ### 2. 上下文显示一直是 100%
 
@@ -86,7 +93,7 @@ dsh plugin --profile <profile> add github:AlaIchhe/dsh-antigravity-acp
 
 ---
 
-## 与上游同步
+## 自行合并上游（可选）
 
 ```bash
 git remote add upstream https://github.com/KouzakiUmi/dsh-antigravity-acp.git
@@ -94,7 +101,8 @@ git fetch upstream
 git rebase upstream/main
 ```
 
-改动刻意保持最小，就是为了这一步不发生冲突。上游合并等价修复后，本分支会归档。
+本仓库平时不跟随上游。只有当你确实想要上游的新功能时，才需要手动执行上面的命令；
+冲突以本仓库的改动为准（xhigh 折叠、usage 锚点）。
 
 ---
 
