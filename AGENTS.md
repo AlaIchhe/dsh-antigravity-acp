@@ -24,6 +24,7 @@ npm 包名 `dsh-bundle-antigravity-host`、provider ID `antigravity-acp` / `anti
 5. **代理模式默认关闭、可切换**：`proxyMode` 保存即生效；OAuth 先导入官方 CLI 登录态、缺失再 loopback 登录；额度监控复用既有药丸与快照结构，按当前模式取对应账户。
 6. **无需 CLI 的代理登录与常驻保存**：代理模式无 CLI 时可直接浏览器 OAuth；设置页保存操作随滚动常驻顶部，展示未保存计数和冲突。设置页可手动拉取当前模式额度；对话药丸采用 subusage 风格的紧凑余量条和简短状态，取数仍由本插件负责。
 7. **代理模式不回退 ACP**：只要保存了 `proxyMode`，ACP 路由、登录、预热、目录发现与二进制预读均停用；代理组件缺席或未就绪时显示可读状态，不自动拉起官方进程。对话药丸保留原尺寸且只保留一个额度入口，ACP 预热集中在设置页；展开详情采用分组、窗口并排的紧凑布局。
+8. **多账号与面板登录**：账号列表持久化；系统账号使用真实 HOME、只读导入官方 CLI 登录态且不可删除；新增 / 重新登录在设置页直接完成浏览器 OAuth，token 写入该账号隔离 HOME（官方 CLI 格式 + ACP 文件）；切换只影响后续连接，正在进行的回合不被打断；额度按账号读取，药丸跟随当前账号。
 
 验收以「目标符合性 + 关键使用流程 + 实际运行证据」共同判断，不以测试通过替代真实账号与 GUI 验收。
 
@@ -41,7 +42,8 @@ npm 包名 `dsh-bundle-antigravity-host`、provider ID `antigravity-acp` / `anti
 - **连接成功包含只读项目检测**：CLI 导入先校验或刷新 access token，再通过 `loadCodeAssist` 解析已有 Cloud Code Assist 项目；缺项目时给出可读错误，流程与参考插件的只读探测一致。失效登录态可进入 OAuth；状态快照只返回脱敏阶段与账户代际，授权链接仅在显式登录结果中返回。
 - **代理模式统一出网**：OAuth 与原生 TLS 请求都使用 `resolveHttpsProxy`，显式 `proxyUrl` 优先，留空继承 Host 的 HTTPS / ALL / HTTP 代理环境；小写变量优先。`proxyBypass` 优先于环境排除列表，命中目标才直连。原生 TLS 不读取全局 fetch dispatcher，不能把宿主 fetch 已走代理当作其出网证据。
 - **登录阶段与取消一致**：连接状态区分准备、等待浏览器、完成登录；阶段变化不增加账户代际或重复刷新目录。取消覆盖 OAuth 之前的换发和项目检测，以及回调后的换码与提交；失败原因按授权、项目检测和本地保存分别反馈，重试不受旧回调或监听关闭阻塞。
-- **设置页额度手动读取**：打开设置页只注册共享读取器，不自动取额度；手动拉取与药丸共享同一读取器。模式或账户代际变化时清空旧结果，旧请求不得覆盖新界面；同一次取数的广播不能使刷新按钮永久处于忙碌状态。
+- **设置页额度手动读取**：打开设置页只注册共享读取器，不自动取额度；面板的逐账号拉取不广播其它账号结果，药丸只读当前账号。账号切换 / 登录 / 删除后药丸重新取数；旧请求不得覆盖新界面。
+- **账号隔离**：`~/.antigravity-acp-accounts` 下的每个隔离账号有自己的 HOME，ACP server 与只读 CLI 都以该 HOME 启动；系统账号真实 HOME 的官方 CLI 文件只读。面板 OAuth 固定 loopback 51121 + state 校验，不下发 code/token；macOS 系统钥匙串的隔离局限必须如实记录。
 - **伪装口径复用审计实现**：agy 线头、chunked 分帧、OAuth 常量与请求变换取自 `@cortexkit/antigravity-auth-core@3.0.14`（与 dsh-tool-antigravity 0.5.2 同版本）；本包只写有界传输与适配器胶水。与参考实现的差异显式记录：不携带 DSH 归属第二头、单账户不轮转 429、SOCKS 在代理模式报错。
 
 ## 实现边界
@@ -55,8 +57,10 @@ npm 包名 `dsh-bundle-antigravity-host`、provider ID `antigravity-acp` / `anti
 
 ## 维护约定
 
-- 字段以 [`src/settings.ts`](src/settings.ts) 的 `Config` 为唯一来源；`LIVE_SETTING_KEYS` 只管理即时字段。设置卡片只编辑即时字段与 `modelOverrides`（逐模型编辑器），并以指引块列出普通配置字段名（并发、二进制、各段超时）——宿主只把 volatile 字段投影进设置文档，也会拒绝 `mutate` 非 volatile 路径，把它们渲染成可编辑控件只会得到「值不是真值、保存整批失败」；`proxyBypass` 仅保留配置兼容性、不显示控制项（有测试锁定）。
+- 字段以 [`src/settings.ts`](src/settings.ts) 的 `Config` 为唯一来源；`LIVE_SETTING_KEYS` 只管理即时字段。设置卡片只编辑即时字段与 `modelOverrides`（逐模型编辑器）——宿主只把 volatile 字段投影进设置文档，也会拒绝 `mutate` 非 volatile 路径，把它们渲染成可编辑控件只会得到「值不是真值、保存整批失败」；`proxyBypass` 仅保留配置兼容性、不显示控制项（有测试锁定）。
+- 设置页分「账号 / 模型 / 高级」；账号页把连接 / 登录、预热与手动额度放在同一页（参考 `dsh-agy-link` 的账户卡片：状态、操作与额度是同一个账户的两面），不单独设「连接」「额度」页。
 - 模型设置的纯逻辑集中在 [`src/adapter/model-settings.ts`](src/adapter/model-settings.ts)，适配器与客户端只消费其结论。
+- 多账号在 [`src/accounts/`](src/accounts/) 下独立：`types.ts` 共享契约、`store.ts` 持久化与路径校验、`oauth.ts` 授权码 / PKCE / 回调、`manager.ts` 登录与切换。`ensureAcpRuntime` 只接受「当前账号 + 登录代际」，切换时先回收旧链路。
 - 代理模式的线身份、传输、凭据、payload 与路由分别在 [`src/proxy/`](src/proxy/) 下独立模块；模式总线（`mode-bus.ts`）是互斥语义的唯一实现处。
 - 客户端 [`src/client.js`](src/client.js) 不得导入 Node 原生模块；`remote.settings` / `remote.llm` 必须逐个声明注入。一个包只注册一次 Host Typert contribution、只执行一次客户端 `$mount`，合并 `agyQuota` 与 `agyProxyAccount` 描述符；宿主拒绝重复 package-face / Remote package 身份。
 - 行为改动后同步更新 `docs/changelog.md`、`docs/configuration.md`、`docs/reference.md` 与 `docs/development.md` 的验证矩阵，并核对 `scripts/preview-kit.mjs` 的离线预览夹具。

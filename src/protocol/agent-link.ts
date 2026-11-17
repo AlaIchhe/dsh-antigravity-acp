@@ -43,6 +43,7 @@ import type {
 import type { SubprocessHandle, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { ambientProxyEnv, buildProxyEnv } from '../runtime/proxy-env.js'
 import type { ProxySettings } from '../runtime/proxy-env.js'
+import { isolatedHomeEnv } from '../runtime/isolated-home.js'
 
 /** 本包原创协议层错误码（AGY_* 前缀命名体系）。 */
 export const AGY_LINK_ERROR = {
@@ -695,6 +696,8 @@ export function officialAgentEnv(options: {
   tmpDir: string
   /** 出网代理；留空则不注入任何代理变量（官方进程直连）。 */
   proxy?: ProxySettings | undefined
+  /** 隔离账号的 HOME；省略时沿用宿主真实 HOME（系统账号）。 */
+  homeDir?: string
   parent?: NodeJS.ProcessEnv
 }): NodeJS.ProcessEnv {
   const parent = options.parent ?? process.env
@@ -729,6 +732,8 @@ export function officialAgentEnv(options: {
     if (value) env[key] = value
   }
   if (!env.SystemRoot && process.platform === 'win32') env.SystemRoot = 'C:\\Windows'
+  // 账号隔离必须覆盖上面转发的 HOME / USERPROFILE 等键；顺序不能反。
+  if (options.homeDir) Object.assign(env, isolatedHomeEnv(options.homeDir))
   // 代理放在最后合并：用户配置优先；未配置时转发宿主自身的代理环境，避免出现
   // 「宿主走代理、官方进程直连」的分裂路由（本机直连 Google 不通）。
   Object.assign(env, options.proxy ? buildProxyEnv(options.proxy) : ambientProxyEnv(parent))
@@ -744,6 +749,8 @@ export function launchAcpAgent(
     cwd?: string
     tmpDir: string
     proxy?: ProxySettings | undefined
+    /** 隔离账号的 HOME；系统账号省略。 */
+    homeDir?: string
     signal?: AbortSignal
   },
 ): SubprocessHandle {
@@ -755,7 +762,7 @@ export function launchAcpAgent(
   return subprocess.spawn({
     argv: [executable, ...(options.extraArgs ?? [])],
     cwd,
-    env: officialAgentEnv({ binaryDir, tmpDir: options.tmpDir, proxy: options.proxy }),
+    env: officialAgentEnv({ binaryDir, tmpDir: options.tmpDir, proxy: options.proxy, ...(options.homeDir ? { homeDir: options.homeDir } : {}) }),
     stdio: { stdin: 'pipe', stdout: 'pipe', stderr: { maxBytes: 64 * 1024 } },
     graceMs: 5_000,
     signal: options.signal,

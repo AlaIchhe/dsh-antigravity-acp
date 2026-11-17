@@ -60,16 +60,18 @@ npm pack
 
 ## 本次验证矩阵
 
-0.1.35 本地检查日期：**2026-11-03**；0.1.36（额度取数解耦、设置页紧凑布局与隔离修复）复检日期：**2026-11-04**（Asia/Hong_Kong）；0.1.37（AI Credits 未开启时隐藏、删除代理积分说明、保存栏面板化样式）复检日期：**2026-11-04**（Asia/Hong_Kong）；0.1.38（无档位模型的元数据、模式总线回切、设置卡片只编辑即时字段、会话选模按会话判定、一次性请求不再占死 worker、账户刷新与资源回收修复）复检日期：**2026-11-12**（Asia/Hong_Kong）。
+0.1.35 本地检查日期：**2026-11-03**；0.1.36（额度取数解耦、设置页紧凑布局与隔离修复）复检日期：**2026-11-04**（Asia/Hong_Kong）；0.1.37（AI Credits 未开启时隐藏、删除代理积分说明、保存栏面板化样式）复检日期：**2026-11-04**（Asia/Hong_Kong）；0.1.38（无档位模型的元数据、模式总线回切、设置卡片只编辑即时字段、会话选模按会话判定、一次性请求不再占死 worker、账户刷新与资源回收修复）复检日期：**2026-11-12**（Asia/Hong_Kong）；0.1.39（设置页把「连接 / 额度」合并为「账号」页；多账号与面板 OAuth 登录；紧凑额度摘要与文字精简）复检日期：**2026-11-17**（Asia/Hong_Kong）。
 
 | 验证项 | 状态与范围 |
 |---|---|
 | TypeScript | `npm run typecheck` 通过 |
-| 隔离回归 | 47 个文件 / 843 项通过；本次使用系统 Node 24 运行同一 TypeScript / Vitest / 构建入口 |
+| 隔离回归 | 38 个文件 / 686 项通过；本次使用系统 Node 26.13.0 运行同一 TypeScript / Vitest / 构建入口 |
 | 构建 | `npm run build` 通过 |
 | 工具 / runtime | 假 ACP / MCP、乱序工具结果、池所有权、续轮变更、取消、写入阻塞和回收 |
 | 图片 | 附件引用校验、图片内容映射与跨 worker 能力；代理模式 inlineData 准入、12MB 预算与 offload 协商、附件缺席降级；未调用真实视觉模型 |
-| 设置交互 | React 18 renderer 覆盖全部即时字段（普通配置只在指引块列出字段名，`proxyBypass` 不提供控制项）与逐模型 `modelOverrides` 的编辑、搜索、启停筛选、保存回读、草稿、冲突、只读与 namespace 恢复；连接 / 模型 / 额度 / 高级分页后非活动页只隐藏不卸载，全部字段仍在同一份草稿里；不替代真实宿主设置服务或 GUI 验收 |
+| 设置交互 | React 18 renderer 覆盖全部即时字段（普通配置不在卡片内编辑，`proxyBypass` 不提供控制项）与逐模型 `modelOverrides` 的编辑、搜索、启停筛选、保存回读、草稿、冲突、只读与 namespace 恢复；账号 / 模型 / 高级分页后非活动页只隐藏不卸载，账号页渲染账号卡片、添加账号的授权链接与取消、切换、两段确认删除与逐账号额度；不替代真实宿主设置服务或 GUI 验收 |
+| 多账号 | 账号持久化 / 坏文件回退 / 跨目录记录拒绝；系统账号不可删除、不可面板重登；真实 loopback OAuth 回调（state 不匹配不消费流程）、取消清理暂存目录、换码失败与登录后自动激活；隔离 HOME 的 Linux D-Bus / Windows USERPROFILE / Unix HOME 覆盖；ACP 启动按账号 id 与登录代际回收旧链路；额度缓存与在途请求按账号隔离；不触真实 Google 账户 |
+| 面板 OAuth | PKCE / authorize URL 参数、授权码换 token、userinfo 邮箱、CLI token 文件形态与 0600、ACP 凭据文件直写；授权 URL 只含 state / challenge，不下发 code 或 token；测试使用 127.0.0.1 与假 fetch，不代表真实 Google 可达性 |
 | 代理模式 | 线头顺序与 chunked 字节、端点白名单、SOCKS 拒绝、OAuth 回调 state/主机校验与不消耗在途 flow、副本原子写与 CLI 导入（含仅 refresh 形态）、payload 映射与 sentinel 签名、replay 归属校验、模式总线通知幂等、路由注册/注销互斥、代理额度 401 换发一次重试；全部合成依赖，不触真实网络与账户 |
 | 代理功能回归 | Google SSE 错误字段、401/403 首块前换发、工具 STOP 续轮与真实宿主消息回填、16KB 签名与映射归属、缺完成标志及 HTTP 截断、chunk 增量解码；模型设置与 prepareCall 快照、developer 指令、附件能力及请求尺寸 |
 | 代理 schema 与指纹 | 工具参数本地 `$ref`（指针与 `$defs` 名字）展开、对象节点兄弟 `oneOf`/`anyOf` 丢弃、`items`/`properties` 优先于显式与推断类型、空数组补 `items`、空串与纯空白不算枚举值；上游指纹只读诊断、零宽打散算法与 magpie 实测用例逐字符对齐（默认关闭）、403「violation of Terms of Service」识别为账号停用。全部为合成请求，不触真实上游 |
@@ -82,7 +84,7 @@ npm pack
 | 代理（出网） | 合成依赖、动态变更与清空、不打断旧响应、卸载释放、失败不直连、运行期地址变坏时按 Promise 拒绝、装载期非法地址不阻断插件、本地 SOCKS 测试；不是 Google 网络可达性保证 |
 | 代理环境继承 | HTTPS / ALL / HTTP 优先级、显式值覆盖及清空恢复、OAuth 与原生 TLS 接线、本地 CONNECT 首包和 NO_PROXY。无凭据 Google 探针对比直连超时与环境代理收到 401，只验证工具进程所见网络，不代表运行中 Host 的环境或账户可用性 |
 | 额度取数 | 假 fetch 覆盖超时折叠、401/403 按状态码重试一次、401 后成功、非 401/403 不重试、OAuth 元数据配对；`cliQuotaEnabled` 默认关闭时即使注入 CLI 也不 spawn，打开后才走 `/usage` 与 `/credits`，关闭后旧快照失效；代理模式默认零 `agy` 调用且套餐额度仍取代理账户，打开开关后只有 Credits 走 CLI；不触真实账户 |
-| 真实上游 / GUI | 本次 OAuth 使用真实本地 HTTP 与模拟 Google 响应，浏览器使用离线夹具；0.1.38 安装后的 GUI、真实 Google 授权、真实生成或图片识别尚未验收 |
+| 真实上游 / GUI | 本次 OAuth 使用真实本地 HTTP 与模拟 Google 响应，浏览器使用离线夹具；0.1.39 安装后的 GUI、真实 Google 授权、真实生成或图片识别尚未验收 |
 | 非 Windows | 有平台映射与契约测试，未实机验收 |
 | 生产依赖漏洞 | `check` 不包含漏洞审计；没有单独成功审计证据就不声明通过 |
 
@@ -94,9 +96,11 @@ npm pack
 node scripts/preview-ui.mjs
 ```
 
-输出 `.local-preview/quota-ui.html`、`.local-preview/proxy-ui.html`，以及有独立滚动容器的 `.local-preview/settings-ux.html` 和 `.local-preview/settings-login.html`。覆盖 ACP、代理账户、常驻保存栏、手动额度与授权等待；使用真实 Client 和**模拟数据 / hooks**生成静态 HTML，按钮不执行真实操作。状态交互由 `tests/client-interaction.test.ts` 的 React 18 renderer 覆盖，布局另由离线浏览器核验。
+输出 `.local-preview/quota-ui.html`，以及有独立滚动容器的 `.local-preview/settings-ux.html`。覆盖额度药丸、账号页（账号卡片 + 逐账号额度 + 连接操作）、模型页、常驻保存栏与手动额度；使用真实 Client 和**模拟数据 / hooks**生成静态 HTML，按钮不执行真实操作。状态交互由 `tests/client-interaction.test.ts` 的 React 18 renderer 覆盖，布局另由离线浏览器核验。
 
 ### 本次改动的补充验证
+
+2026-11-17 的「账号」页合并与多账号通过 `npm run check`：类型检查、**38 个文件 / 686 项测试**与构建。新增覆盖账号页默认选中且只剩「账号 / 模型 / 高级」三个分页、连接操作与逐账号「拉取额度」同页可用、添加账号的授权链接 / 取消 / 完成后自动切换、切换与两段确认删除、按账号额度缓存隔离、隔离 HOME 环境、ACP 账号切换回收链路，以及面板 OAuth 的真实 loopback 回调与 token 落盘。`node scripts/preview-ui.mjs` 重新生成了 `.local-preview/quota-ui.html` 与 `.local-preview/settings-ux.html`，离线预览确认账号卡片、额度与状态布局在 390 / 760px 下无横向溢出。该验证仍是隔离回归与静态夹具：OAuth 使用假 Google 响应，未在运行中的 Desktop GUI 或真实 Google 账户上重新验收。
 
 2026-10-30 的可靠性加固通过类型检查、**38 个文件 / 658 项测试**与构建。新增覆盖：额度 HTTP 请求超时折叠为可读错误（不留下永不结束的在途 promise）、401/403 按状态码而非错误文案触发一次换发重试、OAuth 元数据多份时按出现顺序配对、非法代理不再阻断插件装载（告警留痕且设置页仍可修正，启动时转成 `AGY_INVALID_PROXY`）、运行期代理地址变坏时按 Promise 契约拒绝、恢复启动失败归还磁盘 claim、中止错误码统一为 `AGY_ABORTED`、MCP 桥 Bearer 头改常数时间比较、zip 条目数与解压大小上限（含中央目录谎报大小时被拒）、单条畸形 JSON-RPC 帧只丢弃留痕而不再判死链路、带 id 的畸形响应立即拒绝而不是等满超时、留痕回调自身抛错不关链路、额度超时不足 1 秒报毫秒且主动中止与超时分开、非正数超时配置回落默认预算。
 

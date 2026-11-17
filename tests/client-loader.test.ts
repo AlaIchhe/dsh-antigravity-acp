@@ -222,13 +222,21 @@ function modelStore(provider: string | null) {
 describe('browser client module', () => {
   it('设置页点击即可预热或登录，可手动拉取模型目录', async () => {
     const control = vi.fn(async (method: string, request?: { action?: string; force?: boolean }) => method === 'account'
-      ? { state: request?.action === 'login' ? 'connecting' : 'idle', message: 'test' }
+      ? {
+        state: request?.action === 'login' ? 'connecting' : 'idle', message: 'test',
+        activeAccountId: 'primary', auth: { phase: 'idle' },
+        accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: false, createdAt: 0 }],
+      }
       : { status: 'ok', models: [{ id: 'gemini-example', name: 'Gemini Example' }] })
     const readQuota = vi.fn(async () => ({ status: 'ok', groups: [] }))
-    const card = loadRegistrations().get('antigravity-acp')!.component
+    const snapshot = {
+      state: 'idle', message: 'test', activeAccountId: 'primary', auth: { phase: 'idle' },
+      accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: false, createdAt: 0 }],
+    }
+    const card = loadRegistrations({ stateOverrides: { 0: snapshot } }).get('antigravity-acp')!.component
     const tree = card({ remote: {}, control, readQuota })
     const text = texts(tree).join(' ')
-    expect(text).toContain('ACP 账户与连接')
+    expect(text).toContain('添加账号')
     expect(elements(tree).some(item => item.props['aria-label'] === '模型列表')).toBe(true)
     expect(text).not.toContain('首次')
     expect(control.mock.calls.some(([, request]) => request?.action === 'login')).toBe(false)
@@ -248,19 +256,35 @@ describe('browser client module', () => {
     expect(texts(tree).join(' ')).not.toContain('AI Credits 余额')
   })
 
-  it('设置页按任务分区，额度可手动拉取且不重复默认模型设置', () => {
-    const tree = loadCard()({ remote: {} })
+  it('设置页按任务分区，账号页合并连接与额度', () => {
+    const control = vi.fn(async (method: string) => method === 'account'
+      ? {
+        state: 'idle', message: 'ready', activeAccountId: 'primary', auth: { phase: 'idle' },
+        accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: true, createdAt: 0 }],
+      }
+      : { status: 'ok', models: [] })
+    const snapshot = {
+      state: 'idle', message: 'ready', activeAccountId: 'primary', auth: { phase: 'idle' },
+      accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: true, createdAt: 0 }],
+    }
+    const card = loadRegistrations({ stateOverrides: { 0: snapshot } }).get('antigravity-acp')!.component
+    const tree = card({ remote: {}, control, readQuota: async () => ({ status: 'ok', groups: [] }) })
     const text = texts(tree).join(' ')
-    for (const label of ['连接', '模型', '额度', '高级', '会话偏好', '网络与 CLI', '连接诊断']) expect(text).toContain(label)
-    expect(text).toContain('拉取额度')
+    for (const label of ['账号', '模型', '高级', '添加账号', '额度取数方式', '会话偏好', '网络与 CLI', '连接诊断']) expect(text).toContain(label)
+    // 连接与额度不再是两个分页：账号卡片内给出登录 / 切换与手动额度。
+    const tabs = elements(tree).filter((item) => item.props.role === 'tab')
+    expect(tabs.map((item) => texts(item).join(''))).toEqual(['账号', '模型', '高级'])
+    expect(tabs.find((item) => texts(item).join('') === '账号')?.props['aria-selected']).toBe(true)
+    expect(text).toContain('添加账号')
+    expect(text).toContain('连接 / 登录 ACP')
+    expect(elements(tree).some((item) => item.props['aria-label'] === '拉取额度 主账号（系统登录）')).toBe(true)
     expect(text).toContain('尚未查询')
     // 默认模型由 DSH 自己的模型选择器负责，设置页不再重复维护。
     expect(text).not.toContain('默认模型')
     expect(text).not.toContain('套餐额度管理')
     expect(elements(tree).filter((item) => item.props['aria-label'] === 'AI Credits 余额')).toHaveLength(0)
-    // 普通配置（并发/二进制/超时）不是即时字段，宿主拒绝在本卡片写入，改为指引块。
-    expect(text).toContain('普通配置（并发 / 二进制 / 超时）')
-    expect(text).toContain('maxConcurrentSessions')
+    // 普通配置不是即时字段，卡片不再渲染说明块；三个分组 details 仍保留。
+    expect(text).not.toContain('普通配置（并发 / 二进制 / 超时）')
     expect(elements(tree).filter((item) => item.type === 'details')).toHaveLength(3)
   })
 
@@ -298,9 +322,11 @@ describe('browser client module', () => {
     expect(changed).toHaveBeenCalledTimes(1)
   })
 
-  it('代理说明明确留空继承宿主环境，不承诺强制直连', () => {
+  it('代理字段保留，但不再渲染灰色说明文字', () => {
     const tree = loadCard()({ remote: {} })
-    expect(texts(tree).join('')).toContain('留空继承宿主代理环境')
+    const text = texts(tree).join('')
+    expect(text).toContain('出网代理')
+    expect(text).not.toContain('留空继承宿主代理环境')
   })
 
   it('returns its plugin exports when the DSH loader supplies only require', () => {
@@ -383,7 +409,7 @@ describe('browser client module', () => {
     expect(calls.on).toContain('settings/document-updated')
   })
 
-  it('provider 已注册时渲染出「已注册」提示', async () => {
+  it('provider 已注册时账号页显示未连接而不是「路由未注册」', async () => {
     const Card = loadCard()
     const remote = {
       settings: { describe: async () => ({ ok: true, value: { writable: true, namespaces: [] } }) },
@@ -397,13 +423,14 @@ describe('browser client module', () => {
     await Promise.resolve()
 
     // 没有真实目录来源时，卡片如实说明「未找到本路由」，而不是编造模型列表。
-    expect(texts(tree).join('\n')).toContain('ACP 模式')
+    expect(texts(tree).join('\n')).not.toContain('路由未注册')
+    expect(texts(tree).join('\n')).toContain('添加账号')
   })
 
   it('宿主缺少 settings.describe 时降级为可读提示而不是崩溃', () => {
     const Card = loadCard()
     const tree = Card({ remote: {} })
-    expect(texts(tree).join('\n')).toContain('ACP 模式')
+    expect(texts(tree).join('\n')).toContain('添加账号')
   })
 
   it('remote.<ns> 属性访问抛「without inject」时降级，绝不把异常抛出组件', () => {
@@ -425,7 +452,7 @@ describe('browser client module', () => {
     // 异常若穿出组件，React 侧会击穿 settings.section 卡片并弄坏设置页。
     expect(() => Card({ remote })).not.toThrow()
     const tree = Card({ remote })
-    expect(texts(tree).join('\n')).toContain('ACP 模式')
+    expect(texts(tree).join('\n')).toContain('添加账号')
   })
 })
 
@@ -466,7 +493,7 @@ describe('AI Credits 展示', () => {
     const card = elements(tree).find((item) => item.props['aria-label'] === 'AI Credits 余额')!
     expect(texts(card)).toContain('42')
     expect(texts(card).join('')).toContain('余额缓存 · 余额刷新超时')
-    expect(texts(card).join('')).toContain('余额更新于')
+    expect(texts(card).join('')).not.toContain('余额更新于')
   })
 })
 

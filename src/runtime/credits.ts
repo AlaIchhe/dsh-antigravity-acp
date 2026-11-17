@@ -26,10 +26,10 @@ export function parseAgyCredits(value: unknown): Pick<CreditsSnapshot, 'remainin
   }
 }
 
-export async function fetchAgyCredits(run: CliRun, cliPath: string): Promise<CreditsSnapshot> {
+export async function fetchAgyCredits(run: CliRun, cliPath: string, homeDir?: string): Promise<CreditsSnapshot> {
   const updatedAt = new Date().toISOString()
   try {
-    const result = await run({ argv: [cliPath, '-p', '/credits', '--output-format', 'json'], timeoutMs: AGY_CLI_TIMEOUT_MS })
+    const result = await run({ argv: [cliPath, '-p', '/credits', '--output-format', 'json'], timeoutMs: AGY_CLI_TIMEOUT_MS, ...(homeDir ? { homeDir } : {}) })
     if (result.exitCode !== 0) {
       const message = redactSensitiveText(result.stderr.slice(-500))
       if (/no credits? info(?:rmation)? (?:is available|found)/i.test(message)) {

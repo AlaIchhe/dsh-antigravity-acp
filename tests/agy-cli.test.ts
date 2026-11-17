@@ -323,6 +323,19 @@ describe('CLI 调用面', () => {
  * scrub 父环境，宿主进程也未必导出代理变量——插件配置的 proxyUrl 才是权威来源。
  * 规则必须与官方 ACP 进程一致：**配置优先，其次宿主环境**。
  */
+describe('cliEnv 账号隔离', () => {
+  it('传入账号 HOME 时覆盖 HOME / USERPROFILE / GEMINI_CLI_HOME', () => {
+    const env = cliEnv(
+      { HOME: '/home/real', USERPROFILE: 'C:\\Users\\tester', PATH: '/usr/bin' },
+      undefined,
+      '/home/real/.antigravity-acp-accounts/acc_1',
+    )
+    expect(env.HOME).toBe('/home/real/.antigravity-acp-accounts/acc_1')
+    expect(env.GEMINI_CLI_HOME).toBe('/home/real/.antigravity-acp-accounts/acc_1/.gemini')
+    expect(env.PATH).toBe('/usr/bin')
+  })
+})
+
 describe('cliEnv 代理补齐', () => {
   const parent = {
     SystemRoot: 'C:\Windows',

@@ -33,6 +33,8 @@ export interface FakeSubprocessHarness {
   readonly runtime: SubprocessRuntime
   /** 按 spawn 顺序记录的假进程。 */
   readonly spawns: FakeAgentProcess[]
+  /** 与 spawns 一一对应的 spawn 参数（用于断言 env / argv）。 */
+  readonly specs: unknown[]
 }
 
 /**
@@ -41,15 +43,17 @@ export interface FakeSubprocessHarness {
  */
 export function createFakeSubprocessRuntime(onSpawn?: (process: FakeAgentProcess) => void): FakeSubprocessHarness {
   const spawns: FakeAgentProcess[] = []
+  const specs: unknown[] = []
   const runtime = {
-    spawn: () => {
+    spawn: (spec: unknown) => {
       const process = createFakeAgentProcess()
       spawns.push(process)
+      specs.push(spec)
       onSpawn?.(process)
       return process.handle
     },
   } as unknown as SubprocessRuntime
-  return { runtime, spawns }
+  return { runtime, spawns, specs }
 }
 
 function createFakeAgentProcess(): FakeAgentProcess {

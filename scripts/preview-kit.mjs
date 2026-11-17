@@ -55,25 +55,11 @@ const settings = render('antigravity-acp', {
     queue: { active: 0, parked: 0, waiting: 0, workers: 1, capacity: 2 },
     startup: { elapsedMs: 7120, timings: { binary: 20, credentials: 2100, spawn: 10, initialize: 4990 } },
     round: { model: 'gemini-3.8-flash-low', elapsedMs: 4800, timings: { connection: 1, session: 1200, model: 10 }, firstChunkMs: 1800, firstToolMs: 2100, continuations: 2, lastContinuationMs: 1200 },
-  } }, 1: models,
-  4: { revision: 1 }, 5: true, 6: { autoWarmup: true, reuseSessions: true, proxyUrl: '', agyCliPath: '', cliQuotaEnabled: false, modelOverrides: { 'gemini-4-argon': { effort: 'high' }, 'claude-sonnet-5-5': { name: 'Claude Sonnet（长上下文）' } } }, 8: false, 9: true, 14: 'connection', 15: '', 16: 'all', 17: quota,
+  }, accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: true, createdAt: 0 }, { id: 'acc_demo', alias: '备用账号', email: 'backup@example.com', system: false, active: false, ready: true, createdAt: 1 }], activeAccountId: 'primary', auth: { phase: 'idle' } },
+  3: models,
+  6: { revision: 1 }, 7: true, 8: { autoWarmup: true, reuseSessions: true, proxyUrl: '', agyCliPath: '', cliQuotaEnabled: false, modelOverrides: { 'gemini-4-argon': { effort: 'high' }, 'claude-sonnet-5-5': { name: 'Claude Sonnet（长上下文）' } } },
+  10: false, 11: true, 15: 'account',
+  // 账号页：卡片内额度（16 data / 17 refreshing），模型列表搜索 / 筛选（18 / 19）。
+  16: quota, 17: false, 19: false, 20: '', 21: 'all',
 }, { remote: {}, control() {}, readQuota() {} })
-const proxySettings = render('antigravity-acp', {
-  0: { state: 'idle', message: '代理模式已就绪（模拟）', generationMode: { requested: 'proxy', active: 'proxy', proxyRouterReady: true } },
-  1: models.map(model => ({ ...model, id: 'antigravity-' + model.id })),
-  4: { revision: 1 }, 5: true, 6: { proxyMode: true, proxyUrl: '', agyCliPath: '', cliQuotaEnabled: false, modelOverrides: {} },
-  8: false, 9: true, 13: true,
-  14: 'connection',
-  15: { phase: 'signed-in', message: '代理账户与上游项目已就绪（模拟）', source: 'cli-import', revision: 1 },
-  16: undefined, 17: '', 18: false, 19: '', 20: 'all', 21: quota,
-}, { remote: {}, control() {}, proxyControl() {}, readQuota() {} })
-const proxyLoginSettings = render('antigravity-acp', {
-  0: { state: 'idle', generationMode: { requested: 'proxy', active: 'proxy', proxyRouterReady: true } },
-  1: [], 4: { revision: 1 }, 5: true, 6: { proxyMode: true, proxyUrl: 'http://127.0.0.1:7890', cliQuotaEnabled: false, modelOverrides: {} },
-  8: false, 9: true, 11: ['proxyUrl'], 13: true,
-  14: 'connection',
-  15: { phase: 'pending-login', connectionStage: 'authorizing', message: '请在浏览器中使用 Google 账户授权（模拟）', revision: 0 },
-  16: 'https://accounts.google.com/o/oauth2/v2/auth?synthetic=offline-preview',
-  17: '', 18: false, 19: '', 20: 'all',
-}, { remote: {}, control() {}, proxyControl() {}, readQuota() {} })
-export { quota, models, settings, proxySettings, proxyLoginSettings, pill, render, escape }
+export { quota, models, settings, pill, render, escape }

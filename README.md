@@ -1,5 +1,7 @@
 # dsh-antigravity-acp
 
+[![Publish package](https://github.com/AlaIchhe/dsh-antigravity-acp/actions/workflows/publish.yml/badge.svg)](https://github.com/AlaIchhe/dsh-antigravity-acp/actions/workflows/publish.yml)
+
 在 [DeepSeek Harness](https://github.com/deepseek-ai/dsh) 里接入 Google 官方 **Antigravity ACP agent**：
 用 DSH 的界面选模型、发任务，工具调用仍由 DSH 审批和执行。
 
@@ -12,6 +14,7 @@
 - **官方 agent，不是转发 API**：走 ACP 协议驱动官方 `agy` 二进制，账号、额度、模型目录都来自官方
 - **工具留在 DSH**：agent 的工具调用经私有 MCP 桥回到 DSH，由 DSH 校验、审批、执行
 - **模型选择器直连**：Gemini 4 Argon / Hydrogen、Claude Opus 5.5、Sonnet 5.5 等家族一行，思考强度由 DSH 菜单路由
+- **多账号**：设置页里直接浏览器登录多个 Antigravity 账号，各自隔离 HOME；一键切换当前账号，额度按账号查看
 - **额度可见**：按额度组显示窗口、剩余百分比与重置时间
 
 ## 安装
@@ -24,10 +27,10 @@ dsh plugin --profile <profile> add github:AlaIchhe/dsh-antigravity-acp
 
 ## 使用
 
-1. **连接**：设置页 →「连接」，点击「连接 / 登录 ACP」。已在本机登录过官方 CLI 的话会复用登录态。
+1. **登录**：设置页 →「账号」→「添加账号」，在浏览器里完成 Google 授权即可；也可以直接使用本机官方 CLI 的登录态（系统账号）。多账号之间互不覆盖，点「使用此账号」切换当前账号。
 2. **选模型**：对话里打开模型选择器，选 `Antigravity (ACP)` 下的模型家族。
 3. **调强度**：模型家族的思考强度在 DSH 的思考强度菜单里选，插件自动路由到官方档位。
-4. **看额度**：设置页「额度」拉取，或直接看输入框旁的额度药丸。
+4. **看额度**：每个账号卡片里点「拉取额度」，或直接看输入框旁的额度药丸（跟随当前账号）。
 
 配置项、边界与排障见 [docs/reference.md](docs/reference.md) 与 [docs/configuration.md](docs/configuration.md)。
 

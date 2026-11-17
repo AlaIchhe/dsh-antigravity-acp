@@ -4,7 +4,11 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
-## 未发布
+## 0.1.39 · 2026-11-17
+
+- **多账号与面板直接登录**：账号列表持久化在 `~/.antigravity-acp-accounts`（`AGY_ACP_ACCOUNTS_DIR` 可覆盖）。系统账号使用真实 HOME、只读导入本机官方 CLI 登录态且不可删除；`添加账号` / `重新登录` 在设置页直接跑 Google OAuth（PKCE + `127.0.0.1:51121` 回调 + state 校验），把 token 写进该账号隔离 HOME，并按官方 CLI 格式同时生成 ACP server 的 `acp_token.json` / `settings.json`，不要求先安装官方二进制。点「使用此账号」切换当前账号：ACP 启动、只读 CLI 与 HTTP 额度都按账号解析 HOME，下一次 worker 启动时按账号 id / 登录代际回收旧链路，正在跑的回合不受影响。额度缓存按账号隔离，面板可逐账号拉取，药丸跟随当前账号；删除只清理插件创建的隔离目录，当前账号删除后回落到系统账号。Linux 阻断系统 D-Bus、Windows 改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`；macOS 可能仍受系统钥匙串影响，已在配置文档标注。
+
+- **设置页把「连接」与「额度」合并为「账号」页**：参考 dsh-agy-link 的账户卡片，登录 / 预热 / 取消操作与套餐额度、窗口重置时间、AI Credits、`cliQuotaEnabled` 取数开关现在同页展示；额度仍需手动点「拉取额度」，打开页面不会自动查询。分页变为「账号 / 模型 / 高级」，默认停在账号页，Provider 注册状态只在失败时以红色提示；连接状态文案与账号卡片的「使用中 / 未登录」徽标重复，已不再单独显示，连接 / 预热 / 取消直接放在当前账号卡片上。账号卡片的额度改为紧凑摘要：每组一行（组名 + 窗口迷你条 + 百分比），完整窗口 / 重置时间 / AI Credits 收进「详情」折叠，和对话药丸的迷你条口径一致。设置卡片不再渲染灰色说明 / 提示小字（分节描述、字段 hint、账号脚注、额度时间脚注与普通配置字段清单均已移除），额度重置时间与模型元数据处理为正常文本。顺带删除客户端残留的代理额度失效路径（`observeProxyAccount` / `observeMode` 与未定义的 `PROXY_PROVIDER`），并同步离线预览夹具、README 与配置 / 参考文档。
 
 - **移除代理模式**：删除 `src/proxy/` 整条链路（自有 OAuth 登录态、agy 线身份直连 Cloud Code Assist、代理模型适配器、提示词打散、额度取数），以及设置项 `proxyMode` / `cloakSensitiveWords`、代理账户面板、`antigravity-proxy-router` 组件与 `./proxy` 导出。插件现在只有一条路径：官方 ACP。移除原因：真机验证确认 `agy` 的工具是进程内实现、不委托 ACP 客户端能力，而代理模式需要伪装官方客户端线身份，属于违反上游使用条款的做法。
 

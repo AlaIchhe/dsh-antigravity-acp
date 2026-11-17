@@ -1,12 +1,18 @@
 /** 设置页控制面：不自动登录，不向客户端返回凭据或授权 URL。 */
 import { redactSensitiveText } from '../runtime/redact.js'
 import type { AcpLifecycleSnapshot } from '../runtime/lifecycle.js'
+import type { AccountAuthView, AccountView } from '../accounts/types.js'
 
 export interface AccountSnapshot {
   state: 'idle' | 'connecting' | 'cancelling' | 'connected' | 'cancelled' | 'error'
   message: string
   updatedAt: string
   runtime?: AcpLifecycleSnapshot
+  /** 多账号列表（来自 AccountsManager；不含 HOME / token）。 */
+  accounts?: AccountView[]
+  activeAccountId?: string
+  /** 面板内 OAuth 登录流程状态。 */
+  auth?: AccountAuthView
   generationMode?: { requested: 'acp' | 'proxy'; active: 'acp' | 'proxy'; proxyRouterReady: boolean }
 }
 export interface ModelSnapshot {

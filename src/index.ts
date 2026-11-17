@@ -8,6 +8,7 @@
  * 最后关闭插件进程内的私有 loopback MCP 桥。
  */
 import { createReadStream, existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
@@ -36,7 +37,7 @@ import type { RuntimeDirectoryLease } from './runtime/binary.js'
 import { ProxyConfigError, resolveHttpsProxy, resolveProxy } from './runtime/proxy-env.js'
 import { createLiveProxiedFetch, createProxiedFetch } from './runtime/proxied-fetch.js'
 import type { ResolvedProxy } from './runtime/proxy-env.js'
-import { ensureAcpCredentials } from './runtime/credentials.js'
+import { ensureAcpCredentials, writeAcpCredentialFiles } from './runtime/credentials.js'
 import type { AcpCredentialResult } from './runtime/credentials.js'
 import { describeLowIntegrity, isLowIntegrityTarget } from './runtime/integrity.js'
 import { describeAuthWait, redactSensitiveText } from './runtime/redact.js'
@@ -46,6 +47,9 @@ import { agyCliCandidates, createSubprocessCliRun, fetchAgyModels } from './runt
 import { AgYQuotaService, registerAgYQuotaRemote } from './quota/quota-remote.js'
 import { SettingsControl } from './quota/control.js'
 import { AcpLifecycle } from './runtime/lifecycle.js'
+import { AccountsManager } from './accounts/manager.js'
+import { resolveAccountsDir } from './accounts/paths.js'
+import { resolveOAuthClient } from './runtime/quota.js'
 import { liveHostConfig } from './settings.js'
 import type { AntigravityHostConfig, AntigravityPluginConfig } from './settings.js'
 
@@ -92,6 +96,10 @@ export interface ActiveAcpRuntime {
    * OAuth）。这个 promise 让并发调用汇聚到同一次启动。
    */
   inflight?: Promise<AgentLink>
+  /** 建立当前链路时使用的账号 id；切换账号后下一次启动据此回收旧连接。 */
+  accountId?: string
+  /** 建立当前链路时的登录态代际。 */
+  accountRevision?: number
   /** 插件已卸载。置位后不再启动新链路，dispose 会等在途启动收尾再清理。 */
   disposed?: boolean
   /** 卸载时中止在途的二进制下载（否则卸载要等一次可能长达数分钟的下载）。 */
@@ -160,6 +168,12 @@ export async function recycleAcpRuntime(active: ActiveAcpRuntime, link: AgentLin
 export interface AcpRuntimeDeps {
   /** 预热只使用已有登录态，不触发浏览器登录。 */
   allowInteractiveAuth?: boolean
+  /** 当前账号 id：与已建立链路不同时先回收旧连接，再按新账号启动。 */
+  accountId?: string
+  /** 当前账号的隔离 HOME；系统账号省略。 */
+  accountHome?: string
+  /** 登录态代际：重新登录同一账号后递增，迫使已建立链路重建。 */
+  accountRevision?: number
   /** 当前启动请求的取消信号，不改变宿主权限。 */
   signal?: AbortSignal
   /** 插件自身 HTTPS 请求（下载、换发）所用的 fetch；默认按配置的代理构造。 */
@@ -200,6 +214,12 @@ export async function ensureAcpRuntime(
     throw new LlmError('Antigravity ACP 插件已卸载，无法启动 ACP 链路', AGY_LINK_ERROR.LINK_CLOSED)
   }
   if (active.inflight) return active.inflight
+  // 账号切换：已建立的链路属于旧账号，先在同一 single-flight 里回收再重新启动。
+  if (active.link && deps.accountId !== undefined
+    && (active.accountId !== deps.accountId
+      || (deps.accountRevision !== undefined && active.accountRevision !== deps.accountRevision))) {
+    await recycleAcpRuntime(active, active.link)
+  }
   if (active.link) {
     if (!active.link.closed) { active.lifecycle?.reused(); return active.link }
     // 链路自己关了（对端断流 / 流读取失败 / 回收中途失败）但子进程可能仍活着、
@@ -295,7 +315,12 @@ async function startAcpRuntime(
     // 传入 acpVersion：OAuth client 元数据要从对应版本的缓存二进制里提取。
     active.lifecycle?.startupPhase('credentials')
     const credentials = await (deps.ensureCredentials
-      ?? (() => ensureAcpCredentials({ acpVersion: config.acpVersion, cliPath: config.agyCliPath, fetchImpl: pluginFetch })))()
+      ?? (() => ensureAcpCredentials({
+        acpVersion: config.acpVersion,
+        cliPath: config.agyCliPath,
+        fetchImpl: pluginFetch,
+        ...(deps.accountHome ? { homedir: () => deps.accountHome as string } : {}),
+      })))()
     startupSignal.throwIfAborted()
     if (!credentials.ready && deps.allowInteractiveAuth === false) {
       throw new LlmError('未找到可用的 ACP 登录态，请先使用“连接 / 登录 ACP”，然后再预热', 'AGY_AUTH_REQUIRED')
@@ -316,6 +341,7 @@ async function startAcpRuntime(
         extraArgs: [...defaultAgentArgs(), ...(config.extraArgs ?? [])],
         tmpDir: directory.path,
         proxy,
+        ...(deps.accountHome ? { homeDir: deps.accountHome } : {}),
       })
     } catch (error) {
       await releaseRuntimeDirectory(directory).catch(() => undefined)
@@ -370,6 +396,8 @@ async function startAcpRuntime(
     // 认证成功后才登记链接：`active.link` 可复用就等于「链路已认证」，因此复用它
     // 的调用方不需要、也不应该看到认证窗口内的中间状态。
     active.link = link
+    active.accountId = deps.accountId
+    active.accountRevision = deps.accountRevision
     const readyLink = link
     active.lifecycle?.ready()
     const startup = active.lifecycle?.read().startup
@@ -461,6 +489,36 @@ export async function connectAcpAccount(ctx: Context, config: AntigravityHostCon
   }
 }
 
+/**
+ * 面板登录时尽力打开默认浏览器；失败不阻断（授权链接始终交给客户端）。
+ * 经 ctx.subprocess 启动，不 import child_process；只转发打开浏览器所需键。
+ */
+async function openDefaultBrowser(subprocess: SubprocessRuntime, url: string): Promise<boolean> {
+  const platform = process.platform
+  const argv = platform === 'win32'
+    ? ['cmd.exe', '/d', '/s', '/c', 'start', '""', url]
+    : platform === 'darwin' ? ['open', url] : ['xdg-open', url]
+  const env: Record<string, string> = {}
+  for (const key of ['PATH', 'HOME', 'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'SystemRoot']) {
+    const value = process.env[key]
+    if (value) env[key] = value
+  }
+  try {
+    const handle = subprocess.spawn({
+      argv,
+      cwd: homedir(),
+      env,
+      stdio: { stdin: 'ignore', stdout: { maxBytes: 2048 }, stderr: { maxBytes: 2048 } },
+      graceMs: 1_000,
+      signal: AbortSignal.timeout(5_000),
+    })
+    const outcome = await handle.done
+    return outcome.exitCode === 0
+  } catch {
+    return false
+  }
+}
+
 export function apply(ctx: Context, input: AntigravityPluginConfig): void {
   const config = liveHostConfig(input)
   const cacheDir = resolveCacheDir()
@@ -494,6 +552,29 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
   validateInitialProxy()
   const readProxy = () => resolveProxy({ url: config.proxyUrl, bypass: config.proxyBypass })
   const pluginFetch = createLiveProxiedFetch(readProxy)
+  // 账号列表 / 当前账号：默认系统账号（真实 HOME，只读导入官方 CLI 登录态）；
+  // 面板登录的新账号各自使用隔离 HOME，ACP server 与只读 CLI 都按该 HOME 启动。
+  let accountsChanged = (): void => {}
+  const accounts = new AccountsManager({
+    baseDir: resolveAccountsDir(),
+    homeDir: homedir(),
+    fetchImpl: pluginFetch,
+    resolveClient: async () => {
+      if (config.agyCliPath === undefined) return resolveOAuthClient({ env: process.env, acpVersion })
+      return resolveOAuthClient({ env: process.env, cliPath: config.agyCliPath, acpVersion })
+    },
+    writeCredentials: ({ home, client, tokens }) => writeAcpCredentialFiles(home, client, {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      ...(tokens.expiresAt === undefined ? {} : { expiry: new Date(tokens.expiresAt).toISOString() }),
+    }).then(() => undefined),
+    openBrowser: (url) => openDefaultBrowser(ctx.subprocess, url),
+    onChange: () => accountsChanged(),
+    log: {
+      info: (message) => ctx.logger?.info?.(message),
+      warn: (message, error) => ctx.logger?.warn?.(redactSensitiveText(`${message}${error ? `: ${error instanceof Error ? error.message : String(error)}` : ''}`)),
+    },
+  })
   // 代理地址可能刚被改坏：按 Promise 契约返回 rejected，让调用方各自的
   // 「取数失败折叠成可读错误」路径生效，而不是同步抛进调度器。
   const cliRun: ReturnType<typeof createSubprocessCliRun> = (request) => {
@@ -503,7 +584,11 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
     } catch (error) {
       return Promise.reject(error)
     }
-    return createSubprocessCliRun(ctx.subprocess, proxy)(request)
+    const account = accounts.active()
+    return createSubprocessCliRun(ctx.subprocess, proxy)({
+      ...request,
+      ...(account.dir ? { homeDir: account.dir } : {}),
+    })
   }
   const findCli = () => agyCliCandidates(process.env, undefined, config.agyCliPath).find((candidate) => existsSync(candidate))
   let modelCatalogRevision = 0
@@ -573,7 +658,15 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       getLink: (handlers, signal, purpose) => {
         const launch = startupBarrier.catch(() => undefined).then(() => {
           signal?.throwIfAborted()
-          return ensureAcpRuntime(ctx, { ...config }, handlers, active, { signal, fetchImpl: pluginFetch, allowInteractiveAuth: purpose !== 'warmup' && workerIndex === 0 })
+          const account = accounts.active()
+          return ensureAcpRuntime(ctx, { ...config }, handlers, active, {
+            signal,
+            fetchImpl: pluginFetch,
+            allowInteractiveAuth: purpose !== 'warmup' && workerIndex === 0,
+            accountId: account.id,
+            accountRevision: account.revision,
+            ...(account.dir ? { accountHome: account.dir } : {}),
+          })
         })
         startupBarrier = launch.then(() => undefined, () => undefined)
         return launch
@@ -642,6 +735,10 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       }
     })
   })
+  accountsChanged = () => {
+    catalogChanged()
+    adapter.invalidatePreparation()
+  }
   const control = new SettingsControl({
     runtime: () => ({ ...adapter.read(), modelCatalogRevision }),
     warmup: (signal) => adapter.warmup(signal),
@@ -667,6 +764,7 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
   registerAgYQuotaRemote(ctx)
   ctx.plugin(AgYQuotaService, {
     control,
+    accounts,
     // HTTP 回退路径要从对应版本的缓存二进制里提取 OAuth client 元数据。
     deps: { cacheDir, acpVersion, cliPath: config.agyCliPath, fetchImpl: pluginFetch },
     cliQuotaEnabled: () => config.cliQuotaEnabled === true,
@@ -698,8 +796,11 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
     yield async () => {
       try { await adapter.dispose() }
       finally {
-        try { await sessionStore?.close() }
-        finally { await pluginFetch.close() }
+        try { await accounts.dispose() }
+        finally {
+          try { await sessionStore?.close() }
+          finally { await pluginFetch.close() }
+        }
       }
     }
   }, 'antigravity-acp 生命周期清理')

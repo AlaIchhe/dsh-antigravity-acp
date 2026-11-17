@@ -16,6 +16,7 @@ import { dirname, posix, win32 } from 'node:path'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { redactSensitiveText } from './redact.js'
 import { ambientProxyEnv, buildProxyEnv } from './proxy-env.js'
+import { isolatedHomeEnv } from './isolated-home.js'
 import type { ProxySettings } from './proxy-env.js'
 import type { QuotaBucket, QuotaGroup, QuotaSnapshot } from './quota.js'
 
@@ -29,6 +30,8 @@ export interface CliRunResult {
 export interface CliRunRequest {
   argv: readonly string[]
   timeoutMs?: number
+  /** 隔离账号的 HOME；省略时用宿主真实 HOME。 */
+  homeDir?: string
 }
 
 export type CliRun = (request: CliRunRequest) => Promise<CliRunResult>
@@ -259,11 +262,11 @@ export function parseAgyUsage(payload: unknown): QuotaGroup[] {
 }
 
 /** 跑一次官方 CLI 的额度查询（slash 命令本地处理，无模型回合）。 */
-export async function fetchAgyUsage(run: CliRun, cliPath: string): Promise<QuotaSnapshot> {
+export async function fetchAgyUsage(run: CliRun, cliPath: string, homeDir?: string): Promise<QuotaSnapshot> {
   const stamp = new Date().toISOString()
   let result: CliRunResult
   try {
-    result = await run({ argv: [cliPath, '-p', '/usage', '--output-format', 'json'], timeoutMs: AGY_CLI_TIMEOUT_MS })
+    result = await run({ argv: [cliPath, '-p', '/usage', '--output-format', 'json'], timeoutMs: AGY_CLI_TIMEOUT_MS, ...(homeDir ? { homeDir } : {}) })
   } catch (error) {
     return usageFailure(stamp, error)
   }
@@ -307,8 +310,8 @@ function usageFailure(updatedAt: string, error: unknown): QuotaSnapshot {
 }
 
 /** 跑一次官方 CLI 的模型清单（只读列表，无模型回合）。 */
-export async function fetchAgyModels(run: CliRun, cliPath: string): Promise<Array<{ id: string; name: string }>> {
-  const result = await run({ argv: [cliPath, 'models'], timeoutMs: AGY_CLI_TIMEOUT_MS })
+export async function fetchAgyModels(run: CliRun, cliPath: string, homeDir?: string): Promise<Array<{ id: string; name: string }>> {
+  const result = await run({ argv: [cliPath, 'models'], timeoutMs: AGY_CLI_TIMEOUT_MS, ...(homeDir ? { homeDir } : {}) })
   if (result.exitCode !== 0) {
     throw new AgyCliError('cli-failed', `agy models 退出码 ${result.exitCode}：${result.stderr.slice(-300)}`)
   }
@@ -332,7 +335,7 @@ export function createSubprocessCliRun(
   subprocess: SubprocessRuntime,
   proxy?: ProxySettings | undefined,
 ): CliRun {
-  return async ({ argv, timeoutMs }) => {
+  return async ({ argv, timeoutMs, homeDir }) => {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs ?? AGY_CLI_TIMEOUT_MS)
     try {
@@ -341,7 +344,7 @@ export function createSubprocessCliRun(
         // cwd 用 CLI 自身目录：与 ACP server 的启动约定一致，避免工作目录
         // 影响官方二进制的相对资源解析。
         cwd: dirname(String(argv[0])),
-        env: cliEnv(process.env, proxy),
+        env: cliEnv(process.env, proxy, homeDir),
         stdio: {
           stdin: 'ignore',
           stdout: { maxBytes: 512 * 1024 },
@@ -373,6 +376,7 @@ export function createSubprocessCliRun(
 export function cliEnv(
   parent: Readonly<Record<string, string | undefined>> = process.env,
   proxy?: ProxySettings | undefined,
+  homeDir?: string,
 ): Record<string, string> {
   const keys = [
     'SystemRoot', 'SystemDrive', 'windir', 'COMSPEC', 'ComSpec', 'PATHEXT', 'PATH',
@@ -384,6 +388,8 @@ export function cliEnv(
     const value = parent[key]
     if (value !== undefined && value !== '') env[key] = value
   }
+  // 隔离账号覆盖上面转发的 HOME / USERPROFILE；必须在代理合并之前。
+  if (homeDir) Object.assign(env, isolatedHomeEnv(homeDir))
   // 代理最后合并：配置的 proxyUrl 覆盖宿主环境里的同名键。
   const proxyEnv = proxy ? buildProxyEnv(proxy) : ambientProxyEnv(parent)
   for (const [key, value] of Object.entries(proxyEnv ?? {})) {

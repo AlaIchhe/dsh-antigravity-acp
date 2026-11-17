@@ -38,28 +38,6 @@ window.__ModuleLoader__.load({
       { key: 'idleRecycleMs', group: 'advanced', numeric: true, defaultValue: 300000, min: 0, max: 3600000, acpOnly: true, label: '进程空闲回收（毫秒）', hint: '默认 5 分钟；0 表示禁用。' },
     ]
 
-    /**
-     * 普通（非 volatile）配置：并发、二进制与各段超时。
-     *
-     * 宿主只把 volatile 字段投影进 `settings.describe()`，并拒绝用 `mutate` 写非
-     * volatile 路径（`Config field "X" is not volatile`）。把它们渲染成可编辑输入
-     * 框只会得到「值不是真值、保存整批失败」，所以这里只在卡片上给出指引，实际
-     * 修改走插件的普通配置编辑器，保存后由宿主重载生效。
-     */
-    const PLAIN_FIELD_LABELS = [
-      '最大 ACP 连接数（maxConcurrentSessions）',
-      '连接排队超时（queueTimeoutMs）',
-      '普通请求超时（requestTimeoutMs）',
-      '握手超时（handshakeTimeoutMs）',
-      '浏览器登录超时（authTimeoutMs）',
-      '单轮生成超时（promptTimeoutMs）',
-      '工具调用聚合窗口（bridgeParkSettleMs）',
-      'ACP Server 路径（binaryPath）',
-      '自动下载 ACP Server（autoDownload）',
-      'ACP Server 版本（acpVersion）',
-      'ACP 额外启动参数（extraArgs）',
-    ]
-
     /** 逐模型设置：键是 DSH 选择器里的模型 ID，值是开关、默认档位、显示名与官方 ID 映射。 */
     const OVERRIDES_KEY = 'modelOverrides'
     const OVERRIDES_LABEL = '模型列表设置'
@@ -173,7 +151,7 @@ window.__ModuleLoader__.load({
     function RuntimeDetails({ runtime }) {
       if (!runtime) return null
       const row = (label, value) => h('div', { key: label, style: { display: 'flex', justifyContent: 'space-between', gap: '16px' } },
-        h('span', { style: { opacity: .65 } }, label), h('span', { style: { textAlign: 'right', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' } }, value))
+        h('span', null, label), h('span', { style: { textAlign: 'right', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' } }, value))
       const round = runtime.round
       const queue = runtime.queue
       return h('div', { 'aria-label': 'ACP 生命周期与计时', style: { display: 'grid', gap: '8px', fontSize: '12px', lineHeight: 1.5 } },
@@ -191,12 +169,10 @@ window.__ModuleLoader__.load({
         round?.continuations ? row('工具续轮', round.continuations + ' 次 · 最近 ' + duration(round.lastContinuationMs)) : null,
         runtime.error ? h('p', { role: 'alert', style: { margin: '4px 0 0', color: '#b42318', overflowWrap: 'anywhere' } }, runtime.error) : null)
     }
-    function SectionHeading({ eyebrow, title, description, action }) {
+    function SectionHeading({ title, action }) {
       return h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' } },
         h('div', { style: { flex: 1, minWidth: 0 } },
-          eyebrow ? h('div', { style: { fontSize: '10px', fontWeight: 650, letterSpacing: '.08em', opacity: .5, marginBottom: '3px' } }, eyebrow) : null,
-          h('h3', { style: { fontSize: '14px', lineHeight: 1.4, fontWeight: 650, margin: 0 } }, title),
-          description ? h('p', { style: { fontSize: '11px', lineHeight: 1.5, opacity: .6, margin: '3px 0 0' } }, description) : null),
+          h('h3', { style: { fontSize: '14px', lineHeight: 1.4, fontWeight: 650, margin: 0 } }, title)),
         action ?? null)
     }
     function TextField({ field, value, disabled, invalid, onChange }) {
@@ -208,18 +184,16 @@ window.__ModuleLoader__.load({
           ...(field.numeric ? { min: field.min, max: field.max, step: 1 } : {}),
           ...(field.lines ? { rows: 2 } : {}),
           disabled, value: value ?? '', placeholder: field.placeholder,
-          'aria-invalid': invalid || undefined, 'aria-describedby': field.hint ? inputId + '-hint' : undefined,
+          'aria-invalid': invalid || undefined,
           style: { ...ACTION, cursor: disabled ? 'not-allowed' : 'text', width: '100%', boxSizing: 'border-box', background: 'rgba(128,128,128,.035)', opacity: disabled ? .6 : 1 },
           onChange: (event) => onChange(field.numeric && event.target.value !== '' ? Number(event.target.value) : event.target.value),
-        }),
-        field.hint ? h('small', { id: inputId + '-hint', style: { fontSize: '10px', lineHeight: 1.45, opacity: .58 } }, field.hint) : null)
+        }))
     }
     function SwitchField({ field, checked, disabled, onChange }) {
       return h('label', { style: { display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: disabled ? 'default' : 'pointer', padding: '2px 0', opacity: disabled ? .6 : 1 } },
         h('input', { name: field.key, type: 'checkbox', checked: checked === true, disabled, onChange: (event) => onChange(event.target.checked), style: { width: '16px', height: '16px', flex: '0 0 auto', margin: '1px 0 0', accentColor: '#177c55', cursor: disabled ? 'not-allowed' : 'pointer' } }),
         h('span', { style: { display: 'grid', gap: '2px', minWidth: 0 } },
-          h('span', { style: { fontSize: '12px', fontWeight: 550 } }, field.label),
-          field.hint ? h('small', { style: { fontSize: '10px', lineHeight: 1.45, opacity: .6 } }, field.hint) : null))
+          h('span', { style: { fontSize: '12px', fontWeight: 550 } }, field.label)))
     }
     function SettingsFields({ fields, draft, dirtyKeys, conflicts, disabled, editField }) {
       const numericGrid = fields.length > 1 && fields.every((field) => field.numeric)
@@ -233,8 +207,7 @@ window.__ModuleLoader__.load({
     function SettingsGroup({ title, fields, fieldProps, open = false }) {
       return h('details', { style: PANEL, 'aria-label': title + '设置', open: open || undefined },
         h('summary', { style: SUMMARY },
-          h('span', { style: { fontSize: '12px', fontWeight: 650 } }, title),
-          h('small', { style: { fontSize: '10px', opacity: .55 } }, fields.length + ' 项')),
+          h('span', { style: { fontSize: '12px', fontWeight: 650 } }, title)),
         h('div', { style: { marginTop: '14px', paddingTop: '12px', borderTop: '1px solid rgba(128,128,128,.12)' } },
           h(SettingsFields, { ...fieldProps, fields })))
     }
@@ -243,7 +216,7 @@ window.__ModuleLoader__.load({
     function ModelOverrideRow({ row, override, disabled, onEdit }) {
       const enabled = override.enabled !== false
       const inputId = 'agy-model-' + row.id.replace(/[^\w.-]/g, '_')
-      const labelStyle = { fontSize: '11px', opacity: .6 }
+      const labelStyle = { fontSize: '11px' }
       const inputStyle = { ...ACTION, width: '100%', minWidth: 0, boxSizing: 'border-box', background: 'rgba(128,128,128,.035)', cursor: disabled ? 'not-allowed' : 'text' }
       const displayName = override.name?.trim() || row.name
       return h('div', { role: 'listitem', style: { padding: '9px 0', borderBottom: '1px solid rgba(128,128,128,.12)', opacity: enabled ? 1 : .58 } },
@@ -254,18 +227,18 @@ window.__ModuleLoader__.load({
               style: { width: '15px', height: '15px', flex: '0 0 auto', margin: 0, accentColor: '#177c55', cursor: disabled ? 'not-allowed' : 'pointer' } }),
             h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12px', fontWeight: 600 } }, displayName)),
           h('label', { htmlFor: inputId + '-effort', style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px' } },
-            h('span', { style: { opacity: .65 } }, '思考'),
+            h('span', null, '思考'),
             h('select', { id: inputId + '-effort', name: 'model-effort-' + row.id, disabled, value: EFFORT_IDS.has(override.effort) ? override.effort : '',
               'aria-label': displayName + ' 默认思考档位',
               onChange: (event) => onEdit(row.id, { effort: event.target.value }),
               style: { ...inputStyle, width: 'auto', minHeight: '29px', padding: '3px 7px', cursor: disabled ? 'not-allowed' : 'pointer' } },
               ...EFFORT_OPTIONS.map((option) => h('option', { key: option.value, value: option.value }, option.label))))),
         h('details', { style: { marginLeft: '23px', marginTop: '5px' } },
-          h('summary', { style: { ...SUMMARY, justifyContent: 'flex-start', fontSize: '10px', opacity: .6 } }, '模型设置'),
+          h('summary', { style: { ...SUMMARY, justifyContent: 'flex-start', fontSize: '11px' } }, '模型设置'),
           h('div', { style: { display: 'grid', gap: '10px', marginTop: '10px', padding: '10px', borderRadius: '8px', background: 'rgba(128,128,128,.04)' } },
             h('div', { style: { display: 'grid', gap: '3px' } },
               h('span', { style: labelStyle }, '模型 ID'),
-              h('code', { style: { fontSize: '10px', overflowWrap: 'anywhere', opacity: .75 } }, row.id)),
+              h('code', { style: { fontSize: '11px', overflowWrap: 'anywhere' } }, row.id)),
             h('div', { style: { display: 'grid', gap: '10px', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' } },
               h('div', { style: { display: 'grid', gap: '4px', minWidth: 0 } },
                 h('label', { htmlFor: inputId + '-name', style: labelStyle }, '显示名'),
@@ -275,7 +248,7 @@ window.__ModuleLoader__.load({
                 h('label', { htmlFor: inputId + '-target', style: labelStyle }, '官方模型 ID'),
                 h('input', { id: inputId + '-target', name: 'model-target-' + row.id, type: 'text', disabled, value: override.target ?? '',
                   placeholder: '留空自动路由', onChange: (event) => onEdit(row.id, { target: event.target.value }), style: inputStyle }))),
-            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 12px', fontSize: '10px', opacity: .6 } },
+            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 12px', fontSize: '11px' } },
               h('span', null, row.inCatalog ? '当前目录' : '不在当前目录'),
               Array.isArray(row.inputModalities) && row.inputModalities.length
                 ? h('span', null, row.inputModalities.map((modality) => MODALITY_LABELS[modality] ?? modality).join(' · ')) : null))))
@@ -285,7 +258,7 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = React.useState('')
       const [filter, setFilter] = React.useState('all')
       if (rows.length === 0) {
-        return h('p', { role: 'status', style: { margin: 0, fontSize: '12px', lineHeight: 1.5, opacity: .6 } }, '暂无模型。请先连接当前账户，再刷新目录。')
+        return h('p', { role: 'status', style: { margin: 0, fontSize: '12px', lineHeight: 1.5 } }, '暂无模型。请先连接当前账户，再刷新目录。')
       }
       const hidden = rows.filter((row) => overrideFor(overrides, row.id).enabled === false).length
       const keyword = query.trim().toLowerCase()
@@ -304,10 +277,10 @@ window.__ModuleLoader__.load({
             h('option', { value: 'all' }, '全部 ' + rows.length),
             h('option', { value: 'enabled' }, '已启用 ' + (rows.length - hidden)),
             h('option', { value: 'hidden' }, '已隐藏 ' + hidden))),
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', opacity: .7 } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' } },
           h('span', { style: { marginRight: 'auto' } }, '显示 ' + visible.length + ' / ' + rows.length),
-          h('button', { type: 'button', disabled: disabled || visible.length === 0, onClick: () => setVisible(true), style: { ...ACTION, minHeight: '26px', padding: '2px 7px', fontSize: '10px' } }, '全部启用'),
-          h('button', { type: 'button', disabled: disabled || visible.length === 0, onClick: () => setVisible(false), style: { ...ACTION, minHeight: '26px', padding: '2px 7px', fontSize: '10px' } }, '全部隐藏')),
+          h('button', { type: 'button', disabled: disabled || visible.length === 0, onClick: () => setVisible(true), style: { ...ACTION, minHeight: '26px', padding: '2px 7px', fontSize: '11px' } }, '全部启用'),
+          h('button', { type: 'button', disabled: disabled || visible.length === 0, onClick: () => setVisible(false), style: { ...ACTION, minHeight: '26px', padding: '2px 7px', fontSize: '11px' } }, '全部隐藏')),
         hidden === rows.length
           ? h('p', { role: 'status', style: { margin: 0, fontSize: '11px', lineHeight: 1.5, color: '#946200' } }, '全部隐藏后，Antigravity 将从模型选择器消失。')
           : null,
@@ -315,12 +288,147 @@ window.__ModuleLoader__.load({
           ? h('div', { role: 'list', style: { display: 'grid' } }, ...visible.map((row) => h(ModelOverrideRow, {
             key: row.id, row, override: overrideFor(overrides, row.id), disabled, onEdit,
           })))
-          : h('p', { role: 'status', style: { margin: 0, fontSize: '12px', opacity: .6 } }, '没有符合条件的模型。'))
+          : h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, '没有符合条件的模型。'))
+    }
+
+    /** 账号卡片里的一行小徽标。 */
+    function AccountTag({ children, color, background }) {
+      return h('span', {
+        style: {
+          display: 'inline-flex', alignItems: 'center', gap: '3px', padding: '1px 6px',
+          borderRadius: '99px', fontSize: '11px', lineHeight: 1.6, whiteSpace: 'nowrap',
+          color: color ?? 'inherit', background: background ?? TRACK,
+        },
+      }, children)
+    }
+
+    /**
+     * 账号卡片里的紧凑额度摘要：参考本插件额度胶囊的迷你条设计，
+     * 每组一行（组名 + 并排窗口条 + 百分比），重置时间与 Credits 放在「详情」里。
+     */
+    function CompactQuotaRows({ data }) {
+      const groups = quotaGroups(data).filter((group) => group.buckets.length > 0)
+      if (groups.length === 0) return h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, data?.status === 'error' ? '额度读取失败' : '额度未知')
+      return h('div', { style: { display: 'grid', gap: '5px' } },
+        ...groups.map((group) => {
+          const values = group.buckets.map((bucket) => bucket.disabled ? '停用' : percentage(bucket) === undefined ? '未知' : Math.round(percentage(bucket)) + '%')
+          const title = group.name + ' · ' + group.buckets.map((bucket) => windowName(bucket) + ' ' + (bucket.disabled ? '已停用' : percentage(bucket) === undefined ? '额度未知' : Math.round(percentage(bucket)) + '% 剩余')).join(' · ')
+          return h('div', { key: group.key, title, style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+            h('span', { style: { fontSize: '12px', minWidth: '82px', maxWidth: '110px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, group.name),
+            h('span', { style: { display: 'grid', gap: '2px', flex: 1, minWidth: 0 } },
+              ...group.buckets.map((bucket, index) => remainingBar(bucket, false, data?.stale, group.name + ' ' + windowName(bucket) + '剩余额度', 3))),
+            h('span', { style: { fontSize: '12px', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', color: data?.stale ? '#d99b28' : 'inherit' } }, values.join(' · ')))
+        }))
+    }
+
+    /**
+     * 单个账号的额度块：手动拉取，失败保留旧快照并标缓存。
+     * 用 `readQuota.readAccount`（存在时）避免把非当前账号的额度广播给药丸。
+     */
+    function AccountQuota({ readQuota, source, account }) {
+      const [data, setData] = React.useState(null)
+      const [refreshing, setRefreshing] = React.useState(false)
+      const version = React.useRef(0)
+      const pending = React.useRef(false)
+      const pull = (force) => readQuota?.readAccount
+        ? readQuota.readAccount(force, source, account.id)
+        : readQuota?.(force, source, undefined, account.id)
+      const load = async () => {
+        if (!pull || pending.current) return
+        pending.current = true
+        const current = ++version.current
+        setRefreshing(true)
+        try {
+          const value = await pull(true)
+          if (current === version.current) setData(value)
+        } catch (error) {
+          if (current === version.current) {
+            const message = error instanceof Error ? error.message : String(error)
+            setData((previous) => previous?.status === 'ok'
+              ? { ...previous, stale: true, staleReason: message }
+              : { status: 'error', groups: [], error: { message } })
+          }
+        } finally {
+          if (current === version.current) { pending.current = false; setRefreshing(false) }
+        }
+      }
+      React.useEffect(() => () => { ++version.current }, [])
+      return h('div', { style: { display: 'grid', gap: '8px', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(128,128,128,.12)' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+          h('strong', { style: { fontSize: '12px' } }, '套餐额度'),
+          data?.plan ? h('span', { style: { fontSize: '12px' } }, data.plan) : null,
+          h('span', { style: { flex: 1 } }),
+          h('button', { type: 'button', style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !readQuota || refreshing, 'aria-busy': refreshing || undefined, 'aria-label': '拉取额度 ' + account.alias, onClick: load }, refreshing ? '正在拉取…' : '拉取额度')),
+        data
+          ? h('div', { style: { display: 'grid', gap: '5px' } },
+            CompactQuotaRows({ data }),
+            data?.credits && data.credits.status === 'ok' && Number.isSafeInteger(data.credits.remainingCredits)
+              ? h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px' } },
+                h('span', { style: { fontSize: '12px' } }, 'AI Credits'),
+                h('span', { style: { flex: 1 } }),
+                h('strong', { style: { fontSize: '13px', fontVariantNumeric: 'tabular-nums' } }, data.credits.remainingCredits.toLocaleString()))
+              : null,
+            data?.stale ? h('p', { role: 'status', style: { margin: 0, fontSize: '11px', color: '#d99b28' } }, '缓存数据 · ' + (data.staleReason ?? '刷新失败')) : null,
+            h('details', { style: { marginTop: '2px' } },
+              h('summary', { style: { fontSize: '11px', cursor: 'pointer' } }, '详情'),
+              h('div', { style: { marginTop: '6px' } }, QuotaDetails({ data, refreshing, source, showHeader: false, showCredits: false }))))
+          : h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, refreshing ? '正在读取…' : '尚未查询'))
+    }
+
+    /** 登录流程提示：等待时给出授权链接与取消，完成/失败只显示结果。 */
+    function AccountAuthNotice({ auth, onCancel, onStart }) {
+      if (!auth || auth.phase === 'idle') return null
+      if (auth.phase === 'done') return h(StatusNotice, { status: { kind: 'ok', text: auth.message ?? '登录成功' } })
+      if (auth.phase === 'failed') {
+        return h('div', { style: { display: 'grid', gap: '6px' } },
+          h(StatusNotice, { status: { kind: 'error', text: (auth.message ?? '登录失败') + '。可重新发起登录。' } }),
+          onStart ? h('div', null, h('button', { type: 'button', style: ACTION, onClick: onStart }, '重新发起登录')) : null)
+      }
+      if (auth.phase === 'cancelled') return h(StatusNotice, { status: { kind: 'busy', text: auth.message ?? '已取消登录' } })
+      const waiting = auth.phase === 'waiting'
+      const href = typeof auth.authUrl === 'string' && auth.authUrl.startsWith('https://accounts.google.com/') ? auth.authUrl : undefined
+      return h('div', { role: 'region', 'aria-label': '登录流程', style: { display: 'grid', gap: '8px', padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(128,128,128,.18)', background: 'rgba(23,124,85,.06)' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+          h('strong', { style: { fontSize: '12px' } }, waiting ? '等待浏览器授权' : auth.phase === 'exchanging' ? '正在完成登录' : '正在准备授权'),
+          h('span', { style: { flex: 1 } }),
+          onCancel ? h('button', { type: 'button', style: ACTION, onClick: onCancel }, '取消登录') : null),
+        waiting && href
+          ? h('a', { href, target: '_blank', rel: 'noreferrer noopener', style: { fontSize: '12px', color: '#177c55', overflowWrap: 'anywhere' } }, '浏览器没有自动打开？点此完成授权')
+          : null)
+    }
+
+    /** 一个账号的卡片：身份、启停/登录/删除、额度。 */
+    function AccountCard({ account, accountState, canControl, readQuota, source, disabled, connection, busy, connectionSettingsDirty, onActivate, onRelogin, onRemove, onConnect, onWarmup, onCancel, confirmRemove, setConfirmRemove }) {
+      const title = account.alias
+      return h('article', { role: 'listitem', 'aria-label': '账号 ' + title, style: { padding: '11px 12px', borderRadius: '11px', border: '1px solid ' + (account.active ? 'rgba(23,124,85,.55)' : 'rgba(128,128,128,.16)'), background: account.active ? 'rgba(23,124,85,.05)' : 'rgba(128,128,128,.025)' } },
+        h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: '10px' } },
+          h('span', { 'aria-hidden': true, style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '28px', height: '28px', flex: '0 0 auto', borderRadius: '50%', background: account.active ? '#177c55' : TRACK, color: account.active ? '#fff' : 'inherit', fontSize: '12px', fontWeight: 650 } }, title.slice(0, 1).toUpperCase()),
+          h('div', { style: { minWidth: 0, flex: '1 1 260px' } },
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
+              h('strong', { style: { fontSize: '12.5px' } }, title),
+              account.active ? h(AccountTag, { color: '#177c55', background: 'rgba(23,124,85,.12)' }, '使用中') : null,
+              !account.ready ? h(AccountTag, { color: '#b42318', background: 'rgba(180,35,24,.10)' }, '未登录') : null),
+            account.email ? h('div', { style: { fontSize: '12px', marginTop: '2px', overflowWrap: 'anywhere' } }, account.email) : null),
+          h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'flex-end', marginLeft: 'auto' } },
+            account.active ? h('button', { type: 'button', style: { ...PRIMARY, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || disabled || busy || connectionSettingsDirty, onClick: onConnect }, accountState === 'connecting' ? '正在连接…' : '连接 / 登录 ACP') : null,
+            account.active ? h('button', { type: 'button', style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || disabled || busy || connection.ready || connectionSettingsDirty, onClick: onWarmup }, connection.ready ? '已预热' : '立即预热') : null,
+            account.active && ['connecting', 'cancelling'].includes(accountState) ? h('button', { type: 'button', style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !canControl || accountState === 'cancelling', onClick: onCancel }, accountState === 'cancelling' ? '正在取消…' : '取消连接') : null,
+            !account.active ? h('button', { type: 'button', disabled, style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, onClick: () => onActivate(account) }, '使用此账号') : null,
+            !account.system ? h('button', { type: 'button', disabled, style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, onClick: () => onRelogin(account) }, account.ready ? '重新登录' : '登录') : null,
+            !account.system ? h('button', {
+              type: 'button',
+              disabled,
+              style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px', ...(confirmRemove ? { color: '#b42318', borderColor: 'rgba(180,35,24,.45)' } : {}) },
+              onClick: () => { if (confirmRemove) onRemove(account); else setConfirmRemove(account.id) },
+            }, confirmRemove ? '确认删除' : '删除') : null)),
+        AccountQuota({ readQuota, source, account }))
     }
 
     function AntigravitySettingsCard(props) {
       const remote = props.remote
       const [account, setAccount] = React.useState(undefined)
+      const [accountNotice, setAccountNotice] = React.useState(null)
+      const [confirmRemoveId, setConfirmRemoveId] = React.useState(undefined)
       const [models, setModels] = React.useState([])
       const [modelBusy, setModelBusy] = React.useState(false)
       const [modelMessage, setModelMessage] = React.useState('')
@@ -328,6 +436,7 @@ window.__ModuleLoader__.load({
       const modelVersion = React.useRef(0)
       const accountVersion = React.useRef(0)
       const polling = React.useRef(false)
+      const lastAuthPhase = React.useRef('idle')
       const manualModelPull = React.useRef(false)
       const pullModels = React.useCallback(async (force = false) => {
         if (!props.control || manualModelPull.current) return
@@ -346,17 +455,31 @@ window.__ModuleLoader__.load({
           if (alive.current && version === modelVersion.current) setModelBusy(false)
         }
       }, [props.control])
-      const accountAction = React.useCallback(async (action = 'status') => {
+      const accountAction = React.useCallback(async (action = 'status', request) => {
         if (!props.control) return
         if (action === 'status' && polling.current) return
         polling.current = true
         const version = ++accountVersion.current
         try {
-          const value = unwrap(await props.control('account', { action }))
-          if (alive.current && version === accountVersion.current) setAccount(value)
-        } catch (error) { if (alive.current && version === accountVersion.current) setAccount({ state: 'error', message: error instanceof Error ? error.message : String(error) }) }
+          const value = unwrap(await props.control('account', { action, ...(request ?? {}) }))
+          if (alive.current && version === accountVersion.current) {
+            setAccount(value)
+            if (action !== 'status') {
+              const message = value?.message ?? ''
+              const failed = value?.auth?.phase === 'failed' || /失败|不能|不存在|正在进行/.test(message)
+              if (action !== 'add-account' && action !== 'relogin') setAccountNotice({ kind: failed ? 'error' : 'ok', text: message })
+              if (action !== 'cancel-add') props.readQuota?.invalidate?.()
+            }
+          }
+        } catch (error) {
+          if (alive.current && version === accountVersion.current) {
+            const message = error instanceof Error ? error.message : String(error)
+            setAccount({ state: 'error', message })
+            if (action !== 'status') setAccountNotice({ kind: 'error', text: message })
+          }
+        }
         finally { polling.current = false }
-      }, [props.control])
+      }, [props.control, props.readQuota])
       React.useEffect(() => {
         alive.current = true
         void accountAction('status')
@@ -372,6 +495,17 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (account?.state === 'connected' || account?.runtime?.modelCatalogRevision !== undefined) void pullModels(false)
       }, [account?.state, account?.runtime?.modelCatalogRevision, pullModels])
+      // 登录流程完成 / 失败时给一次提示；完成后让药丸重新读取当前账号的额度。
+      React.useEffect(() => {
+        const phase = account?.auth?.phase ?? 'idle'
+        if (phase === lastAuthPhase.current) return
+        lastAuthPhase.current = phase
+        if (phase === 'done') {
+          props.readQuota?.invalidate?.()
+        } else if (phase === 'failed') {
+          setAccountNotice({ kind: 'error', text: account?.auth?.message ?? '登录失败' })
+        }
+      }, [account?.auth?.phase, account?.auth?.message, props.readQuota])
       const [view, setView] = React.useState(undefined)
       const [registered, setRegistered] = React.useState(undefined)
       const [draft, setDraft] = React.useState({})
@@ -382,7 +516,9 @@ window.__ModuleLoader__.load({
       const [dirtyKeys, setDirtyKeys] = React.useState([])
       const [conflicts, setConflicts] = React.useState([])
       // 设置分页。非活动页只隐藏、不卸载：草稿、保存与控件覆盖测试都依赖字段始终挂载。
-      const [settingsPage, setSettingsPage] = React.useState('connection')
+      // 「账号」把连接 / 登录与套餐额度放在同一页，参考 dsh-agy-link 的账户卡片：
+      // 状态、操作与额度条是同一个账户的两面，不再作为两个独立分页。
+      const [settingsPage, setSettingsPage] = React.useState('account')
       const settingsVersion = React.useRef(0)
       const savingRef = React.useRef(false)
       const refreshAfterSave = React.useRef(false)
@@ -527,6 +663,7 @@ window.__ModuleLoader__.load({
           await reload(true)
           void accountAction('status')
           void pullModels(true)
+          if (ops.some((operation) => operation.path[0] === 'cliQuotaEnabled')) props.readQuota?.invalidate?.()
         } catch (cause) {
           if (!alive.current) return
           setStatus({ kind: 'error', text: cause instanceof Error ? cause.message : String(cause) })
@@ -539,7 +676,7 @@ window.__ModuleLoader__.load({
             if (refreshAfterSave.current) { refreshAfterSave.current = false; void reload(true) }
           }
         }
-      }, [loading, writable, remote, reload, view, accountAction, pullModels])
+      }, [loading, writable, remote, reload, view, accountAction, pullModels, props.readQuota])
 
       React.useEffect(() => {
         reload()
@@ -570,6 +707,9 @@ window.__ModuleLoader__.load({
       }
 
       const connection = connectionStatus(account, registered)
+      const accounts = Array.isArray(account?.accounts) ? account.accounts : []
+      const authBusy = ['preparing', 'waiting', 'exchanging'].includes(account?.auth?.phase)
+      // CLI 开关是额度取数方式：保存前沿用已生效值，草稿不改变当前来源。
       const fieldsFor = (group) => FIELDS.filter((field) => field.group === group
         )
       const fieldProps = { draft, dirtyKeys, conflicts, disabled: editingDisabled, editField }
@@ -589,46 +729,67 @@ window.__ModuleLoader__.load({
           h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '7px', alignItems: 'center' } },
             h('button', { type: 'button', onClick: save, disabled: editingDisabled || dirtyKeys.length === 0, style: { ...PRIMARY, minHeight: '30px', padding: '4px 10px' } }, saving ? '保存中…' : '保存'),
             dirtyKeys.length ? h('button', { type: 'button', disabled: loading || saving, onClick: discardDraft, style: { ...ACTION, minHeight: '30px', padding: '4px 9px' } }, '撤销') : null,
-            h('span', { role: 'status', 'aria-live': 'polite', style: { fontSize: '11px', opacity: .7 } }, dirtyKeys.length ? dirtyKeys.length + ' 项未保存' : loading ? '正在读取…' : readonly ? '只读设置' : ''),
-            h('button', { type: 'button', title: '重新读取配置并保留草稿', disabled: loading || saving, onClick: () => reload(), style: { ...ACTION, minHeight: '30px', padding: '4px 8px', borderColor: 'transparent', background: 'transparent', opacity: .7, marginLeft: 'auto' } }, loading ? '刷新中…' : '刷新')),
+            h('span', { role: 'status', 'aria-live': 'polite', style: { fontSize: '12px' } }, dirtyKeys.length ? dirtyKeys.length + ' 项未保存' : loading ? '正在读取…' : readonly ? '只读设置' : ''),
+            h('button', { type: 'button', title: '重新读取配置并保留草稿', disabled: loading || saving, onClick: () => reload(), style: { ...ACTION, minHeight: '30px', padding: '4px 8px', borderColor: 'transparent', background: 'transparent', marginLeft: 'auto' } }, loading ? '刷新中…' : '刷新')),
           conflicts.length ? h('p', { role: 'alert', style: { margin: 0, fontSize: '12px', lineHeight: 1.5 } }, '以下内容已在其他位置更新，已保留你的输入：' + conflicts.map((key) => key === OVERRIDES_KEY ? OVERRIDES_LABEL : FIELDS.find((field) => field.key === key)?.label ?? key).join('、')) : null,
           h(StatusNotice, { status }))),
 
         connectionSettingsDirty ? h(StatusNotice, { status: { kind: 'busy', text: '请先保存网络设置，再连接或登录。' } }) : null,
         h('div', { role: 'tablist', 'aria-label': '设置分页', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' } },
-          pageButton('connection', '连接'),
+          pageButton('account', '账号'),
           pageButton('models', '模型'),
-          pageButton('quota', '额度'),
           pageButton('advanced', '高级'),
-          h('span', { style: { marginLeft: 'auto', padding: '3px 7px', borderRadius: '99px', fontSize: '10px', color: registered === false ? '#b42318' : 'inherit', background: TRACK } }, registered === false ? '路由未注册' : 'ACP 模式')),
+          registered === false ? h('span', { style: { marginLeft: 'auto', padding: '3px 7px', borderRadius: '99px', fontSize: '11px', color: '#b42318', background: TRACK } }, '路由未注册') : null),
 
-        h('div', { id: 'agy-settings-page-connection', role: 'tabpanel', style: pageStyle('connection') },
-          h('section', { style: PANEL, 'aria-label': '账户连接' },
-              h(SectionHeading, { title: 'ACP 账户与连接' }),
-              h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '10px', marginBottom: '12px' } },
-                h(StatusDot, { color: connection.color }),
-                h('div', { style: { minWidth: 0 } },
-                  h('div', { style: { fontSize: '12px', fontWeight: 650, color: connection.color } }, connection.label),
-                  h('p', { role: 'status', style: { fontSize: '11px', lineHeight: 1.5, opacity: .7, overflowWrap: 'anywhere', margin: '3px 0 0' } }, connection.description))),
-              h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px' } },
-                h('button', { type: 'button', style: PRIMARY, disabled: !props.control || busy || connectionSettingsDirty, onClick: () => accountAction('login') }, account?.state === 'connecting' ? '正在连接…' : '连接 / 登录 ACP'),
-                h('button', { type: 'button', style: ACTION, disabled: !props.control || busy || connection.ready || connectionSettingsDirty, onClick: () => accountAction('warmup') }, connection.ready ? '已预热' : '立即预热'),
-                ['connecting', 'cancelling'].includes(account?.state) ? h('button', { type: 'button', style: ACTION, disabled: account?.state === 'cancelling', onClick: () => accountAction('cancel') }, account?.state === 'cancelling' ? '正在取消…' : '取消连接') : null))),
+        h('div', { id: 'agy-settings-page-account', role: 'tabpanel', style: pageStyle('account') },
+          accountNotice && !['preparing', 'waiting', 'exchanging', 'done', 'failed', 'cancelled'].includes(account?.auth?.phase ?? '')
+            ? h(StatusNotice, { status: accountNotice }) : null,
+          h('section', { style: PANEL, 'aria-label': '账号' },
+            h(SectionHeading, { title: '账号', description: '登录多个 Antigravity 账号；新建 ACP 连接使用「使用中」的账号。',
+              action: h('button', { type: 'button', style: { ...PRIMARY, minHeight: '30px', padding: '4px 10px' }, disabled: !props.control || authBusy, onClick: () => accountAction('add-account') }, authBusy ? '等待授权…' : '添加账号') }),
+            h(AccountAuthNotice, {
+              auth: account?.auth,
+              onCancel: authBusy ? () => accountAction('cancel-add') : undefined,
+              onStart: !authBusy && account?.auth?.phase === 'failed'
+                ? () => accountAction(accounts.some((row) => row.id === account?.auth?.accountId) ? 'relogin' : 'add-account',
+                  accounts.some((row) => row.id === account?.auth?.accountId) ? { id: account?.auth?.accountId } : undefined)
+                : undefined,
+            }),
+            accounts.length
+              ? h('div', { role: 'list', style: { display: 'grid', gap: '8px' } },
+                ...accounts.map((row) => h(AccountCard, {
+                  key: row.id,
+                  account: row,
+                  accountState: account?.state,
+                  canControl: Boolean(props.control),
+                  connection,
+                  busy,
+                  connectionSettingsDirty,
+                  readQuota: props.readQuota,
+                  source: PROVIDER,
+                  disabled: authBusy,
+                  onActivate: (target) => accountAction('activate', { id: target.id }),
+                  onRelogin: (target) => accountAction('relogin', { id: target.id }),
+                  onRemove: (target) => { setConfirmRemoveId(undefined); void accountAction('remove', { id: target.id }) },
+                  onConnect: () => accountAction('login'),
+                  onWarmup: () => accountAction('warmup'),
+                  onCancel: () => accountAction('cancel'),
+                  confirmRemove: confirmRemoveId === row.id,
+                  setConfirmRemove: setConfirmRemoveId,
+                })))
+              : h('p', { role: 'status', style: { margin: 0, fontSize: '12px', lineHeight: 1.5 } }, '正在读取账号列表…'),
+            null),
+
+          h('section', { style: PANEL, 'aria-label': '额度取数方式' },
+            h(SectionHeading, { title: '额度取数方式' }),
+            h(SettingsFields, { ...fieldProps, fields: fieldsFor('quota') }))),
 
         h('div', { id: 'agy-settings-page-models', role: 'tabpanel', style: pageStyle('models') },
           h('section', { style: PANEL, 'aria-label': '模型列表' },
             h(SectionHeading, { title: '模型',
               action: h('button', { type: 'button', title: '刷新模型目录', 'aria-label': '刷新模型目录', 'aria-busy': modelBusy || undefined, style: { ...ACTION, flex: '0 0 auto', whiteSpace: 'nowrap' }, disabled: modelBusy || !props.control, onClick: () => pullModels(true) }, modelBusy ? '正在刷新…' : '刷新') }),
             h(ModelOverrideList, { rows, overrides: draft[OVERRIDES_KEY], disabled: editingDisabled, onEdit: editOverride }),
-            modelMessage ? h('p', { role: 'status', style: { fontSize: '11px', lineHeight: 1.5, opacity: .65, margin: 0, overflowWrap: 'anywhere' } }, modelMessage) : null)),
-
-        h('div', { id: 'agy-settings-page-quota', role: 'tabpanel', style: pageStyle('quota') },
-          h(SettingsQuotaPanel, { readQuota: props.readQuota, source: PROVIDER,
-            cliQuotaOn: (dirtyKeys.includes('cliQuotaEnabled') ? baseline.current.cliQuotaEnabled : draft.cliQuotaEnabled) === true,
-            cliQuotaDirty: dirtyKeys.includes('cliQuotaEnabled') }),
-          h('section', { style: PANEL, 'aria-label': '额度取数方式' },
-            h(SectionHeading, { title: 'CLI 额度（可选）' }),
-            h(SettingsFields, { ...fieldProps, fields: fieldsFor('quota') }))),
+            modelMessage ? h('p', { role: 'status', style: { fontSize: '12px', lineHeight: 1.5, margin: 0, overflowWrap: 'anywhere' } }, modelMessage) : null)),
 
         h('div', { id: 'agy-settings-page-advanced', role: 'tabpanel', style: pageStyle('advanced') },
           h('section', { style: PANEL, 'aria-label': '常用设置' },
@@ -636,19 +797,14 @@ window.__ModuleLoader__.load({
             h(SettingsFields, { ...fieldProps, fields: fieldsFor('general') })),
           h(SettingsGroup, { title: '网络与 CLI', fields: fieldsFor('network'), fieldProps, open: false }),
           h(SettingsGroup, { title: '会话与进程', fields: fieldsFor('advanced'), fieldProps }),
-          h('div', { style: { ...PANEL, padding: '12px 14px', fontSize: '11px', lineHeight: 1.6 }, 'aria-label': '普通配置说明' },
-            h('strong', { style: { display: 'block', fontSize: '13px', marginBottom: '4px' } }, '普通配置（并发 / 二进制 / 超时）'),
-            h('div', { style: { opacity: .75 } }, '这些不是即时配置：宿主只把即时字段投影到本卡片，也会拒绝在这里写入普通字段。请在插件的普通配置编辑器里修改，保存后由宿主重载生效。字段清单：'),
-            h('ul', { style: { margin: '5px 0 0', paddingLeft: '18px', opacity: .75 } },
-              ...PLAIN_FIELD_LABELS.map((label) => h('li', { key: label }, label)))),
           h('details', { style: PANEL, 'aria-label': '连接诊断' },
             h('summary', { style: SUMMARY },
               h('span', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
                 h(StatusDot, { color: connection.color }),
-                h('span', { style: { fontSize: '13px', fontWeight: 650 } }, '连接诊断')),
-              h('small', { style: { fontSize: '11px', opacity: .6 } }, '状态、并发与耗时')),
-            h('div', { style: { marginTop: '16px', paddingTop: '14px', borderTop: '1px solid rgba(128,128,128,.14)' } },
-              account?.runtime ? RuntimeDetails({ runtime: account.runtime }) : h('p', { style: { margin: 0, fontSize: '12px', opacity: .6 } }, '连接后显示运行详情。')))))
+                h('span', { style: { fontSize: '13px', fontWeight: 650 } }, '连接诊断'))),
+            account?.runtime
+              ? h('div', { style: { marginTop: '16px', paddingTop: '14px', borderTop: '1px solid rgba(128,128,128,.14)' } }, RuntimeDetails({ runtime: account.runtime }))
+              : null)))
     }
 
     /**
@@ -769,63 +925,15 @@ window.__ModuleLoader__.load({
         h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '12px' } },
           h('strong', { style: { fontSize: '12px' } }, 'AI Credits'),
           h('strong', { style: { fontSize: valid ? '17px' : '12px', fontVariantNumeric: 'tabular-nums', color: credits?.stale ? '#d99b28' : 'inherit' } }, label)),
-        credits?.planName || credits?.updatedAt ? h('div', { style: { display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '3px 10px', fontSize: '10px', opacity: .55, marginTop: '3px' } },
-          credits?.planName ? h('span', null, credits.planName) : null,
-          credits?.updatedAt ? h('span', null, (valid ? '余额更新于 ' : '最近查询 ') + new Date(credits.updatedAt).toLocaleString()) : null) : null,
-        credits?.stale ? h('p', { role: 'status', style: { margin: '4px 0 0', fontSize: '10px', color: '#d99b28' } }, '余额缓存 · ' + (credits.staleReason ?? '余额刷新失败')) : null,
-        credits?.error?.message ? h('p', { role: credits.status === 'error' ? 'alert' : 'status', style: { margin: '4px 0 0', fontSize: '10px', overflowWrap: 'anywhere' } }, credits.error.message) : null)
+        credits?.stale ? h('p', { role: 'status', style: { margin: '4px 0 0', fontSize: '11px', color: '#d99b28' } }, '余额缓存 · ' + (credits.staleReason ?? '余额刷新失败')) : null,
+        credits?.error?.message ? h('p', { role: credits.status === 'error' ? 'alert' : 'status', style: { margin: '4px 0 0', fontSize: '11px', overflowWrap: 'anywhere' } }, credits.error.message) : null)
     }
-    function SettingsQuotaPanel({ readQuota, source, accountRevision, cliQuotaOn, cliQuotaDirty }) {
-      const [data, setData] = React.useState(null)
-      const [refreshing, setRefreshing] = React.useState(false)
-      const version = React.useRef(0)
-      const requested = React.useRef(false)
-      const pending = React.useRef(false)
-      React.useEffect(() => {
-        ++version.current
-        requested.current = false
-        pending.current = false
-        setData(null)
-        setRefreshing(false)
-        const off = readQuota?.subscribe?.((value, origin) => {
-          if (origin !== source) return
-          if (value === null) {
-            ++version.current; requested.current = false; pending.current = false
-            setData(null); setRefreshing(false)
-          } else if (requested.current) setData(value)
-        })
-        return () => { ++version.current; off?.() }
-      }, [readQuota, source, accountRevision])
-      const load = async () => {
-        if (!readQuota || pending.current) return
-        pending.current = true
-        requested.current = true
-        const current = ++version.current
-        setRefreshing(true)
-        try {
-          const value = unwrap(await readQuota(true, source))
-          if (current === version.current) setData(value)
-        } catch (error) {
-          if (current === version.current) {
-            const message = error instanceof Error ? error.message : String(error)
-            setData(previous => previous?.status === 'ok' ? { ...previous, stale: true, staleReason: message }
-              : { status: 'error', groups: [], error: { message } })
-          }
-        } finally {
-          if (current === version.current) { pending.current = false; setRefreshing(false) }
-        }
-      }
-      return h('section', { style: PANEL, 'aria-label': '套餐额度查询' },
-        h(SectionHeading, { title: '套餐额度', description: 'ACP 账户' + (cliQuotaDirty ? ' · CLI 开关未保存' : cliQuotaOn ? ' · CLI 补充取数' : ''),
-          action: h('button', { type: 'button', style: ACTION, disabled: !readQuota || refreshing, 'aria-busy': refreshing || undefined, onClick: load }, refreshing ? '正在拉取…' : '拉取额度') }),
-        data ? QuotaDetails({ data, refreshing, source }) : h('p', { role: 'status', style: { margin: 0, fontSize: '12px', lineHeight: 1.5, opacity: .65 } }, refreshing ? '正在读取…' : '尚未查询'))
-    }
-    function QuotaDetails({ data, refreshing, load, model, source, onClose }) {
+    function QuotaDetails({ data, refreshing, load, model, source, onClose, showHeader = true, showCredits = true }) {
       return h('div', { style: { display: 'grid', gap: 0 } },
-        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', paddingBottom: '9px', borderBottom: '1px solid rgba(128,128,128,.16)' } },
+        showHeader ? h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', paddingBottom: '9px', borderBottom: '1px solid rgba(128,128,128,.16)' } },
           h('strong', { style: { fontSize: '14px', flex: 1 } }, 'Antigravity · 套餐额度'),
-          data?.plan ? h('span', { style: { fontSize: '11px', padding: '2px 8px', background: TRACK, borderRadius: '99px' } }, data.plan) : null,
-          onClose ? h('button', { type: 'button', 'aria-label': '关闭额度详情', onClick: onClose, style: { ...ACTION, padding: '2px 7px', minHeight: '26px', borderColor: 'transparent' } }, '×') : null),
+          data?.plan ? h('span', { style: { fontSize: '12px' } }, data.plan) : null,
+          onClose ? h('button', { type: 'button', 'aria-label': '关闭额度详情', onClick: onClose, style: { ...ACTION, padding: '2px 7px', minHeight: '26px', borderColor: 'transparent' } }, '×') : null) : null,
         data?.stale ? h('p', { role: 'status', style: { margin: '8px 0', padding: '6px 8px', borderRadius: '7px', background: 'rgba(217,155,40,.10)', color: '#d99b28', fontSize: '11px' } }, '缓存数据 · ' + (data.staleReason ?? '刷新失败')) : null,
         data?.status === 'error' ? h('p', { role: 'alert', style: { margin: '8px 0', color: '#ef4444', fontSize: '11px', overflowWrap: 'anywhere' } }, data.error?.message ?? data.error?.text ?? '额度读取失败') : null,
         ...quotaGroups(data).map((group) => h('section', { key: group.key, style: { padding: '9px 0', borderBottom: '1px solid rgba(128,128,128,.14)' }, 'aria-label': group.name + '额度' },
@@ -836,15 +944,15 @@ window.__ModuleLoader__.load({
             const pct = percentage(bucket)
             return h('div', { key: index, style: { minWidth: 0 } },
               h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px', marginBottom: '4px' } },
-                h('span', { style: { fontSize: '11px', opacity: .7 } }, windowName(bucket)),
+                h('span', { style: { fontSize: '11px' } }, windowName(bucket)),
                 h('strong', { style: { fontSize: bucket.disabled ? '12px' : '15px', fontVariantNumeric: 'tabular-nums' } }, bucket.disabled ? '已停用' : pct === undefined ? '未知' : Math.round(pct) + '%')),
               remainingBar(bucket, false, data?.stale, group.name + ' ' + windowName(bucket) + '剩余额度'),
-              h('div', { title: bucket.disabled ? bucket.description : bucket.resetTime, style: { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', fontSize: '10px', lineHeight: 1.35, opacity: .58, marginTop: '4px' } }, bucket.disabled ? bucket.description ?? '此窗口不可用' : resetCountdown(bucket.resetTime)))
-          })) : h('span', { style: { opacity: .55, fontSize: '11px' } }, data ? '未提供额度数据' : '正在读取…'))),
-        CreditsDetails({ credits: data?.credits, pending: !data }),
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '8px' } },
-          h('small', { style: { flex: 1, opacity: .5, minWidth: 0, fontSize: '10px' } }, data?.updatedAt ? '更新于 ' + new Date(data.updatedAt).toLocaleString() : '尚无成功快照'),
-          load ? h('button', { type: 'button', disabled: refreshing, onClick: () => load(true), style: { ...ACTION, minHeight: '27px', padding: '3px 9px', fontSize: '11px' } }, refreshing ? '刷新中…' : '刷新额度') : null))
+              h('div', { title: bucket.disabled ? bucket.description : bucket.resetTime, style: { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', fontSize: '11px', lineHeight: 1.35, marginTop: '4px' } }, bucket.disabled ? bucket.description ?? '此窗口不可用' : resetCountdown(bucket.resetTime)))
+          })) : h('span', { style: { fontSize: '11px' } }, data ? '未提供额度数据' : '正在读取…'))),
+        showCredits ? CreditsDetails({ credits: data?.credits, pending: !data }) : null,
+        load ? h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '8px' } },
+          h('span', { style: { flex: 1 } }),
+          h('button', { type: 'button', disabled: refreshing, onClick: () => load(true), style: { ...ACTION, minHeight: '27px', padding: '3px 9px', fontSize: '11px' } }, refreshing ? '刷新中…' : '刷新额度')) : null)
     }
     /** 紧凑余量条与单词状态的交互参考 dsh-subusage；取数仍由本插件负责。 */
     function quotaPillStatus(data, buckets) {
@@ -934,11 +1042,8 @@ window.__ModuleLoader__.load({
     /** 组装额度读取器：remote.agyQuota 由 Host 注册后才出现，短轮询等待就绪。 */
     function makeQuotaReader(scope) {
       const listeners = new Set()
-      const epochs = new Map()
       const modelsBySource = new Map()
-      let proxyAccountKey
-      let mode
-      const read = async (force, source, model) => {
+      const read = async (force, source, model, accountId) => {
         const deadline = Date.now() + 20_000
         for (;;) {
           // **只能用 `get()`**：`scope.remote.agyQuota` 这种属性访问在未 inject 的
@@ -954,6 +1059,7 @@ window.__ModuleLoader__.load({
                 ...(force ? { force: true } : {}),
                 ...(source === PROVIDER ? { source: 'acp' } : {}),
                 ...(model ? { model } : {}),
+                ...(accountId ? { accountId } : {}),
               }),
               60_000,
               '额度读取超时（Host 侧 agy CLI 60 秒内没有返回）',
@@ -965,12 +1071,10 @@ window.__ModuleLoader__.load({
           await new Promise((resolve) => setTimeout(resolve, 500))
         }
       }
-      const reader = async (force, source, model) => {
+      const reader = async (force, source, model, accountId) => {
         if (model) modelsBySource.set(source, model)
         const requestedModel = model ?? modelsBySource.get(source)
-        const epoch = epochs.get(source) ?? 0
-        const value = unwrap(await read(force, source, requestedModel))
-        if (epoch !== (epochs.get(source) ?? 0)) throw new Error('账户已变化，请重新拉取额度')
+        const value = unwrap(await read(force, source, requestedModel, accountId))
         for (const listener of listeners) {
           if (source === undefined) listener(value)
           else listener(value, source)
@@ -978,25 +1082,13 @@ window.__ModuleLoader__.load({
         return value
       }
       reader.subscribe = (listener) => { listeners.add(listener); return () => listeners.delete(listener) }
-      reader.invalidate = (source) => {
-        epochs.set(source, (epochs.get(source) ?? 0) + 1)
-        for (const listener of listeners) listener(null, source)
+      // 面板按账号取数：不广播，避免把别的账号的额度推给药丸。
+      reader.readAccount = async (force, source, accountId) => {
+        if (!accountId) throw new Error('缺少账号 id')
+        return unwrap(await read(force, source, undefined, accountId))
       }
-      reader.observeProxyAccount = (snapshot) => {
-        if (!snapshot) return
-        const key = JSON.stringify([snapshot.revision, snapshot.phase === 'signed-in', snapshot.email])
-        if (proxyAccountKey !== undefined && key !== proxyAccountKey) {
-          proxyAccountKey = key
-          reader.invalidate(PROXY_PROVIDER)
-        } else proxyAccountKey = key
-      }
-      reader.observeMode = (source) => {
-        if (mode !== undefined && mode !== source) {
-          mode = source
-          reader.invalidate(PROVIDER)
-          reader.invalidate(PROXY_PROVIDER)
-        } else mode = source
-      }
+      // 账号切换 / 删除 / 登录完成后让药丸重新读取当前账号。
+      reader.invalidate = () => { for (const listener of listeners) listener(null) }
       return reader
     }
 
@@ -1053,8 +1145,9 @@ window.__ModuleLoader__.load({
       if (value === undefined || value === null) return undefined
       if (typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invalid AgYQuotaRequest')
       if (value.force !== undefined && typeof value.force !== 'boolean') throw new TypeError('Invalid AgYQuotaRequest.force')
-      if (value.source !== undefined && !['acp', 'proxy'].includes(value.source)) throw new TypeError('Invalid AgYQuotaRequest.source')
+      if (value.source !== undefined && value.source !== 'acp') throw new TypeError('Invalid AgYQuotaRequest.source')
       if (value.model !== undefined && (typeof value.model !== 'string' || !value.model.trim())) throw new TypeError('Invalid AgYQuotaRequest.model')
+      if (value.accountId !== undefined && (typeof value.accountId !== 'string' || !value.accountId.trim())) throw new TypeError('Invalid AgYQuotaRequest.accountId')
       return value
     }
 
@@ -1092,7 +1185,11 @@ window.__ModuleLoader__.load({
             codec: method === 'models' ? strictCodec(`${AGY_QUOTA_PACKAGE}#AgYQuotaRequest`, parseQuotaRequest)
               : strictCodec(`${AGY_QUOTA_PACKAGE}#AgYAccountRequest`, (value) => {
                 if (value === undefined) return { action: 'status' }
-                if (!value || typeof value !== 'object' || !['status', 'login', 'warmup', 'cancel'].includes(value.action)) throw new TypeError('Invalid AgYAccountRequest')
+                if (!value || typeof value !== 'object') throw new TypeError('Invalid AgYAccountRequest')
+                if (!['status', 'login', 'warmup', 'cancel'].includes(value.action)
+                  && !['add-account', 'cancel-add', 'activate', 'remove', 'relogin'].includes(value.action)) throw new TypeError('Invalid AgYAccountRequest')
+                if (value.id !== undefined && (typeof value.id !== 'string' || !value.id.trim())) throw new TypeError('Invalid AgYAccountRequest.id')
+                if (value.alias !== undefined && typeof value.alias !== 'string') throw new TypeError('Invalid AgYAccountRequest.alias')
                 return value
               }) }],
           result: strictCodec(`${AGY_QUOTA_PACKAGE}#${method === 'models' ? 'AgYModelsResult' : 'AgYAccountResult'}`, (value) => {

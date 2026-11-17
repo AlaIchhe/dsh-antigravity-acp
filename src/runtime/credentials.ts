@@ -416,6 +416,34 @@ export async function ensureAcpCredentials(deps: AcpCredentialDeps = {}): Promis
   return { ...base, ready: true, status: source, settingsWritten }
 }
 
+/**
+ * 直接写入 ACP server 需要的两份文件（面板 OAuth 刚拿到的新鲜 token）。
+ *
+ * 与 `ensureAcpCredentials()` 的区别：不依赖官方二进制里提取 OAuth client，
+ * 不走一次多余的 refresh，因此首次使用、二进制尚未下载时也能完成登录。
+ * `client` 必须与之后 ACP 换发使用的 client 一致（index.ts 用同一个解析器）。
+ */
+export async function writeAcpCredentialFiles(
+  homeDir: string,
+  client: OAuthClientMeta,
+  state: QuotaTokenState,
+): Promise<{ tokenPath: string; settingsPath: string }> {
+  if (!state.refreshToken) throw new Error('登录态里没有 refresh_token，无法生成 acp_token.json')
+  const acpDir = join(homeDir, ...ACP_HOME_SUBPATH)
+  const tokenPath = join(acpDir, ACP_TOKEN_FILENAME)
+  const settingsPath = join(acpDir, ACP_SETTINGS_FILENAME)
+  await mkdir(acpDir, { recursive: true, mode: 0o700 })
+  const document = buildAcpCredentialDocument({ client, state })
+  await writeFileAtomic(tokenPath, `${JSON.stringify(document, null, 2)}\n`)
+  let existing: unknown
+  try { existing = JSON.parse(await readFile(settingsPath, 'utf8')) as unknown } catch { existing = undefined }
+  const merged = isRecord(existing)
+    ? { ...existing, auth: { ...(isRecord(existing.auth) ? existing.auth : {}), ...buildAcpSettingsDocument().auth } }
+    : buildAcpSettingsDocument()
+  await writeFileAtomic(settingsPath, `${JSON.stringify(merged, null, 2)}\n`)
+  return { tokenPath, settingsPath }
+}
+
 /** 默认换发实现：走 quota.ts 的 OAuth 刷新。 */
 async function refreshWithDefaults(
   state: QuotaTokenState,

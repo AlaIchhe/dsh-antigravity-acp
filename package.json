@@ -1,6 +1,6 @@
 {
   "name": "dsh-bundle-antigravity-host",
-  "version": "0.1.38",
+  "version": "0.1.39",
   "description": "DeepSeek Harness host bundle that talks to the official Antigravity ACP server over stdio (Agent Client Protocol v1).",
   "displayName": "Antigravity ACP",
   "keywords": [
@@ -15,11 +15,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/KouzakiUmi/dsh-antigravity-acp.git"
+    "url": "git+https://github.com/AlaIchhe/dsh-antigravity-acp.git"
   },
-  "homepage": "https://github.com/KouzakiUmi/dsh-antigravity-acp#readme",
+  "homepage": "https://github.com/AlaIchhe/dsh-antigravity-acp#readme",
   "bugs": {
-    "url": "https://github.com/KouzakiUmi/dsh-antigravity-acp/issues"
+    "url": "https://github.com/AlaIchhe/dsh-antigravity-acp/issues"
   },
   "type": "module",
   "main": "./dist/index.js",

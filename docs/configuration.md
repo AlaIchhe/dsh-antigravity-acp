@@ -2,7 +2,7 @@
 
 [返回主页](../README.md) · [使用与排障](reference.md) · [开发与验证](development.md)
 
-以下对应 **0.1.38**，以 [`src/settings.ts`](https://github.com/KouzakiUmi/dsh-antigravity-acp/blob/main/src/settings.ts) 的 Config 为准。字段均位于 `llm-antigravity-acp` 插件配置根级，不需要额外包装一层对象。设置页提供即时（volatile）字段与模型控制；`proxyBypass` 不提供界面控制项，并发 / 二进制 / 超时等普通配置在普通配置编辑器里修改。
+以下对应 **0.1.39**，以 [`src/settings.ts`](https://github.com/KouzakiUmi/dsh-antigravity-acp/blob/main/src/settings.ts) 的 Config 为准。字段均位于 `llm-antigravity-acp` 插件配置根级，不需要额外包装一层对象。设置页提供即时（volatile）字段与模型控制；`proxyBypass` 不提供界面控制项，并发 / 二进制 / 超时等普通配置在普通配置编辑器里修改。
 
 ## 配置清单
 
@@ -80,6 +80,7 @@ ACP 官方 agent 在同一会话内会保留上下文（2026-10-23 真机验证�
 | `AGY_ACP_URL` | 自动下载 URL 覆盖，仍受 HTTPS / `dl.google.com` 与不重定向约束；不赋予其它域名下载权限。 |
 | `AGY_ACP_HOME` | 官方程序与独立运行目录的用户级安装根目录覆盖；应避开 Windows Low 完整性目录。 |
 | `AGY_CLI_BIN` | 官方 CLI 路径覆盖，低于显式 `agyCliPath`。 |
+| `AGY_ACP_ACCOUNTS_DIR` | 多账号根目录覆盖（默认 `~/.antigravity-acp-accounts`），内含 `accounts.json` 与每个隔离账号的 HOME。 |
 | `AGY_OAUTH_CLIENT_ID` / `AGY_OAUTH_CLIENT_SECRET` | OAuth client 元数据覆盖，配对使用；不是模型 API Key，也不是用户 access / refresh token。通常不需要手动设置，不应随文档或截图分享。 |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 与小写形式 | `proxyUrl` 未设置时的 Host 代理来源；实际选择与注入见 [`proxy-env.ts`](https://github.com/KouzakiUmi/dsh-antigravity-acp/blob/main/src/runtime/proxy-env.ts)。 |
 | `NO_PROXY` 与小写形式 | Host 代理绕过来源；本机 loopback 始终加入。 |
@@ -98,12 +99,22 @@ ACP 官方 agent 在同一会话内会保留上下文（2026-10-23 真机验证�
 
 ## 设置页可以做什么
 
-页面分为「连接 / 模型 / 额度 / 高级」。连接页只显示当前模式所需的账户与操作；额度独立手动查询；高级页按网络 / CLI、ACP 启动、连接池、超时、会话进程与诊断分组展开。模型页使用紧凑列表，支持搜索、启停筛选和筛选结果批量启用 / 隐藏；完整 ID、输入能力、显示名与官方映射在单条详情中编辑。
+页面分为「账号 / 模型 / 高级」。账号页是账号卡片列表：每张卡片显示账号名 / 邮箱、`使用中` / `未登录` 标记、`使用此账号`、`登录` / `重新登录`、两段确认的 `删除`，以及该账号自己的紧凑额度摘要（组名 + 窗口迷你条 + 百分比，参考对话药丸的余量条；重置时间、Credits 明细放在「详情」折叠里），额度仍需手动「拉取额度」。右上角「添加账号」直接发起浏览器 OAuth；等待期间同页显示授权链接与取消入口，授权回调自动完成，不需要粘贴授权码。当前账号卡片上直接提供「连接 / 登录 ACP」「立即预热」「取消连接」，不再重复显示状态文案；`cliQuotaEnabled` 取数开关在「额度取数方式」里。高级页按网络 / CLI、ACP 启动、连接池、超时、会话进程与诊断分组展开。模型页使用紧凑列表，支持搜索、启停筛选和筛选结果批量启用 / 隐藏；完整 ID、输入能力、显示名与官方映射在单条详情中编辑。
 
 模型改动合并成一份 `modelOverrides` 在保存时提交；清空显示名或映射等于移除该字段，不会留下空壳配置。已经保存但当前目录没有的 ID 仍保留并标注「不在目录」，可搜索后继续修改或清除。
 
 无修改且无状态消息时不显示保存操作区；编辑后出现与其它面板同款的细常驻操作面板，提供保存、未保存计数、撤销与刷新，冲突和结果也在此显示。修改出网代理或排除列表后先保存，再连接；取消和退出不受草稿影响。
 
-设置页打开时停在「连接」页。切换到「额度」后可手动「拉取额度」，查询实际生效模式对应的账户；打开设置页不会自动查询或启动额度轮询。与对话药丸共用读取器，模式、账户或 `cliQuotaEnabled` 变化清空旧结果，旧请求不能覆盖新结果；失败保留缓存并标明原因。AI Credits 默认不查询且不显示占位区块，打开 CLI 取数后属于官方 CLI 账户，可能与代理账户不同。手动预热 / 目录刷新遇到暂时回收故障时会在本次操作内补试一次，持续失败仍拒绝复用旧进程。
+设置页打开时停在「账号」页。每张账号卡片的「拉取额度」只查该账号；打开设置页不会自动查询或启动额度轮询。额度缓存与在途请求按账号隔离，互不覆盖。与对话药丸共用读取器，旧请求不能覆盖新结果；失败保留缓存并标明原因。AI Credits 默认不查询且不显示占位区块，打开 CLI 取数后属于官方 CLI 账户。手动预热 / 目录刷新遇到暂时回收故障时会在本次操作内补试一次，持续失败仍拒绝复用旧进程。
 
-不提供账户切换、删除目录条目或付费 Credits 开关：停用只是不列入选择器，已知模型的显示名、上下文容量与路由仍保留。思考强度由 DSH 会话菜单选择，不在此维护第二份独立档位配置。只读 Profile 禁止修改；外部刷新不会覆盖未保存草稿，保存失败保留输入。
+## 多账号与隔离 HOME
+
+- **账号存储**：账号列表在 `~/.antigravity-acp-accounts/accounts.json`（可用 `AGY_ACP_ACCOUNTS_DIR` 覆盖）；每个隔离账号是同目录下的一张 HOME，登录态文件权限 0600。该目录刻意不放在 `$DSH_HOME` 下，避免 Windows 上整棵 Low 完整性树导致官方 ACP server 写不进凭据。
+- **系统账号**：固定第一位，使用真实 HOME，登录态来自本机官方 `agy` CLI。插件只读导入，面板不提供对它的 OAuth 重新登录，也不会改写官方 CLI 的 `antigravity-oauth-token`。想给系统账号换号，请在官方 `agy` 里重新登录后重连。
+- **新增账号**：`添加账号` / `登录` 走 Google OAuth（PKCE + 本机 `127.0.0.1:51121/oauth-callback`，state 校验，5 分钟超时）。授权码换 token 后写进该账号自己的 `~/.gemini/antigravity-cli/antigravity-oauth-token`，同时生成 ACP server 使用的 `.gemini/antigravity-acp/` 文件；登录过程不需要先安装/下载官方二进制。
+- **切换语义**：点「使用此账号」只影响之后的连接；已建立且正在跑回合的 ACP 进程不会被立刻杀掉，下一次该 worker 启动时按新账号回收重建。重新登录同一账号会让它的代际 +1，同样在下一次启动时生效。
+- **删除**：只删除插件在账号根目录下创建的隔离 HOME；系统账号不可删除。删除当前账号会回落到系统账号。
+- **额度**：HTTP 额度按账号 HOME 读取；开启 `cliQuotaEnabled` 时，`agy -p /usage|/credits` 也带该账号的 HOME 启动。药丸只跟随当前账号，面板可逐账号拉取；切换 / 登录 / 删除后药丸会重新取数。
+- **已知边界**：面板登录的 OAuth 回调固定在 Host 的 `127.0.0.1:51121`，要求**浏览器与 Host 在同一台机器**；从另一台设备访问 DSH Web 时，浏览器会把 localhost 指向自己，回调到不了 Host（本版本没有手工粘贴授权码的回退，可先在本机完成登录或用系统账号）。macOS 的官方 CLI 可能优先使用系统钥匙串，隔离 HOME 未必能完全隔离 token；Linux 上通过把 `DBUS_SESSION_BUS_ADDRESS` 指向账号目录内不存在路径来阻断桌面 Secret Service；Windows 同时改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`。OAuth 使用官方二进制里审计过的 client；从二进制提取不到时回落到 `@cortexkit/antigravity-auth-core` 的同一对。
+
+不提供目录条目删除或付费 Credits 开关；账号切换与删除见上。停用只是不列入选择器，已知模型的显示名、上下文容量与路由仍保留。思考强度由 DSH 会话菜单选择，不在此维护第二份独立档位配置。只读 Profile 禁止修改；外部刷新不会覆盖未保存草稿，保存失败保留输入。

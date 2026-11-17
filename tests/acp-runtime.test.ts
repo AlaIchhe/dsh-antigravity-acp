@@ -38,6 +38,7 @@ interface RuntimeHarness {
   active: ActiveAcpRuntime
   agents: FakeAcpAgent[]
   spawns: FakeAgentProcess[]
+  specs: unknown[]
   config: AntigravityHostConfig
   dispose: () => Promise<void>
 }
@@ -96,6 +97,7 @@ async function createRuntimeHarness(
     active,
     agents,
     spawns: subprocess.spawns,
+    specs: subprocess.specs,
     config: baseConfig(binaryPath),
     dispose: async () => {
       await disposeAcpRuntime(active)
@@ -121,6 +123,31 @@ function acceptHandshake(agent: FakeAcpAgent): void {
   agent.on('authenticate', () => ({}))
   agent.on('session/new', () => ({ sessionId: 'acp-session-1', configOptions: [] }))
 }
+
+describe('账号切换', () => {
+  it('accountId 变化时先回收旧链路，再用新账号 HOME 启动', async () => {
+    const harness = await createRuntimeHarness(acceptHandshake)
+    const readyDeps = {
+      ...TEST_DEPS,
+      ensureCredentials: async () => ({
+        ready: true, status: 'existing' as const, authType: 'oauth-personal', tokenPath: '', settingsPath: '', settingsWritten: false,
+      }),
+      accountId: 'primary',
+    }
+    const first = await startAcpRuntimeRaw(harness.ctx, harness.config, handlers, harness.active, readyDeps)
+    expect(harness.spawns).toHaveLength(1)
+    const second = await startAcpRuntimeRaw(harness.ctx, harness.config, handlers, harness.active, {
+      ...readyDeps, accountId: 'acc_2', accountHome: join(tmpdir(), 'agy-account-2'),
+    })
+    expect(second).not.toBe(first)
+    expect(harness.spawns).toHaveLength(2)
+    expect(harness.spawns[0]!.terminated()).toBe(true)
+    expect(harness.active.accountId).toBe('acc_2')
+    const spec = harness.specs[1] as { env: Record<string, string> }
+    expect(spec.env.HOME).toBe(join(tmpdir(), 'agy-account-2'))
+    expect(spec.env.GEMINI_CLI_HOME).toBe(join(tmpdir(), 'agy-account-2', '.gemini'))
+  })
+})
 
 describe('设置 GUI 独立 ACP 连接', () => {
   it('预热缺少登录态时不弹浏览器、不启动进程，状态可供重试', async () => {

@@ -3,6 +3,7 @@
  * TransformStream 交叉连接）验证 initialize 请求构造、响应关联、
  * authenticate 参数、session/new 会话保存、超时、通知分发与关闭语义。
  */
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AnyMessage } from '@agentclientprotocol/sdk'
 import { AgentLink, AGY_LINK_ERROR, AgentLinkError, OAUTH_PERSONAL_AUTH_METHOD, agentStreamFromSubprocess, boundedFrameStream, launchAcpAgent, officialAgentEnv } from '../src/protocol/agent-link.js'
@@ -532,6 +533,19 @@ describe('launchAcpAgent', () => {
     expect(env.TMP).toBe('D:\\tmp\\agy')
     expect(env.TMPDIR).toBe('D:\\tmp\\agy')
     expect(env.USERPROFILE).toBe('C:\\Users\\x')
+    expect(env.SystemRoot).toBe('C:\\Windows')
+  })
+
+  it('officialAgentEnv 用隔离账号的 HOME 覆盖真实用户目录', () => {
+    const env = officialAgentEnv({
+      binaryDir: 'D:\\bin',
+      tmpDir: 'D:\\tmp\\agy',
+      homeDir: 'D:\\accounts\\acc_1',
+      parent: { HOME: 'D:\\Users\\x', USERPROFILE: 'D:\\Users\\x', SystemRoot: 'C:\\Windows' },
+    })
+    expect(env.HOME).toBe('D:\\accounts\\acc_1')
+    expect(env.GEMINI_CLI_HOME).toBe(join('D:\\accounts\\acc_1', '.gemini'))
+    // 平台相关的 USERPROFILE / DBUS 覆盖在 isolated-home 单测里按平台断言。
     expect(env.SystemRoot).toBe('C:\\Windows')
   })
 

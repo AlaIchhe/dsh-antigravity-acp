@@ -23,10 +23,7 @@ afterEach(async () => {
 })
 
 /** Real React hooks and rerenders; only the DSH loader/transport and browser timers are substituted. */
-type SharedQuotaReader = ((force: boolean, source?: string) => Promise<unknown>) & {
-  observeProxyAccount(snapshot: { phase: string; revision: number }): void
-  observeMode(source: string): void
-}
+type SharedQuotaReader = ((force: boolean, source?: string) => Promise<unknown>)
 function loadCard(quotaRead?: () => Promise<unknown>) {
   let registration: { factory(require: (id: string) => unknown): { apply(ctx: unknown): void } } | undefined
   const components = new Map<string, React.ComponentType<Record<string, unknown>>>()
@@ -78,10 +75,10 @@ function transport(initial = document()) {
   }
 }
 
-async function mount(remote: unknown, control?: unknown, proxyControl?: unknown, readQuota?: unknown) {
+async function mount(remote: unknown, control?: unknown, readQuota?: unknown) {
   const { Card, intervals } = loadCard()
   let renderer!: ReactTestRenderer
-  await act(async () => { renderer = create(React.createElement(Card, { remote, control, proxyControl, readQuota })) })
+  await act(async () => { renderer = create(React.createElement(Card, { remote, control, readQuota })) })
   renderers.push(renderer)
   return { renderer, intervals }
 }
@@ -386,6 +383,83 @@ describe('settings card with real React state and effects', () => {
     expect(modelControl(renderer, 'enabled', 'new-model')).toBeDefined()
   })
 
+  const accountSnapshot = {
+    state: 'idle', message: 'ready', activeAccountId: 'primary', auth: { phase: 'idle' },
+    accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: true, createdAt: 0 }],
+  }
+  const accountControl = () => vi.fn(async (method: string) => method === 'account'
+    ? accountSnapshot
+    : { status: 'ok', models: [] })
+
+  it('账号页合并连接与额度：账号卡片内登录并手动拉取该账号额度', async () => {
+    const service = transport()
+    const control = accountControl()
+    const readQuota = Object.assign(vi.fn(async () => ({
+      status: 'ok', updatedAt: '2026-11-17T00:00:00.000Z', plan: '示例套餐',
+      groups: [{ name: 'Gemini Models', buckets: [{ window: '5h', remainingPct: 73 }] }],
+    })), {
+      readAccount: vi.fn(async () => ({
+        status: 'ok', updatedAt: '2026-11-17T00:00:00.000Z', plan: '示例套餐',
+        groups: [{ name: 'Gemini Models', buckets: [{ window: '5h', remainingPct: 73 }] }],
+      })),
+    })
+    const { renderer } = await mount(service.remote, control, readQuota)
+    expect(button(renderer, '连接 / 登录 ACP')).toBeDefined()
+    expect(button(renderer, '拉取额度 主账号（系统登录）')).toBeDefined()
+    expect(renderedText(renderer)).toContain('尚未查询')
+    await act(async () => { await button(renderer, '拉取额度 主账号（系统登录）').props.onClick() })
+    expect(readQuota.readAccount).toHaveBeenCalledWith(true, 'antigravity-acp', 'primary')
+    expect(renderedText(renderer)).toContain('73%')
+    expect(renderedText(renderer)).toContain('示例套餐')
+    // 连接与额度已经合并，分页只剩「账号 / 模型 / 高级」。
+    const tabs = renderer.root.findAll((node) => node.type === 'button' && node.props.role === 'tab')
+    expect(tabs.map((node) => node.children.join(''))).toEqual(['账号', '模型', '高级'])
+    await act(async () => { await button(renderer, '连接 / 登录 ACP').props.onClick() })
+    expect(control).toHaveBeenCalledWith('account', { action: 'login' })
+  })
+
+  it('面板添加账号：显示授权链接，取消后回到空闲', async () => {
+    const service = transport()
+    let auth: Record<string, unknown> = { phase: 'idle' }
+    const control = vi.fn(async (method: string, request?: { action?: string }) => {
+      if (method !== 'account') return { status: 'ok', models: [] }
+      if (request?.action === 'add-account') auth = { phase: 'waiting', message: '等待浏览器授权…', authUrl: 'https://accounts.google.com/auth' }
+      if (request?.action === 'cancel-add') auth = { phase: 'cancelled', message: '已取消登录' }
+      return { ...accountSnapshot, auth }
+    })
+    const { renderer } = await mount(service.remote, control, {} as never)
+    await act(async () => { await button(renderer, '添加账号').props.onClick() })
+    expect(control).toHaveBeenCalledWith('account', { action: 'add-account' })
+    expect(renderer.root.findAll((node) => node.type === 'a' && node.props.href === 'https://accounts.google.com/auth')).toHaveLength(1)
+    await act(async () => { await button(renderer, '取消登录').props.onClick() })
+    expect(control).toHaveBeenCalledWith('account', { action: 'cancel-add' })
+    expect(renderer.root.findAllByType('button').some((node) => node.children.join('') === '取消登录')).toBe(false)
+  })
+
+  it('账号卡片切换与两段确认删除', async () => {
+    const service = transport()
+    const accounts = [
+      { id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: true, createdAt: 0 },
+      { id: 'acc_2', alias: '备用账号', email: 'backup@example.com', system: false, active: false, ready: true, createdAt: 1 },
+    ]
+    let current = { ...accountSnapshot, accounts }
+    const control = vi.fn(async (method: string, request?: { action?: string; id?: string }) => {
+      if (method !== 'account') return { status: 'ok', models: [] }
+      if (request?.action === 'activate') current = { ...current, activeAccountId: 'acc_2', accounts: accounts.map((row) => ({ ...row, active: row.id === 'acc_2' })) }
+      if (request?.action === 'remove') current = { ...current, accounts: accounts.filter((row) => row.id !== 'acc_2') }
+      return current
+    })
+    const { renderer } = await mount(service.remote, control, {} as never)
+    expect(renderedText(renderer)).toContain('备用账号')
+    await act(async () => { await button(renderer, '使用此账号').props.onClick() })
+    expect(control).toHaveBeenCalledWith('account', { action: 'activate', id: 'acc_2' })
+    const remove = renderer.root.findAllByType('button').find((node) => node.children.join('') === '删除')!
+    await act(async () => { remove.props.onClick() })
+    expect(renderedText(renderer)).toContain('确认删除')
+    await act(async () => { await button(renderer, '确认删除').props.onClick() })
+    expect(control).toHaveBeenCalledWith('account', { action: 'remove', id: 'acc_2' })
+  })
+
   it('shows session switches and submits timers as numbers, preserving zero', async () => {
     const service = transport()
     const { renderer } = await mount(service.remote)
@@ -422,7 +496,12 @@ describe('settings card with real React state and effects', () => {
   it('displays pool pressure and clears subscriptions and polling on unmount', async () => {
     const service = transport()
     const control = vi.fn(async (method: string) => method === 'account'
-      ? { state: 'connected', message: 'ready', runtime: { phase: 'prompt', queue: { active: 2, parked: 1, waiting: 3, workers: 2, capacity: 2 } } }
+      ? {
+        state: 'connected', message: 'ready',
+        runtime: { phase: 'prompt', queue: { active: 2, parked: 1, waiting: 3, workers: 2, capacity: 2 } },
+        activeAccountId: 'primary', auth: { phase: 'idle' },
+        accounts: [{ id: 'primary', alias: '主账号（系统登录）', system: true, active: true, ready: true, createdAt: 0 }],
+      }
       : { status: 'ok', models: [] })
     const { renderer, intervals } = await mount(service.remote, control)
     expect(renderedText(renderer)).toContain('运行 2 · 等待工具 1 · 排队 3')
