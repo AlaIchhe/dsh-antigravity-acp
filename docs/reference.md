@@ -63,7 +63,7 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 - 兼容旧 agent：没有 `thought_level` 时，官方档位化目录（`claude-opus-5-5-high`）折叠成家族并退回「档位后缀」路由，缺档取最近档位，未指定通常使用 `medium`。`gpt-oss-120b` 家族不列入选择器。
 - 目录里没有任何档位变体、agent 也没声明 `thought_level` 的家族 id **不声明**思考强度菜单（省略 `reasoning` 字段）：宿主把 `efforts: []` 判为非法元数据（`INVALID_MODEL_REASONING`）并使该模型不可用，空数组不等于「没有档位」。
 - 旧 `server-default` 路由仍兼容：默认沿用上游模型，配置了映射时才写入映射目标；不再新增占位选择项。
-- 上下文容量不填猜测值。收到官方 `usage_update.size` 后才记录到模型上下文并缓存；首次观测前未知。
+- 上下文容量与占用不填猜测值。`usage_update.size` 才作为窗口、`usage_update.used`（Tokens currently in context）才作为占用上报给宿主并缓存；首次观测前未知。ACP 的 `PromptResponse.usage` 是**整段会话累计值**（`inputTokens` = Total input tokens across all turns、`cachedReadTokens` = Total cache read tokens），不能当某一轮的 prompt 用量，本插件不再转发它。
 - 模型、容量与图片能力在 worker 间同步；不因增加 worker 就虚构新模型权益。
 
 | 请求项 | 行为 |
@@ -191,7 +191,7 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 
 | 限制 | 现状 | 绕过 / 处理 |
 |---|---|---|
-| 没有 token 用量 | 协议把 `PromptResponse.usage` 标为“本轮用量”（UNSTABLE），但官方 1.4.0 实测不返回，宿主拿不到计费 token；只有 `usage_update.used/size` 反映上下文占用。 | 不估算、不伪造计费数字，也不对累计值做差；额度以官方客户端/额度药丸为准。 |
+| 没有单轮 token 用量 | ACP 只给了会话累计的 `PromptResponse.usage` 和当前占用的 `usage_update.used/size`，没有「本轮 prompt 用量」。 | 占用用 `usage_update.used` 上报；累计值不冒充本轮用量，也不估算、不伪造计费数字；额度以官方客户端/额度药丸为准。 |
 | 工具参数非流式 | ACP 桥在工具被调用后才拿到完整参数，界面里工具调用一次性出现。 | 协议没有增量参数通道，暂无。 |
 | 标题 / 压缩走当前 provider | DSH 用当前模型生成标题、做压缩，各自新建一次 ACP 会话（约 3–20 秒、消耗额度）。 | 标题超时已收紧到 90 秒、压缩 10 分钟；可在 DSH 侧关闭自动标题或改用更便宜的 provider。 |
 | `temperature` / `stop` 不生效 | ACP v1 没有对应会话通道；插件记录警告并忽略，不再整单失败。 | 需要采样控制时使用官方 agent 自身的会话配置。 |

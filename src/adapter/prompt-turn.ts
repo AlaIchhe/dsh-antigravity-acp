@@ -24,7 +24,6 @@ import type {
   SessionNotification,
   SessionUpdate,
   StopReason,
-  Usage,
 } from '@agentclientprotocol/sdk'
 import type { AgentLink } from '../protocol/agent-link.js'
 import type { BridgeParkedCall, BridgeToolResult, McpToolBridge } from '../bridge/mcp-bridge.js'
@@ -121,7 +120,10 @@ export class PromptTurn {
   #nativeRefusals = 0
   #onNativeRefusal: PromptTurnOptions['onNativeRefusal']
   readonly #onPermissionDiagnostic: PromptTurnOptions['onPermissionDiagnostic']
-  /** usage_update 报的上下文已用量；官方 PromptResponse 不带 usage 时用作回合用量样本。 */
+  /**
+   * `usage_update.used`：当前上下文已用 token。回合结束作为 usage 样本上报，
+   * 是宿主上下文占用唯一的来源（ACP 的 PromptResponse.usage 是会话累计值，不能用）。
+   */
   #observedUsage: TokenUsage | undefined
   #nextIndex = 0
   #open: OpenBlock | undefined
@@ -430,7 +432,11 @@ export class PromptTurn {
       }, true)
       return
     }
-    this.finishRound(mapUsage(response.usage) ?? this.#observedUsage)
+    // 只上报 `usage_update.used`（当前上下文占用）。ACP 的 `PromptResponse.usage`
+    // 字段是**整段会话的累计值**（inputTokens = Total input tokens across all
+    // turns、cachedReadTokens = Total cache read tokens），把它当本轮 prompt 用量
+    // 交给宿主会让上下文压力 = input + cacheRead 一路膨胀到窗口的数倍。
+    this.finishRound(this.#observedUsage)
   }
 
   #mapStopReason(stopReason: StopReason): LlmFailure | undefined {
@@ -608,22 +614,5 @@ function renderContentText(content: unknown): string | undefined {
     return undefined
   }
   return undefined
-}
-
-/**
- * ACP Usage → DSH TokenUsage。
- *
- * 协议把 `PromptResponse.usage` 标为「本轮用量」（UNSTABLE），但官方
- * agy_acp_server 1.4.0 实测不返回该字段，因此本 adapter 通常不上报 usage；
- * 返回时按原值上报，不做任何估算或累计换算。
- */
-export function mapUsage(usage: Usage | null | undefined): TokenUsage | undefined {
-  if (!usage) return undefined
-  let mapped: TokenUsage = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }
-  if (usage.totalTokens !== undefined) mapped = { ...mapped, totalTokens: usage.totalTokens }
-  if (usage.cachedReadTokens != null) mapped = { ...mapped, cacheReadTokens: usage.cachedReadTokens }
-  if (usage.cachedWriteTokens != null) mapped = { ...mapped, cacheWriteTokens: usage.cachedWriteTokens }
-  if (usage.thoughtTokens != null) mapped = { ...mapped, reasoningTokens: usage.thoughtTokens }
-  return mapped
 }
 

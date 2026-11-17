@@ -979,9 +979,14 @@ describe('StreamChunk 序列映射', () => {
         update: { sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text } },
       })
     }
+    await harness.agent.notify('session/update', {
+      sessionId: SESSION_1,
+      update: { sessionUpdate: 'usage_update', used: 12, size: 1_000_000 },
+    })
     await harness.agent.reply('session/prompt', {
       stopReason: 'end_turn',
-      usage: { inputTokens: 12, outputTokens: 5, totalTokens: 17, thoughtTokens: 2 },
+      // 累计值：不应被当成这一轮的 prompt 用量。
+      usage: { inputTokens: 120_000, outputTokens: 5, totalTokens: 620_000, cachedReadTokens: 500_000 },
     })
 
     const chunks = await streaming
@@ -993,7 +998,8 @@ describe('StreamChunk 序列映射', () => {
       { type: 'block-start', index: 1, blockType: 'text' },
       { type: 'text-delta', index: 1, text: '！' },
       { type: 'block-end', index: 1, block: { type: 'text', text: '！' } },
-      { type: 'usage', usage: { inputTokens: 12, outputTokens: 5, totalTokens: 17, reasoningTokens: 2 } },
+      // 只报 usage_update.used（当前占用），不报累计的 inputTokens/cacheRead。
+      { type: 'usage', usage: { inputTokens: 12, outputTokens: 0 } },
       { type: 'finish', reason: { kind: 'stop' } },
     ])
     expect(chunks.at(-1)?.type).toBe('finish')
@@ -2714,7 +2720,7 @@ describe('ACP 会话复用与跨进程恢复', () => {
     expect(visibleText(await resumed)).toBe('恢复后回答')
   })
 
-  it('usage 按协议原样上报，不做累计换算（官方 1.4.0 实测不返回）', async () => {
+  it('累计 usage 不进上下文样本：占用只认 usage_update.used', async () => {
     const harness = createHarness()
     const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
     await waitForRequest(harness.agent, 'session/prompt')
@@ -2722,14 +2728,17 @@ describe('ACP 会话复用与跨进程恢复', () => {
       sessionId: SESSION_1,
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '第一轮回答' } },
     })
+    await harness.agent.notify('session/update', {
+      sessionId: SESSION_1,
+      update: { sessionUpdate: 'usage_update', used: 44_291, size: 1_048_576 },
+    })
     await harness.agent.reply('session/prompt', {
       stopReason: 'end_turn',
-      usage: { totalTokens: 110, inputTokens: 100, outputTokens: 10 },
+      // 官方返回的是整段会话累计值（按 ACP 定义：Total input / total cache read）。
+      usage: { totalTokens: 3_812_265, inputTokens: 216_729, outputTokens: 20_000, cachedReadTokens: 3_561_337 },
     }, 0)
-    const firstChunks = await first
-    expect(firstChunks.find((chunk) => chunk.type === 'usage')).toMatchObject({
-      usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 },
-    })
+    const firstUsage = (await first).find((chunk) => chunk.type === 'usage')
+    expect(firstUsage).toEqual({ type: 'usage', usage: { inputTokens: 44_291, outputTokens: 0 } })
 
     const second = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
     await waitForRequest(harness.agent, 'session/prompt', 2)
@@ -2737,14 +2746,40 @@ describe('ACP 会话复用与跨进程恢复', () => {
       sessionId: SESSION_1,
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '第二轮回答' } },
     })
+    await harness.agent.notify('session/update', {
+      sessionId: SESSION_1,
+      update: { sessionUpdate: 'usage_update', used: 58_900, size: 1_048_576 },
+    })
     await harness.agent.reply('session/prompt', {
       stopReason: 'end_turn',
-      usage: { totalTokens: 175, inputTokens: 150, outputTokens: 25 },
+      usage: { totalTokens: 4_336_068, inputTokens: 586_353, outputTokens: 30_000, cachedReadTokens: 3_720_885 },
     }, 1)
-    const secondChunks = await second
-    // 协议把 PromptResponse.usage 标为「本轮用量」：原样上报，不擅自从累计值求差。
-    expect(secondChunks.find((chunk) => chunk.type === 'usage')).toMatchObject({
-      usage: { inputTokens: 150, outputTokens: 25, totalTokens: 175 },
+    // 第二轮报当前占用，而不是把累计值越滚越大。
+    expect((await second).find((chunk) => chunk.type === 'usage')).toEqual({
+      type: 'usage', usage: { inputTokens: 58_900, outputTokens: 0 },
+    })
+  })
+
+  it('没有 usage_update 时不上报 usage（宁可没有也不报累计值）', async () => {
+    const harness = createHarness()
+    const streaming = collect(harness.adapter.stream(baseOptions()))
+    await waitForRequest(harness.agent, 'session/prompt')
+    await replyWithText(harness, '只有文本')
+    const chunks = await streaming
+    expect(chunks.some((chunk) => chunk.type === 'usage')).toBe(false)
+  })
+
+  it('usage_update.used 超过窗口时按窗口夹住', async () => {
+    const harness = createHarness()
+    const streaming = collect(harness.adapter.stream(baseOptions()))
+    await waitForRequest(harness.agent, 'session/prompt')
+    await harness.agent.notify('session/update', {
+      sessionId: SESSION_1,
+      update: { sessionUpdate: 'usage_update', used: 4_307_238, size: 1_048_576 },
+    })
+    await replyWithText(harness, '答案')
+    expect((await streaming).find((chunk) => chunk.type === 'usage')).toEqual({
+      type: 'usage', usage: { inputTokens: 1_048_576, outputTokens: 0 },
     })
   })
 

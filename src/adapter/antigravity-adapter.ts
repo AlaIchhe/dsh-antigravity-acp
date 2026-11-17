@@ -1652,13 +1652,16 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     // 容量记到新回合的路由键上。
     const turn = this.#turn
     if (!turn || turn.terminated || notification.sessionId !== turn.sessionId) return
-    // 上下文已用量：官方不一定通过 PromptResponse.usage 上报，这里先收下，
-    // 回合结束时作为用量样本交给宿主。
+    // 上下文已用量：这是宿主上下文占用**唯一**的样本来源（ACP 的
+    // `PromptResponse.usage` 是全会话累计值，当请求用量会算成数倍窗口）。
+    // 超出窗口的值说明上游计数不可信，按窗口夹住，避免宿主直接显示 100%。
+    const size = update.size
     const used = update.used
     if (typeof used === 'number' && Number.isFinite(used) && used > 0) {
-      turn.noteUsage({ inputTokens: used, outputTokens: 0 })
+      const ceiling = typeof size === 'number' && Number.isFinite(size) && size > 0 ? size : undefined
+      turn.noteUsage({ inputTokens: ceiling === undefined ? used : Math.min(used, ceiling), outputTokens: 0 })
     }
-    const size = update.size
+
     if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) return
     const model = this.#routeModelId
     if (!model) return

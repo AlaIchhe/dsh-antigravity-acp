@@ -4,6 +4,11 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 未发布 · 2026-11-17
+
+- **修复上下文占用被算成窗口数倍**：ACP `PromptResponse.usage` 的字段是**整段会话累计值**（`inputTokens` = Total input tokens across all turns、`cachedReadTokens` = Total cache read tokens），插件之前把它当本轮 prompt 用量交给宿主，而宿主上下文压力 = `input + cacheRead + cacheWrite`，于是短会话也会显示 60%+，长会话直接冲到数倍窗口被截到 100%（实测同一会话出现 360% / 411%）。现在占用只认 `usage_update.used`（当前上下文 token），并按 `usage_update.size` 夹住上限；没有 `usage_update` 时不上报（宁可没有也不报累计值）。
+- 影响：宿主里的「每轮 token 用量」不再有数值——ACP 本来就不提供单轮用量，之前的数字是累计值，属于错误数据。
+
 ## 0.1.51 · 2026-11-17
 
 - **修复 Hydrogen 的 xhigh 消失**：`thought_level` 的选项跟随 agent **当前模型**——会话停在 Argon/Claude 时只有 low/medium/high，0.1.50 只按它声明档位，于是 Hydrogen 少了 Extra/`xhigh`。现在把 agent 当前选项与官方 CLI 目录里该家族真实存在的档位取并集（`gemini-4-hydrogen-xhigh`），并按 low → medium → high → xhigh 排序；没有 xhigh 变体的家族不受影响。

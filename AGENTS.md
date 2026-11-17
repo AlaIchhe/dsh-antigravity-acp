@@ -46,7 +46,7 @@ npm 包名 `dsh-bundle-antigravity-acp`、provider ID `antigravity-acp`、内部
 - 协议约束不是 OS 沙箱；ACP fs / terminal 与未知原生权限请求一律拒绝。
 - `temperature` / `stop` 无 ACP v1 会话通道，记录警告并忽略；`maxTokens` 忽略；`reasoningEffort` 写入 `thought_level`（旧 agent 则是档位路由键）。
 - 额度与 AI Credits 仅为参考值，不是计费依据；ACP 登录与 CLI 登录是两条链路。
-- 上下文容量只在实测到 `usage_update.size` 后才声明，不填猜测值。
+- 上下文容量与占用只在实测到 `usage_update.size` / `used` 后才声明，不填猜测值；ACP 的 `PromptResponse.usage` 是会话累计值，不得当成本轮 prompt 用量上报（否则宿主上下文压力会算成窗口的数倍）。
 - 版本与测试范围见 [README 兼容性矩阵](README.md#兼容性与验证范围)；宽 peer 范围是安装条件，不是全部 Core / 平台实机兼容证明。
 
 ## 维护约定
