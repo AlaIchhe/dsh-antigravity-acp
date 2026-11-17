@@ -28,14 +28,14 @@ window.__ModuleLoader__.load({
     /** Live fields owned by this card; ordinary fields stay in the host config editor. */
     const FIELDS = [
       { key: 'cliQuotaEnabled', group: 'quota', checkbox: true, label: '使用 agy CLI 补充额度', hint: '默认不启动 agy；开启后才读取 AI Credits。' },
-      { key: 'autoWarmup', group: 'general', checkbox: true, defaultChecked: true, label: '启动时自动预热', hint: '不发送消息；下次启用插件时生效。' },
-      { key: 'reuseSessions', group: 'general', checkbox: true, defaultChecked: true, label: '复用 ACP 会话', hint: '只发送新增消息；上下文不一致时自动重建。' },
+      { key: 'autoWarmup', group: 'session', checkbox: true, defaultChecked: true, label: '启动时自动预热', hint: '不发送消息；下次启用插件时生效。' },
+      { key: 'reuseSessions', group: 'session', checkbox: true, defaultChecked: true, label: '复用 ACP 会话', hint: '只发送新增消息；上下文不一致时自动重建。' },
+      { key: 'resumeSessions', group: 'session', checkbox: true, label: '重启后恢复 ACP 会话', hint: '需开启会话复用；恢复失败时自动重建。' },
+      { key: 'keepProcessAfterCancel', group: 'session', checkbox: true, label: '取消后保留进程', hint: '仅在官方进程确认停止后保留。' },
+      { key: 'cancelGraceMs', group: 'session', numeric: true, defaultValue: 30000, min: 0, max: 60000, label: '取消确认宽限（毫秒）', hint: '0 表示立即回收。' },
+      { key: 'idleRecycleMs', group: 'session', numeric: true, defaultValue: 300000, min: 0, max: 3600000, label: '进程空闲回收（毫秒）', hint: '默认 5 分钟；0 表示禁用。' },
       { key: 'proxyUrl', group: 'network', label: '出网代理', placeholder: 'http://127.0.0.1:7890', hint: '留空继承宿主代理环境。' },
       { key: 'agyCliPath', group: 'network', label: '官方 CLI 路径', placeholder: '留空自动查找 agy', hint: '仅用于模型目录和可选的 CLI 额度查询。' },
-      { key: 'resumeSessions', group: 'advanced', checkbox: true, label: '重启后恢复 ACP 会话', hint: '需开启会话复用；恢复失败时自动重建。' },
-      { key: 'keepProcessAfterCancel', group: 'advanced', checkbox: true, label: '取消后保留进程', hint: '仅在官方进程确认停止后保留。' },
-      { key: 'cancelGraceMs', group: 'advanced', numeric: true, defaultValue: 30000, min: 0, max: 60000, label: '取消确认宽限（毫秒）', hint: '0 表示立即回收。' },
-      { key: 'idleRecycleMs', group: 'advanced', numeric: true, defaultValue: 300000, min: 0, max: 3600000, label: '进程空闲回收（毫秒）', hint: '默认 5 分钟；0 表示禁用。' },
     ]
 
     /** 逐模型设置：键是 DSH 选择器里的模型 ID，值是开关、默认档位、显示名与官方 ID 映射。 */
@@ -737,7 +737,6 @@ window.__ModuleLoader__.load({
         h('div', { role: 'tablist', 'aria-label': '设置分页', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' } },
           pageButton('account', '账号'),
           pageButton('models', '模型'),
-          pageButton('advanced', '高级'),
           registered === false ? h('span', { style: { marginLeft: 'auto', padding: '3px 7px', borderRadius: '99px', fontSize: '11px', color: '#b42318', background: TRACK } }, '路由未注册') : null),
 
         h('div', { id: 'agy-settings-page-account', role: 'tabpanel', style: pageStyle('account') },
@@ -781,21 +780,9 @@ window.__ModuleLoader__.load({
 
           h('section', { style: PANEL, 'aria-label': '额度取数方式' },
             h(SectionHeading, { title: '额度取数方式' }),
-            h(SettingsFields, { ...fieldProps, fields: fieldsFor('quota') }))),
-
-        h('div', { id: 'agy-settings-page-models', role: 'tabpanel', style: pageStyle('models') },
-          h('section', { style: PANEL, 'aria-label': '模型列表' },
-            h(SectionHeading, { title: '模型',
-              action: h('button', { type: 'button', title: '刷新模型目录', 'aria-label': '刷新模型目录', 'aria-busy': modelBusy || undefined, style: { ...ACTION, flex: '0 0 auto', whiteSpace: 'nowrap' }, disabled: modelBusy || !props.control, onClick: () => pullModels(true) }, modelBusy ? '正在刷新…' : '刷新') }),
-            h(ModelOverrideList, { rows, overrides: draft[OVERRIDES_KEY], disabled: editingDisabled, onEdit: editOverride }),
-            modelMessage ? h('p', { role: 'status', style: { fontSize: '12px', lineHeight: 1.5, margin: 0, overflowWrap: 'anywhere' } }, modelMessage) : null)),
-
-        h('div', { id: 'agy-settings-page-advanced', role: 'tabpanel', style: pageStyle('advanced') },
-          h('section', { style: PANEL, 'aria-label': '常用设置' },
-            h(SectionHeading, { title: '会话偏好' }),
-            h(SettingsFields, { ...fieldProps, fields: fieldsFor('general') })),
-          h(SettingsGroup, { title: '网络与 CLI', fields: fieldsFor('network'), fieldProps, open: false }),
-          h(SettingsGroup, { title: '会话与进程', fields: fieldsFor('advanced'), fieldProps }),
+            h(SettingsFields, { ...fieldProps, fields: fieldsFor('quota') })),
+          h(SettingsGroup, { title: '会话', fields: fieldsFor('session'), fieldProps }),
+          h(SettingsGroup, { title: '网络与 CLI', fields: fieldsFor('network'), fieldProps }),
           h('details', { style: PANEL, 'aria-label': '连接诊断' },
             h('summary', { style: SUMMARY },
               h('span', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
@@ -803,7 +790,14 @@ window.__ModuleLoader__.load({
                 h('span', { style: { fontSize: '13px', fontWeight: 650 } }, '连接诊断'))),
             account?.runtime
               ? h('div', { style: { marginTop: '16px', paddingTop: '14px', borderTop: '1px solid rgba(128,128,128,.14)' } }, RuntimeDetails({ runtime: account.runtime }))
-              : null)))
+              : null)),
+
+        h('div', { id: 'agy-settings-page-models', role: 'tabpanel', style: pageStyle('models') },
+          h('section', { style: PANEL, 'aria-label': '模型列表' },
+            h(SectionHeading, { title: '模型',
+              action: h('button', { type: 'button', title: '刷新模型目录', 'aria-label': '刷新模型目录', 'aria-busy': modelBusy || undefined, style: { ...ACTION, flex: '0 0 auto', whiteSpace: 'nowrap' }, disabled: modelBusy || !props.control, onClick: () => pullModels(true) }, modelBusy ? '正在刷新…' : '刷新') }),
+            h(ModelOverrideList, { rows, overrides: draft[OVERRIDES_KEY], disabled: editingDisabled, onEdit: editOverride }),
+            modelMessage ? h('p', { role: 'status', style: { fontSize: '12px', lineHeight: 1.5, margin: 0, overflowWrap: 'anywhere' } }, modelMessage) : null)))
     }
 
     /**

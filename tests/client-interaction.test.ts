@@ -411,9 +411,9 @@ describe('settings card with real React state and effects', () => {
     expect(readQuota.readAccount).toHaveBeenCalledWith(true, 'antigravity-acp', 'primary')
     expect(renderedText(renderer)).toContain('73%')
     expect(renderedText(renderer)).toContain('示例套餐')
-    // 连接与额度已经合并，分页只剩「账号 / 模型 / 高级」。
+    // 连接与额度合并；高级页并入账号页后只剩「账号 / 模型」。
     const tabs = renderer.root.findAll((node) => node.type === 'button' && node.props.role === 'tab')
-    expect(tabs.map((node) => node.children.join(''))).toEqual(['账号', '模型', '高级'])
+    expect(tabs.map((node) => node.children.join(''))).toEqual(['账号', '模型'])
     await act(async () => { await button(renderer, '连接 / 登录 ACP').props.onClick() })
     expect(control).toHaveBeenCalledWith('account', { action: 'login' })
   })

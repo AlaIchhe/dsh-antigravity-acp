@@ -270,10 +270,10 @@ describe('browser client module', () => {
     const card = loadRegistrations({ stateOverrides: { 0: snapshot } }).get('antigravity-acp')!.component
     const tree = card({ remote: {}, control, readQuota: async () => ({ status: 'ok', groups: [] }) })
     const text = texts(tree).join(' ')
-    for (const label of ['账号', '模型', '高级', '添加账号', '额度取数方式', '会话偏好', '网络与 CLI', '连接诊断']) expect(text).toContain(label)
+    for (const label of ['账号', '模型', '添加账号', '额度取数方式', '会话', '网络与 CLI', '连接诊断']) expect(text).toContain(label)
     // 连接与额度不再是两个分页：账号卡片内给出登录 / 切换与手动额度。
     const tabs = elements(tree).filter((item) => item.props.role === 'tab')
-    expect(tabs.map((item) => texts(item).join(''))).toEqual(['账号', '模型', '高级'])
+    expect(tabs.map((item) => texts(item).join(''))).toEqual(['账号', '模型'])
     expect(tabs.find((item) => texts(item).join('') === '账号')?.props['aria-selected']).toBe(true)
     expect(text).toContain('添加账号')
     expect(text).toContain('连接 / 登录 ACP')
