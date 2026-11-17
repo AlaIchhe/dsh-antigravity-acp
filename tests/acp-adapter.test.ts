@@ -548,6 +548,30 @@ describe('模型目录来自 ACP 会话配置', () => {
     expect(reasoning?.defaultEffort?.toString()).toBe('medium')
   })
 
+  it('会话停在别的模型时，Hydrogen 仍按官方 CLI 目录声明 xhigh', async () => {
+    // 真实情况：thought_level 的选项跟随「当前模型」，停在 Argon 时只有三档；
+    // 但官方 CLI 清单里有 gemini-4-hydrogen-xhigh，Hydrogen 不该因此少一档。
+    const harness = createHarness({
+      configOptions: THOUGHT_CONFIG_OPTIONS,
+      loadCliCatalog: async () => [
+        { id: 'gemini-4-hydrogen-low', name: 'Gemini 4 Hydrogen (Low)' },
+        { id: 'gemini-4-hydrogen-medium', name: 'Gemini 4 Hydrogen (Medium)' },
+        { id: 'gemini-4-hydrogen-high', name: 'Gemini 4 Hydrogen (High)' },
+        { id: 'gemini-4-hydrogen-xhigh', name: 'Gemini 4 Hydrogen (XHigh)' },
+        { id: 'claude-opus-5-5-low', name: 'Claude Opus 5.5 (Low)' },
+        { id: 'claude-opus-5-5-medium', name: 'Claude Opus 5.5 (Medium)' },
+        { id: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
+      ],
+    })
+    await harness.adapter.discoverModels()
+    const hydrogen = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'gemini-4-hydrogen')).reasoning
+    expect(hydrogen?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(hydrogen?.efforts.at(-1)?.name).toBe('Extra')
+    // 没有 xhigh 变体的家族不会被并进这一档。
+    const claude = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
+    expect(claude?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high'])
+  })
+
   it('session/new 的 model select 配置项被映射为 LlmModelInfo 目录', async () => {
     const harness = createHarness()
     const streaming = collect(harness.adapter.stream(baseOptions()))

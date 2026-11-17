@@ -746,12 +746,17 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   #reasoningInfo(model: string, familyTiers = this.#familyTiers): LlmModelReasoningInfo | undefined {
     const thought = this.#thoughtLevel
     if (thought) {
-      const efforts = thought.options.map((option) => ({
-        id: ReasoningEffortId(option.value),
-        name: option.name,
-        ...(option.description === undefined || option.description === null ? {} : { description: option.description }),
-      }))
+      const efforts = reasoningsFrom(thought.options)
+      // `thought_level` 的选项跟随 agent **当前模型**：会话停在 Argon/Claude 时，
+      // 选项里不会有 Hydrogen 的 `xhigh`。只按它声明会让 Hydrogen 少一档，所以
+      // 再并上官方 CLI 目录里该家族真实存在的档位（`gemini-4-hydrogen-xhigh`）。
+      const tiers = familyTiers.get(modelFamilyId(model))
+      for (const tier of tiers ?? []) {
+        if (efforts.some((entry) => entry.id.toString() === tier)) continue
+        efforts.push({ id: ReasoningEffortId(tier), name: TIER_LABELS[tier] ?? tier })
+      }
       if (efforts.length === 0) return undefined
+      efforts.sort((a, b) => effortRank(a.id.toString()) - effortRank(b.id.toString()))
       const preferred = thought.currentValue === undefined
         ? undefined
         : efforts.find((entry) => entry.id === ReasoningEffortId(thought.currentValue as string))
@@ -1901,6 +1906,26 @@ function normalizeEffort(effort?: { toString(): string }): string | undefined {
 
 /** 档位的强弱顺序，用于「请求的档位不在声明里」时就近收敛。 */
 const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
+/** CLI 目录里出现、但 agent 当前 `thought_level` 选项未必包含的档位的展示名。 */
+const TIER_LABELS: Record<string, string> = { low: '低', medium: '中', high: '高', xhigh: 'Extra' }
+
+/** 档位在强弱顺序里的位置；未知值排在最后，不参与猜测。 */
+function effortRank(id: string): number {
+  const index = (EFFORT_ORDER as readonly string[]).indexOf(id)
+  return index === -1 ? EFFORT_ORDER.length : index
+}
+
+/** ACP `thought_level` 选项 → 宿主的 reasoning 档位元数据。 */
+function reasoningsFrom(
+  options: readonly { value: string; name: string; description?: string | null }[],
+): Array<{ id: ReturnType<typeof ReasoningEffortId>; name: string; description?: string }> {
+  return options.map((option) => ({
+    id: ReasoningEffortId(option.value),
+    name: option.name,
+    ...(option.description === undefined || option.description === null ? {} : { description: option.description }),
+  }))
+}
 
 /**
  * 把请求的档位收敛到 agent 实际声明的选项：完全匹配优先，否则按强弱顺序取最近

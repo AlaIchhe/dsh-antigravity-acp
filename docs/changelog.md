@@ -4,6 +4,10 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 未发布 · 2026-11-17
+
+- **修复 Hydrogen 的 xhigh 消失**：`thought_level` 的选项跟随 agent **当前模型**——会话停在 Argon/Claude 时只有 low/medium/high，0.1.50 只按它声明档位，于是 Hydrogen 少了 Extra/`xhigh`。现在把 agent 当前选项与官方 CLI 目录里该家族真实存在的档位取并集（`gemini-4-hydrogen-xhigh`），并按 low → medium → high → xhigh 排序；没有 xhigh 变体的家族不受影响。
+
 ## 0.1.50 · 2026-11-17
 
 - **恢复思考强度菜单**：撤销 0.1.48 的「不声明 reasoning」——适配器重新按 agent 声明的 `thought_level` 生成 `reasoning.efforts`，`/model` 菜单与模型按钮上重新可以选 Low / Medium / High / Extra，选择写入 `session/set_config_option(thought_level)`；没有独立档位通道的旧 agent 仍退回档位后缀路由。
