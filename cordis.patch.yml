@@ -1,5 +1,5 @@
 # 单行组件：官方 ACP 宿主。不写入任何 agent-default-model row。
 - insert:
     - id: llm-antigravity-acp
-      name: dsh-bundle-antigravity-host
+      name: dsh-bundle-antigravity-acp
       inject: [llm, subprocess]

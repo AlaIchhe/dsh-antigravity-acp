@@ -2,7 +2,7 @@
 
 [返回主页](../README.md) · [配置](configuration.md) · [更新记录](changelog.md) · [开发与验证](development.md)
 
-本文对应 `dsh-bundle-antigravity-host` **0.1.39**。安装或连接成功不等于真实模型生成、图片识别或所有平台已验收。
+本文对应 `dsh-bundle-antigravity-acp` **0.1.39**。安装或连接成功不等于真实模型生成、图片识别或所有平台已验收。
 
 ## 安装与更新
 
@@ -10,10 +10,10 @@
 
 ```console
 # 公共 CLI 的 Web profile 示例
-dsh plugin --profile web add dsh-bundle-antigravity-host
+dsh plugin --profile web add dsh-bundle-antigravity-acp
 
 # 需要固定版本时
-dsh plugin --profile web add dsh-bundle-antigravity-host@0.1.24
+dsh plugin --profile web add dsh-bundle-antigravity-acp@0.1.39
 ```
 
 更新时通过目标插件管理器选择本包的目标版本，或使用目标 CLI 支持的单包更新方式；先核对该入口的 `plugin --help`。不要用不限定包名的批量更新命令替代一次单插件更新。
@@ -23,7 +23,7 @@ dsh plugin --profile web add dsh-bundle-antigravity-host@0.1.24
 在源码仓库完成构建并打包后，也可安装本地 tarball：
 
 ```console
-dsh plugin --profile web add ./dsh-bundle-antigravity-host-0.1.24.tgz
+dsh plugin --profile web add ./dsh-bundle-antigravity-acp-0.1.39.tgz
 ```
 
 文件名以实际打包结果为准；构建与打包步骤见[开发说明](development.md#构建与本地打包)。本仓库现有发布工作流发布到 npm，**不生成 GitHub Release tarball**，因此没有可用的 `releases/latest/download/...` 安装入口。

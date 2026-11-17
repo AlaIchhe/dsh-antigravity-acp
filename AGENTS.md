@@ -11,7 +11,7 @@
 
 本包是 Host + Web Client bundle，含两行组件（`llm-antigravity-acp` 与 `antigravity-proxy-router`），不修改 DSH Core，也不把官方 CLI 包装成聊天接口。
 
-npm 包名 `dsh-bundle-antigravity-host`、provider ID `antigravity-acp` / `antigravity-proxy`、内部插件名 `llm-antigravity-acp` / `antigravity-proxy-router` 不混用。
+npm 包名 `dsh-bundle-antigravity-acp`、provider ID `antigravity-acp` / `antigravity-proxy`、内部插件名 `llm-antigravity-acp` / `antigravity-proxy-router` 不混用。
 
 ## 需求与验收标准
 

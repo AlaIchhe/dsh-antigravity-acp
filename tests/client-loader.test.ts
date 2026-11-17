@@ -353,9 +353,9 @@ describe('browser client module', () => {
       },
     })
 
-    expect(registration?.id).toBe('dsh-bundle-antigravity-host')
+    expect(registration?.id).toBe('dsh-bundle-antigravity-acp')
     const plugin = registration!.factory(requireModule)
-    expect(plugin.name).toBe('dsh-bundle-antigravity-host')
+    expect(plugin.name).toBe('dsh-bundle-antigravity-acp')
     // remote.settings / remote.llm 必须逐个声明：缺任一项时读属性会抛
     // 「cannot get property "remote.<ns>" without inject」并击穿 settings.section。
     expect(plugin.inject).toEqual(['slots', 'remote', 'remote.settings', 'remote.llm'])
@@ -766,12 +766,12 @@ describe('额度药丸：remote 客户端挂载', () => {
     expect(lastMountCalls).toHaveLength(1)
     const call = lastMountCalls[0]!
     expect(call.descriptors?.map(item => item.id)).toEqual([
-      'dsh-bundle-antigravity-host#agyQuota/read',
-      'dsh-bundle-antigravity-host#agyQuota/account',
-      'dsh-bundle-antigravity-host#agyQuota/models',
+      'dsh-bundle-antigravity-acp#agyQuota/read',
+      'dsh-bundle-antigravity-acp#agyQuota/account',
+      'dsh-bundle-antigravity-acp#agyQuota/models',
     ])
-    expect(call.package).toBe('dsh-bundle-antigravity-host')
-    expect(call.descriptors?.[0]?.id).toBe('dsh-bundle-antigravity-host#agyQuota/read')
+    expect(call.package).toBe('dsh-bundle-antigravity-acp')
+    expect(call.descriptors?.[0]?.id).toBe('dsh-bundle-antigravity-acp#agyQuota/read')
     expect(call.descriptors?.[0]?.method).toBe('read')
   })
 

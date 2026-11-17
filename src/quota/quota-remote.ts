@@ -26,7 +26,7 @@ import { ACCOUNT_ADMIN_ACTIONS } from '../accounts/types.js'
 import type { AccountAdminAction, AccountAdminRequest, AccountsSnapshot } from '../accounts/types.js'
 import type { AccountsManager } from '../accounts/manager.js'
 
-export const PACKAGE_NAME = 'dsh-bundle-antigravity-host'
+export const PACKAGE_NAME = 'dsh-bundle-antigravity-acp'
 /** Typert service / wire namespace。 */
 export const AGY_QUOTA_SERVICE = 'agyQuota'
 

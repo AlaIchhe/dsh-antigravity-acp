@@ -167,7 +167,7 @@ function safeMessagePreview(message: unknown): string {
 }
 
 /** 官方 client 实现信息（initialize 上报）。 */
-export const AGY_CLIENT_INFO: Implementation = { name: 'dsh-bundle-antigravity-host', version: readPackageVersion() }
+export const AGY_CLIENT_INFO: Implementation = { name: 'dsh-bundle-antigravity-acp', version: readPackageVersion() }
 
 /** 读本包 package.json 的版本（src 与 dist 到它的相对路径一致）；读不到不影响启动。 */
 function readPackageVersion(): string {

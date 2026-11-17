@@ -20,7 +20,10 @@
 ## 安装
 
 ```bash
+# 从 GitHub 安装
 dsh plugin --profile <profile> add github:AlaIchhe/dsh-antigravity-acp
+# 或从 npm 安装（包名与上游不同，见 docs/reference.md）
+dsh plugin --profile <profile> add dsh-bundle-antigravity-acp
 ```
 
 安装后重载 DSH 服务，在「设置 → Antigravity ACP」里点 **连接 / 登录 ACP** 完成授权。
@@ -55,4 +58,4 @@ npx vitest run       # 47 个文件 / 846 项测试
 
 ## 许可
 
-MIT，与上游一致。版权归 `dsh-bundle-antigravity-host contributors`；本分支的修改同样以 MIT 发布。
+MIT，与上游一致。版权归 `dsh-bundle-antigravity-acp contributors`；本分支的修改同样以 MIT 发布。

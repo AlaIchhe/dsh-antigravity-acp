@@ -18,7 +18,7 @@
  * plugins declare it the same way (`inject = ["remote", "remote.settings"]`).
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-bundle-antigravity-host',
+  id: 'dsh-bundle-antigravity-acp',
   factory: (require) => {
     const React = require('react')
     const h = React.createElement
@@ -1121,7 +1121,7 @@ window.__ModuleLoader__.load({
      * 声明必须与 Host 侧 `AGY_QUOTA_INVOCATIONS` 逐字段一致：id / service / namespace /
      * method / 参数与结果的 codec（客户端要按同一 codec 编解码）。
      */
-    const AGY_QUOTA_PACKAGE = 'dsh-bundle-antigravity-host'
+    const AGY_QUOTA_PACKAGE = 'dsh-bundle-antigravity-acp'
     const AGY_QUOTA_SERVICE = 'agyQuota'
 
     function strictCodec(typeSymbol, parse) {
@@ -1203,7 +1203,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      name: 'dsh-bundle-antigravity-host',
+      name: 'dsh-bundle-antigravity-acp',
       // remote.settings / remote.llm 必须逐个声明：remote 各命名空间是独立服务，
       // 漏声明会在读取属性时抛「without inject」并击穿 settings.section 卡片。
       inject: ['slots', 'remote', 'remote.settings', 'remote.llm'],
@@ -1226,7 +1226,7 @@ window.__ModuleLoader__.load({
           })
           ctx.effect(() => mounted, 'antigravity-acp: mount quota remote')
         } catch (error) {
-          console.error('[dsh-bundle-antigravity-host] 额度 remote 客户端挂载失败:', error)
+          console.error('[dsh-bundle-antigravity-acp] 额度 remote 客户端挂载失败:', error)
         }
         ctx.effect(
           () =>

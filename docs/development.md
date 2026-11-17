@@ -21,7 +21,7 @@
 | [`cordis.patch.yml`](../cordis.patch.yml) | 仅插入本插件，不抢占默认模型 |
 | [`tests/`](https://github.com/KouzakiUmi/dsh-antigravity-acp/tree/main/tests/) | 假 ACP / MCP、隔离 runtime、真实 React renderer 与回归测试 |
 
-npm 包名为 `dsh-bundle-antigravity-host`，provider ID 为 `antigravity-acp`，内部插件名为 `llm-antigravity-acp`，三者不混用。工具执行权仍在 DSH；ACP `tool_call` 通知不是本机执行指令。
+npm 包名为 `dsh-bundle-antigravity-acp`，provider ID 为 `antigravity-acp`，内部插件名为 `llm-antigravity-acp`，三者不混用。工具执行权仍在 DSH；ACP `tool_call` 通知不是本机执行指令。
 
 ## 依赖与契约基准
 
@@ -127,8 +127,8 @@ node scripts/preview-ui.mjs
 只读核对示例：
 
 ```console
-npm view dsh-bundle-antigravity-host version dist-tags --json
-npm view dsh-bundle-antigravity-host@0.1.24 version gitHead dist --json
+npm view dsh-bundle-antigravity-acp version dist-tags --json
+npm view dsh-bundle-antigravity-acp@0.1.39 version gitHead dist --json
 ```
 
 发布使用 npm trusted publishing 的 GitHub Actions OIDC，工作流声明 `id-token: write`，不应为本流程保存长期 npm 写入 token。npm 上必须已有与仓库 / 工作流匹配的 trusted publisher 授权；本地 `npm whoami` 不能验证 CI 的 OIDC 权限。当前流程不创建 GitHub Release，也不安装 / 升级任何本机 Profile。
