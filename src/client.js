@@ -25,9 +25,6 @@ window.__ModuleLoader__.load({
     const PROVIDER = 'antigravity-acp'
     /** Settings namespace projected from Config's volatile fields in src/settings.ts. */
     const ENTRY_ID = 'llm-antigravity-acp'
-    /** 账号页只保留账号卡片；取数与进程调优全部走配置或自动行为。 */
-    const FIELDS = []
-
     /** 逐模型设置：键是 DSH 选择器里的模型 ID，值是开关、默认档位、显示名与官方 ID 映射。 */
     const OVERRIDES_KEY = 'modelOverrides'
     const OVERRIDES_LABEL = '模型列表设置'
@@ -87,77 +84,10 @@ window.__ModuleLoader__.load({
       return result
     }
 
-    const RUNTIME_PHASES = {
-      idle: '尚未启动', binary: '准备运行文件', credentials: '准备登录态', spawn: '启动进程',
-      initialize: '等待握手', authenticate: '等待登录', ready: '连接就绪', connection: '准备连接',
-      session: '建立会话', model: '选择模型', prompt: '等待模型首块', streaming: '正在输出',
-      'waiting-tools': '等待 DSH 工具结果', continuing: '等待工具后的回复', recycling: '回收进程',
-      stopped: '已停止', error: '连接异常', disposed: '插件已卸载',
-    }
-    function runtimeBusy(runtime) {
-      if (runtime?.queue && (runtime.queue.active > 0 || runtime.queue.parked > 0 || runtime.queue.waiting > 0)) return true
-      return runtime && !['idle', 'ready', 'stopped', 'error', 'disposed'].includes(runtime.phase)
-    }
-    function duration(ms) {
-      if (!Number.isFinite(ms)) return '—'
-      if (ms < 1000) return Math.round(ms) + ' ms'
-      if (ms < 60000) return (ms / 1000).toFixed(2) + ' s'
-      return Math.floor(ms / 60000) + ' 分 ' + Math.floor(ms % 60000 / 1000) + ' 秒'
-    }
-    /** 连接中且进程仍在启动时，给出阶段、已用时间与冷启动提示（官方进程冷启动可达 1 分钟）。 */
-    function startupHint(account) {
-      const runtime = account?.runtime
-      if (account?.state !== 'connecting' || !runtime || !['binary', 'credentials', 'spawn', 'initialize', 'authenticate', 'session'].includes(runtime.phase)) return undefined
-      const slow = ['spawn', 'initialize'].includes(runtime.phase) ? '；官方进程冷启动首次可能需要约 1 分钟，请耐心等待' : ''
-      return (RUNTIME_PHASES[runtime.phase] ?? runtime.phase) + '… 已用 ' + duration(runtime.phaseElapsedMs) + slow
-    }
-    function connectionStatus(account, registered) {
-      const runtime = account?.runtime
-      const ready = runtime?.phase === 'ready'
-      const busy = runtimeBusy(runtime) || ['connecting', 'cancelling'].includes(account?.state)
-      const error = account?.state === 'error' || runtime?.phase === 'error' || registered === false
-      const label = registered === false ? 'Provider 未注册'
-        : error ? '连接需要检查'
-          : busy ? account?.state === 'cancelling' ? '正在取消连接' : '正在准备连接'
-            : ready ? account?.state === 'connected' ? '账户已验证' : 'ACP 已预热'
-              : account?.state === 'cancelled' || runtime?.phase === 'stopped' ? '连接已停止'
-                : account?.state === 'connected' ? '账户已验证' : '尚未验证连接'
-      const description = account?.runtime?.phase === 'stopped'
-        ? 'ACP 连接已停止，可以重新预热。'
-        : account?.runtime?.phase === 'error'
-          ? account.runtime.error ?? account?.message ?? 'ACP 连接异常，请重试。'
-          : registered === false ? '请确认插件已启用，Host 与 Client 均已加载。'
-            : startupHint(account) ?? account?.message ?? '连接后可读取模型目录，不发送聊天消息。'
-      return { label, description, ready, busy, error, color: error ? '#d97757' : ready ? '#25b879' : busy ? '#d99b28' : '#8b909a' }
-    }
-    function StatusDot({ color }) {
-      return h('span', { 'aria-hidden': true, style: { width: '8px', height: '8px', flex: '0 0 auto', borderRadius: '50%', background: color, boxShadow: '0 0 0 4px rgba(128,128,128,.10)' } })
-    }
     function StatusNotice({ status }) {
       if (!status) return null
       const error = status.kind === 'error'
       return h('p', { role: error ? 'alert' : 'status', style: { margin: 0, padding: '10px 12px', borderRadius: '10px', borderLeft: '3px solid ' + (error ? '#e5534b' : status.kind === 'busy' ? '#d99b28' : '#25b879'), fontSize: '12px', lineHeight: 1.6, overflowWrap: 'anywhere', color: 'inherit', background: error ? 'rgba(217,119,87,.10)' : status.kind === 'busy' ? 'rgba(217,155,40,.10)' : 'rgba(37,184,121,.10)' } }, status.text)
-    }
-    function RuntimeDetails({ runtime }) {
-      if (!runtime) return null
-      const row = (label, value) => h('div', { key: label, style: { display: 'flex', justifyContent: 'space-between', gap: '16px' } },
-        h('span', null, label), h('span', { style: { textAlign: 'right', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' } }, value))
-      const round = runtime.round
-      const queue = runtime.queue
-      return h('div', { 'aria-label': 'ACP 生命周期与计时', style: { display: 'grid', gap: '8px', fontSize: '12px', lineHeight: 1.5 } },
-        row('当前状态', (RUNTIME_PHASES[runtime.phase] ?? runtime.phase) + ' · ' + duration(runtime.phaseElapsedMs)),
-        queue ? row('会话调度', '运行 ' + queue.active + ' · 等待工具 ' + queue.parked + ' · 排队 ' + queue.waiting) : null,
-        queue ? row('并发连接', queue.workers + ' / ' + queue.capacity) : null,
-        runtime.processRunning ? row('进程已运行', duration(runtime.uptimeMs)) : null,
-        row('进程统计', '启动 ' + runtime.starts + ' · 复用 ' + runtime.reuses + ' · 回收 ' + runtime.recycles),
-        runtime.startup ? row('最近启动总耗时', duration(runtime.startup.elapsedMs)) : null,
-        ...Object.entries(runtime.startup?.timings ?? {}).map(([name, ms]) => row(RUNTIME_PHASES[name] ?? name, duration(ms))),
-        round ? row('当前 / 最近回合', round.model + ' · ' + duration(round.elapsedMs)) : null,
-        ...Object.entries(round?.timings ?? {}).map(([name, ms]) => row(RUNTIME_PHASES[name] ?? name, duration(ms))),
-        round?.firstChunkMs !== undefined ? row('发送 prompt → 首块', duration(round.firstChunkMs)) : null,
-        round?.firstToolMs !== undefined ? row('发送 prompt → 首个工具', duration(round.firstToolMs)) : null,
-        round?.continuations ? row('工具续轮', round.continuations + ' 次 · 最近 ' + duration(round.lastContinuationMs)) : null,
-        runtime.error ? h('p', { role: 'alert', style: { margin: '4px 0 0', color: '#b42318', overflowWrap: 'anywhere' } }, runtime.error) : null)
     }
     function SectionHeading({ title, action }) {
       return h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' } },
@@ -165,43 +95,6 @@ window.__ModuleLoader__.load({
           h('h3', { style: { fontSize: '14px', lineHeight: 1.4, fontWeight: 650, margin: 0 } }, title)),
         action ?? null)
     }
-    function TextField({ field, value, disabled, invalid, onChange }) {
-      const inputId = 'agy-setting-' + (React.useId?.() ?? field.key) + '-' + field.key
-      return h('div', { style: { display: 'grid', gap: '4px', minWidth: 0 } },
-        h('label', { htmlFor: inputId, style: { fontSize: '12px', fontWeight: 550 } }, field.label),
-        h(field.lines ? 'textarea' : 'input', {
-          id: inputId, name: field.key, type: field.numeric ? 'number' : 'text',
-          ...(field.numeric ? { min: field.min, max: field.max, step: 1 } : {}),
-          ...(field.lines ? { rows: 2 } : {}),
-          disabled, value: value ?? '', placeholder: field.placeholder,
-          'aria-invalid': invalid || undefined,
-          style: { ...ACTION, cursor: disabled ? 'not-allowed' : 'text', width: '100%', boxSizing: 'border-box', background: 'rgba(128,128,128,.035)', opacity: disabled ? .6 : 1 },
-          onChange: (event) => onChange(field.numeric && event.target.value !== '' ? Number(event.target.value) : event.target.value),
-        }))
-    }
-    function SwitchField({ field, checked, disabled, onChange }) {
-      return h('label', { style: { display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: disabled ? 'default' : 'pointer', padding: '2px 0', opacity: disabled ? .6 : 1 } },
-        h('input', { name: field.key, type: 'checkbox', checked: checked === true, disabled, onChange: (event) => onChange(event.target.checked), style: { width: '16px', height: '16px', flex: '0 0 auto', margin: '1px 0 0', accentColor: '#177c55', cursor: disabled ? 'not-allowed' : 'pointer' } }),
-        h('span', { style: { display: 'grid', gap: '2px', minWidth: 0 } },
-          h('span', { style: { fontSize: '12px', fontWeight: 550 } }, field.label)))
-    }
-    function SettingsFields({ fields, draft, dirtyKeys, conflicts, disabled, editField }) {
-      const numericGrid = fields.length > 1 && fields.every((field) => field.numeric)
-      return h('div', { style: { display: 'grid', gap: '12px', gridTemplateColumns: numericGrid ? 'repeat(auto-fit, minmax(180px, 1fr))' : undefined } }, ...fields.map((field) => {
-        const onChange = (value) => editField(field.key, value)
-        return field.checkbox
-          ? h(SwitchField, { key: field.key, field, checked: draft[field.key], disabled, onChange })
-          : h(TextField, { key: field.key, field, value: draft[field.key], disabled, invalid: dirtyKeys.includes(field.key) && field.numeric && !Number.isSafeInteger(draft[field.key]), onChange })
-      }))
-    }
-    function SettingsGroup({ title, fields, fieldProps, open = false }) {
-      return h('details', { style: PANEL, 'aria-label': title + '设置', open: open || undefined },
-        h('summary', { style: SUMMARY },
-          h('span', { style: { fontSize: '12px', fontWeight: 650 } }, title)),
-        h('div', { style: { marginTop: '14px', paddingTop: '12px', borderTop: '1px solid rgba(128,128,128,.12)' } },
-          h(SettingsFields, { ...fieldProps, fields })))
-    }
-
     /** 紧凑列表行；完整 ID、输入能力、改名和映射集中在单条详情里。 */
     function ModelOverrideRow({ row, override, disabled, onEdit }) {
       const enabled = override.enabled !== false
@@ -527,17 +420,6 @@ window.__ModuleLoader__.load({
         return () => { current = false }
       }, [remote])
 
-      const editField = React.useCallback((key, value) => {
-        if (savingRef.current) return
-        const next = { ...draftRef.current, [key]: value }
-        draftRef.current = next
-        if (value === baseline.current[key]) dirty.current.delete(key)
-        else dirty.current.add(key)
-        setDirtyKeys([...dirty.current])
-        setConflicts((previous) => previous.filter((field) => field !== key))
-        setDraft(next)
-      }, [])
-
       /**
        * 单条模型设置：合并成整份 modelOverrides 再交给通用编辑路径，
        * 这样草稿、冲突与只提交改动项的行为和其它字段完全一致。
@@ -583,10 +465,7 @@ window.__ModuleLoader__.load({
           const found = namespaces.find((item) => item?.ns === ENTRY_ID)
           setView(found ?? null)
           const current = found?.value && typeof found.value === 'object' ? found.value : {}
-          const server = Object.fromEntries(FIELDS.map((field) => [field.key, field.checkbox
-            ? (field.defaultChecked ? current[field.key] !== false : current[field.key] === true)
-            : field.lines ? (Array.isArray(current[field.key]) ? current[field.key].join('\n') : current[field.key] ?? '')
-              : current[field.key] ?? field.defaultValue ?? '']))
+          const server = {}
           // 整份 map 作为一个字段参与脏值比较；规范化后再比，避免键序或
           // 「显式写回默认值」被误判为未保存修改。
           server[OVERRIDES_KEY] = canonicalOverrides(current[OVERRIDES_KEY])
@@ -623,32 +502,20 @@ window.__ModuleLoader__.load({
 
       const save = React.useCallback(async () => {
         if (!view || !writable || loading || savingRef.current || dirty.current.size === 0) return
-        const invalid = FIELDS.find((field) => field.numeric && dirty.current.has(field.key)
-          && (!Number.isSafeInteger(draftRef.current[field.key]) || draftRef.current[field.key] < (field.min ?? 0) || (field.max !== undefined && draftRef.current[field.key] > field.max)))
-        if (invalid) {
-          setStatus({ kind: 'error', text: invalid.label + '必须是' + (invalid.max === undefined ? '不小于 ' + (invalid.min ?? 0) : ' ' + invalid.min + '–' + invalid.max) + ' 的整数。' })
-          return
-        }
         savingRef.current = true
         setSaving(true)
         setStatus({ kind: 'busy', text: '保存中…' })
         // 只提交用户改动过的字段，空串也是有效改动；未编辑字段遵循最新服务端值。
         // modelOverrides 是整份 map 一个字段，按同样方式提交。
-        const ops = [...FIELDS.map((field) => field.key), OVERRIDES_KEY]
-          .filter((key) => dirty.current.has(key))
-          .map((key) => {
-            const field = FIELDS.find((entry) => entry.key === key)
-            const value = field?.lines ? String(draftRef.current[key] ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : draftRef.current[key]
-            return { op: 'set', path: [key], value }
-          })
+        const ops = dirty.current.has(OVERRIDES_KEY)
+          ? [{ op: 'set', path: [OVERRIDES_KEY], value: draftRef.current[OVERRIDES_KEY] }]
+          : []
         try {
           unwrap(await remote.settings.mutate(ENTRY_ID, ops, view.revision))
           if (!alive.current) return
           for (const operation of ops) {
             const key = operation.path[0]
-            const field = FIELDS.find((entry) => entry.key === key)
-            const currentValue = field?.lines ? String(draftRef.current[key] ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : draftRef.current[key]
-            if (JSON.stringify(currentValue) === JSON.stringify(operation.value)) dirty.current.delete(key)
+            if (JSON.stringify(draftRef.current[key]) === JSON.stringify(operation.value)) dirty.current.delete(key)
           }
           setDirtyKeys([...dirty.current])
           setConflicts([])
@@ -656,7 +523,6 @@ window.__ModuleLoader__.load({
           await reload(true)
           void accountAction('status')
           void pullModels(true)
-          if (ops.some((operation) => operation.path[0] === 'cliQuotaEnabled')) props.readQuota?.invalidate?.()
         } catch (cause) {
           if (!alive.current) return
           setStatus({ kind: 'error', text: cause instanceof Error ? cause.message : String(cause) })
@@ -707,7 +573,6 @@ window.__ModuleLoader__.load({
         onClick: () => setSettingsPage(id),
         style: { ...ACTION, minHeight: '32px', padding: '5px 12px', fontWeight: settingsPage === id ? 650 : 450, borderColor: settingsPage === id ? '#177c55' : 'rgba(128,128,128,.22)', background: settingsPage === id ? 'rgba(23,124,85,.12)' : 'transparent' },
       }, label)
-      const busy = ['connecting', 'cancelling'].includes(account?.state) || runtimeBusy(account?.runtime)
       const readonly = !loading && view && !writable
       const saveVisible = dirtyKeys.length > 0 || loading || readonly || conflicts.length > 0 || Boolean(status)
 
@@ -719,7 +584,7 @@ window.__ModuleLoader__.load({
             dirtyKeys.length ? h('button', { type: 'button', disabled: loading || saving, onClick: discardDraft, style: { ...ACTION, minHeight: '30px', padding: '4px 9px' } }, '撤销') : null,
             h('span', { role: 'status', 'aria-live': 'polite', style: { fontSize: '12px' } }, dirtyKeys.length ? dirtyKeys.length + ' 项未保存' : loading ? '正在读取…' : readonly ? '只读设置' : ''),
             h('button', { type: 'button', title: '重新读取配置并保留草稿', disabled: loading || saving, onClick: () => reload(), style: { ...ACTION, minHeight: '30px', padding: '4px 8px', borderColor: 'transparent', background: 'transparent', marginLeft: 'auto' } }, loading ? '刷新中…' : '刷新')),
-          conflicts.length ? h('p', { role: 'alert', style: { margin: 0, fontSize: '12px', lineHeight: 1.5 } }, '以下内容已在其他位置更新，已保留你的输入：' + conflicts.map((key) => key === OVERRIDES_KEY ? OVERRIDES_LABEL : FIELDS.find((field) => field.key === key)?.label ?? key).join('、')) : null,
+          conflicts.length ? h('p', { role: 'alert', style: { margin: 0, fontSize: '12px', lineHeight: 1.5 } }, '以下内容已在其他位置更新，已保留你的输入：' + conflicts.map((key) => key === OVERRIDES_KEY ? OVERRIDES_LABEL : key).join('、')) : null,
           h(StatusNotice, { status }))),
 
         h('div', { role: 'tablist', 'aria-label': '设置分页', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' } },
