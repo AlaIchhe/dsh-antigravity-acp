@@ -95,6 +95,9 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-17 的「模型选择页只列模型」通过 `npm run check`：类型检查、**39 个文件 / 682 项测试**与构建。适配器不再声明 `reasoning`（宿主据此渲染档位控件），相关断言改为「`resolveModel` 在有无 `thought_level` 观测时都返回 `reasoning: undefined`」；档位观测、落盘（`catalog.json` v2）与写入路径仍有测试覆盖：显式传 `reasoningEffort` 时写入 `thought_level`、未声明档位就收敛（`xhigh` → `high`）、切到 Hydrogen 后按新选项发 `xhigh`、缓存恢复后仍能写入。未在运行中的 GUI 上重验「菜单里不再出现档位」以及旧会话重新选模后的发送，发布前仍需实机确认。
+
+
 2026-11-17 的「思考强度回归模型元数据」通过 `npm run check`：类型检查、**39 个文件 / 683 项测试**与构建。**真实上游证据**：本机 `/root/.local/bin/agy acp`（Antigravity ACP Server 1.5.10）跑 `initialize` → `session/new` → `session/set_config_option`（不发 prompt）确认：`model` 选择器的选项已是家族 id（`gemini-4-argon`、`claude-opus-5-5`…），思考强度是独立的 `thought_level` 选择器（`low/medium/high`，切到 `gemini-4-hydrogen` 后多出 `xhigh`/Extra），发 `model=claude-opus-5-5-high` 会被 agent 拆成 `model=claude-opus-5-5` + `thought_level=high`，发家族 id 则保留 `thought_level`。据此重写适配器并新增覆盖：`findThoughtLevelSelector`（category / 启发式 / 分组选项）、元数据取 agent 的 `thought_level` 选项与标签、`xhigh` 不再被三档白名单截断、模型只发家族 id + 档位单独写、未声明档位就近收敛（`xhigh` → `high`）、切到 Hydrogen 后按新选项发 `xhigh`、档位随目录落盘并按 `catalog.json` v2 读回、跨 worker 共享档位选择器。该轮**未**在运行中的 GUI 上重验真实聊天与档位落库，发布前的实机确认仍待补。
 
 2026-11-17 的「账号」页合并与多账号通过 `npm run check`：类型检查、**38 个文件 / 688 项测试**与构建。新增覆盖账号页默认选中且只剩「账号 / 模型」两个分页、连接操作与逐账号自动额度同页可用、添加账号的授权链接 / 取消 / 完成后自动切换、切换与两段确认删除、按账号额度缓存隔离、隔离 HOME 环境、ACP 账号切换回收链路，以及面板 OAuth 的真实 loopback 回调与 token 落盘。`node scripts/preview-ui.mjs` 重新生成了 `.local-preview/quota-ui.html` 与 `.local-preview/settings-ux.html`，离线预览确认账号卡片、额度与状态布局在 390 / 760px 下无横向溢出。该验证仍是隔离回归与静态夹具：OAuth 使用假 Google 响应，未在运行中的 Desktop GUI 或真实 Google 账户上重新验收。

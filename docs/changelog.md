@@ -4,6 +4,11 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 未发布 · 2026-11-17
+
+- **模型选择页里不再出现思考强度**：适配器不再向宿主声明 `reasoning` 元数据，`/model` 菜单与模型按钮上都不再有档位一栏，选模型就是选模型；官方 agent 按自己的 `thought_level` 默认档位跑。档位观测与写入路径保留给 API 直调（显式传 `reasoningEffort` 时写入 `thought_level`，仍做就近收敛）。
+- **升级须知**：如果某个会话在 0.1.47 里选过思考强度，其已保存的选择里带着旧档位；模型现在不再声明档位后，直接发送会报 `does not support reasoning effort`。在模型选择器里重新点一次该模型即可清掉（同时更新默认选择）。
+
 ## 0.1.47 · 2026-11-17
 
 - **思考强度回归模型元数据**：官方 ACP 1.5 起把档位声明成独立的 `thought_level` 配置项（选项随模型变化，Hydrogen 多一档 `xhigh`）。现在 `reasoning.efforts` 直接取 agent 声明的档位与标签，选模只发家族 id，档位另写一次 `session/set_config_option`；请求值不在当前选项里时按 low → medium → high → xhigh 就近收敛。没有 `thought_level` 的旧 agent 才退回「档位后缀」路由。

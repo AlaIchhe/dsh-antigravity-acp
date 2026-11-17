@@ -27,7 +27,7 @@ npm 包名 `dsh-bundle-antigravity-acp`、provider ID `antigravity-acp`、内部
 
 - **模型目录只观测，不自造**：目录来自会话 `configOptions` 与官方 CLI 只读清单。用户设置（`modelOverrides`）只作用于已存在的条目。
 - **停用 ≠ 删除**：停用只是不列入选择器，已知模型的显示名、上下文容量与路由仍保留，重新启用不会退回裸 ID。
-- **思考强度是模型的元数据**：ACP 1.5 起官方把档位声明成独立的 `thought_level` config option（`category: "thought_level"`），选项随模型变化（Hydrogen 多一档 `xhigh`）。适配器据此声明 `reasoning.efforts`（id 与名称都取 agent 声明），选模只发家族 id，档位另写一次 `session/set_config_option`；请求值不在当前选项里时按 low → medium → high → xhigh 就近收敛，未知值不发出。宿主按模型校验 `reasoningEffort`，没有 `reasoning` 元数据的模型带档位请求会被拒，所以元数据必须如实声明、不能给空 `efforts`。
+- **模型选择页只列模型**：适配器**不声明** `reasoning` 元数据——宿主一旦看到它，就会在 `/model` 菜单里列出思考档位并把强度显示在模型按钮上。ACP 1.5 起官方把档位声明成独立的 `thought_level` config option（`category: "thought_level"`，选项随模型变化，Hydrogen 多一档 `xhigh`），插件只观测、随目录缓存，用于 API 直调时的写入路径：选模只发家族 id；只有调用方显式给 `reasoningEffort` 时才另写一次 `session/set_config_option`，且请求值不在当前选项里时按 low → medium → high → xhigh 就近收敛。UI 不给选择时官方按自己的默认档位跑。
 - **映射优先于路由回调**：`target` 原样写入 `session/set_config_option`，由官方 agent 判定是否接受；未登记 ID 不被静默改写。
 - **旧 agent 兼容**：没有 `thought_level` 时，官方档位化目录折叠为家族并退回「档位后缀」路由（`claude-opus-5-5-high`），缺档取最近档位。这条路径是兜底，不是默认。
 - **整份 map 作为一个字段**：`modelOverrides` 参与草稿脏值与冲突判断，规范化后比较，避免键序或写回默认值被误判为未保存修改；提交时只发改动过的顶层字段。

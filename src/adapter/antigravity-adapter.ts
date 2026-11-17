@@ -8,12 +8,11 @@
  * 不一致时完整重建。工具结果在同一个 ACP prompt 内经 MCP 回填。
  * 可选磁盘映射只保存 ID、计数与指纹，不存消息正文。
  */
-import { LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
   GenerateOptions,
   LlmModelInfo,
-  LlmModelReasoningInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
   PreparedAdapterCall,
@@ -26,7 +25,6 @@ import { BRIDGE_MCP_SERVER_NAME, McpToolBridge } from '../bridge/mcp-bridge.js'
 import type { BridgeToolResult } from '../bridge/mcp-bridge.js'
 import {
   AGY_REASONING_EFFORTS,
-  AGY_REASONING_EFFORT_NAMES,
   DEFAULT_AGY_REASONING_EFFORT,
   foldAgyModelFamilies,
   modelFamilyId,
@@ -699,12 +697,11 @@ export class AntigravityAcpAdapter extends LlmAdapter {
    * 真正的能力拒绝发生在 ACP 会话侧（模型不存在时 agent 自行报错）。
    */
   override async resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
-    // 显示名与档位不能只依赖此前是否有人列过目录；跨 worker 导入目录后
-    // 也要走同一份折叠结果。这里仅读缓存，不启动 ACP 连接。
+    // 显示名不能只依赖此前是否有人列过目录；跨 worker 导入目录后也要走同一份
+    // 折叠结果。这里仅读缓存，不启动 ACP 连接。
     const folded = await withAbort(this.#foldCatalog(provider), signal)
     throwIfAborted(signal)
     const families = new Map(folded.models.map((entry) => [entry.id, entry]))
-    const tiers = folded.tiers
     // DSH 的路由键是折叠后的家族 id（`claude-opus-5-5`），而 `#catalog` 只含
     // ACP 声明的档位 id（`…-high`）。查不到时用最近一次折叠结果补上显示名，
     // 不要退化成裸 id。
@@ -716,8 +713,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     // 上下文容量只在**实测**过（usage_update.size）或缓存过时才声明；官方目录
     // 不报告容量，绝不填猜测值。缺省时不带 context，压缩引擎按未知处理。
     const contextWindow = this.#contextWindows.get(model)
-    // 没有档位变体的模型必须省略 reasoning（宿主拒绝空 efforts）。
-    const reasoning = this.#reasoningInfo(model, tiers)
     return {
       provider,
       id: model,
@@ -725,53 +720,12 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       ...(this.#inputModalities() === undefined ? {} : { inputModalities: this.#inputModalities() }),
       ...(known?.description === undefined ? {} : { description: known.description }),
       ...(contextWindow === undefined ? {} : { context: { contextWindow } }),
-      // 思考强度菜单：优先取 agent 声明的 thought_level 选项（ACP 1.5+），
-      // 旧 agent 才退回「档位编进模型 id」的目录推断。
-      ...(reasoning === undefined ? {} : { reasoning }),
+      // **不声明 reasoning**：思考强度不该出现在模型选择页。宿主只在模型声明
+      // `reasoning` 时才在 `/model` 菜单里列出档位，并把它显示在模型按钮上；
+      // 这里保持省略，选模型就是选模型。官方 agent 用自己声明的 `thought_level`
+      // 默认值（medium）跑；确需指定档位时仍可由 API 直调传 `reasoningEffort`，
+      // 见 #applyModelSelection 的档位写入路径。
     }
-  }
-
-  /**
-   * 该路由可选的思考强度；缺省档位取 agent 声明的当前值，否则官方默认 medium。
-   *
-   * 有两个来源，优先级固定：
-   * 1. **agent 的 `thought_level` 选择器**（ACP 1.5+）：档位是模型元数据，
-   *    每个模型能选哪几档由 agent 声明，标签也用它自己的（Low/Medium/High/Extra）。
-   * 2. 旧 agent 没有独立档位通道：用官方档位化目录推出的三档 + 中文标签。
-   *
-   * 返回 undefined 表示「此模型没有思考强度菜单」；宿主把 `efforts: []` 判为
-   * 非法元数据（INVALID_MODEL_REASONING）并使该模型不可用，所以不支持档位的
-   * 模型必须**省略 reasoning 字段**，不能给空数组。
-   */
-  #reasoningInfo(model: string, familyTiers = this.#familyTiers): LlmModelReasoningInfo | undefined {
-    const thought = this.#thoughtLevel
-    if (thought) {
-      const efforts = thought.options.map((option) => ({
-        id: ReasoningEffortId(option.value),
-        name: option.name,
-        ...(option.description === undefined || option.description === null ? {} : { description: option.description }),
-      }))
-      if (efforts.length === 0) return undefined
-      const preferred = thought.currentValue === undefined
-        ? undefined
-        : efforts.find((entry) => entry.id === ReasoningEffortId(thought.currentValue as string))
-      // 当前值可能来自别的模型（例如 Hydrogen 的 xhigh 切到 Claude 后不在选项里），
-      // 这时退回官方默认 medium，不指向不存在的选项。
-      const fallback = preferred ?? efforts.find((entry) => entry.id === ReasoningEffortId(DEFAULT_AGY_REASONING_EFFORT))
-      return { efforts, ...(fallback ? { defaultEffort: fallback.id } : {}) }
-    }
-    // 旧协议兼容：档位被编进模型 id，只能从目录里推断有哪些档位。
-    const tiers = familyTiers.get(modelFamilyId(model))
-    // 已知该 id 没有档位变体（目录里的普通 id）：强度菜单不适用，不声明 reasoning。
-    if (tiers !== undefined && tiers.size === 0) return undefined
-    const efforts = AGY_REASONING_EFFORTS
-      .filter((effort) => tiers === undefined || tiers.has(effort))
-      .map((effort) => ({
-        id: ReasoningEffortId(effort),
-        name: AGY_REASONING_EFFORT_NAMES[effort],
-      }))
-    const fallback = efforts.find((entry) => entry.id === ReasoningEffortId(DEFAULT_AGY_REASONING_EFFORT))
-    return { efforts, ...(fallback ? { defaultEffort: fallback.id } : {}) }
   }
 
   /** 池已选定 worker 后，为该连接协商图片能力；不建会话、不发送 prompt。 */

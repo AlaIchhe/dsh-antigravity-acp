@@ -59,16 +59,16 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 - 观测目录写入 `$DSH_HOME/cache/antigravity-acp/catalog.json`，只含模型信息，不含凭据；CLI 目录使用同目录的 `cli-models.json`。版本不符或损坏的缓存不作为有效目录。
 - 设置页的模型列表按 Gemini / Claude / GPT / Argon / 其它家族分组，只做显示 / 隐藏：点击模型标签切换，隐藏项不在选择器中列出。停用不删除目录条目；`modelOverrides` 里的显示名 / 官方 ID 映射仍按配置生效，但不再提供 UI 编辑。
 - 映射（`target`）优先于路由回调；没有映射时才按「显式选择 → `thought_level` 选项」决定最终配置值。
-- **思考强度是模型的元数据，不是模型 ID 的一部分**：ACP 1.5 起官方把档位声明成独立的 `thought_level` 选择器（本机 `agy acp` 1.5.10 实测：`model` 只给家族 id，`thought_level` 给 Low / Medium / High，切到 Gemini 4 Hydrogen 后选项多一档 Extra/`xhigh`）。插件据此声明 `reasoning.efforts`（id 与名称都取 agent 声明），选模只发家族 id，档位另写一次 `session/set_config_option`；请求的档位不在当前选项里时按 low → medium → high → xhigh 就近收敛，不把未知值发出去。
+- **模型选择页只选模型，不列思考强度**：适配器**不声明** `reasoning` 元数据，宿主因此不在 `/model` 菜单里加档位一列，模型按钮上也不显示强度。官方 ACP 1.5 起把档位声明成独立的 `thought_level` 选择器（本机 `agy acp` 1.5.10 实测：`model` 只给家族 id，`thought_level` 给 Low / Medium / High，切到 Gemini 4 Hydrogen 后多一档 Extra/`xhigh`），插件照样观测并随目录缓存，但只用于写入：选模只发家族 id；若调用方（例如 API 直调）显式给了 `reasoningEffort`，才额外写一次 `session/set_config_option`，且请求值不在 agent 当前选项里时按 low → medium → high → xhigh 就近收敛，不把未知值发出去。UI 不给选择时，官方按自己的默认档位（medium）跑。
 - 兼容旧 agent：没有 `thought_level` 时，官方档位化目录（`claude-opus-5-5-high`）折叠成家族并退回「档位后缀」路由，缺档取最近档位，未指定通常使用 `medium`。`gpt-oss-120b` 家族不列入选择器。
-- 目录里没有任何档位变体、agent 也没声明 `thought_level` 的家族 id **不声明**思考强度菜单（省略 `reasoning` 字段）：宿主把 `efforts: []` 判为非法元数据（`INVALID_MODEL_REASONING`）并使该模型不可用，空数组不等于「没有档位」。
+- 所有模型一律省略 `reasoning` 字段：宿主只在模型声明它时才渲染档位控件，空数组反而会被判为非法元数据（`INVALID_MODEL_REASONING`）让模型不可用。
 - 旧 `server-default` 路由仍兼容：默认沿用上游模型，配置了映射时才写入映射目标；不再新增占位选择项。
 - 上下文容量不填猜测值。收到官方 `usage_update.size` 后才记录到模型上下文并缓存；首次观测前未知。
 - 模型、容量与图片能力在 worker 间同步；不因增加 worker 就虚构新模型权益。
 
 | 请求项 | 行为 |
 |---|---|
-| `reasoningEffort` | 思考强度；有 `thought_level` 时直接写入该配置项，旧 agent 则是档位路由键 |
+| `reasoningEffort` | API 直调用；有 `thought_level` 时写入该配置项，旧 agent 则是档位路由键。UI 不提供选择 |
 | `maxTokens` | 忽略；宿主标题等内建流程也会携带此项，输出限制由官方 agent 决定 |
 | `temperature` / `stop` | 记录警告并忽略；值不生效，不冒充采样控制已满足 |
 
