@@ -22,10 +22,6 @@ import { fetchAgyUsage } from '../runtime/agy-cli.js'
 import type { CliRun } from '../runtime/agy-cli.js'
 import type { SettingsControl, AccountSnapshot, ModelSnapshot } from './control.js'
 import { redactSensitiveText } from '../runtime/redact.js'
-import { fetchProxyQuotaSnapshot } from '../proxy/quota-source.js'
-import type { ProxyCredentialSource } from '../proxy/adapter.js'
-import type { ProxyTransport } from '../proxy/transport.js'
-import { AGY_PROXY_ACCOUNT_INVOCATIONS } from '../proxy/account-remote.js'
 
 export const PACKAGE_NAME = 'dsh-bundle-antigravity-host'
 /** Typert service / wire namespace。 */
@@ -34,7 +30,7 @@ export const AGY_QUOTA_SERVICE = 'agyQuota'
 /** `read` 的请求体：`force` 绕过缓存；`source` 防止旧模型误领新模式的额度。 */
 export interface AgYQuotaRequest {
   force?: boolean
-  source?: 'acp' | 'proxy'
+  source?: 'acp'
   model?: string
 }
 
@@ -46,7 +42,7 @@ function parseRequest(value: unknown): AgYQuotaRequest | undefined {
   const force = record.force
   const source = record.source
   if (force !== undefined && typeof force !== 'boolean') throw new TypeError('Invalid AgYQuotaRequest.force')
-  if (source !== undefined && source !== 'acp' && source !== 'proxy') throw new TypeError('Invalid AgYQuotaRequest.source')
+  if (source !== undefined && source !== 'acp') throw new TypeError('Invalid AgYQuotaRequest.source')
   const model = record.model
   if (model !== undefined && (typeof model !== 'string' || !model.trim())) throw new TypeError('Invalid AgYQuotaRequest.model')
   return { ...(force === undefined ? {} : { force }), ...(source === undefined ? {} : { source }), ...(model === undefined ? {} : { model }) }
@@ -150,7 +146,7 @@ export function registerAgYQuotaRemote(ctx: Context): void {
           face: 'host',
           schemas: [],
           model: { services: [], events: [], objects: [] },
-          invocations: [...AGY_QUOTA_INVOCATIONS, ...AGY_PROXY_ACCOUNT_INVOCATIONS],
+          invocations: [...AGY_QUOTA_INVOCATIONS],
         })
       } catch (error) {
         ctx.logger?.warn?.('antigravity-acp: 额度 remote 注册失败', error)
@@ -180,11 +176,9 @@ export interface AgYQuotaServiceOptions {
   /** 是否允许调用本机 agy CLI 取数；默认不允许（实时读取，可随设置即时切换）。 */
   cliQuotaEnabled?: () => boolean
   /** 当前生成模式；代理模式下套餐额度改走代理账户取数。 */
-  mode?: () => 'acp' | 'proxy'
   /** 已保存的官方模型映射，供药丸按实际家族选择额度组。 */
   modelTarget?: (model: string) => string | undefined
   /** 代理模式额度取数面（凭据 + agy 线传输）；缺省时代理模式回落 ACP 口径。 */
-  proxyQuota?: { credential: ProxyCredentialSource & { revision?(): number }; transport: ProxyTransport }
   /** 宿主日志（index.ts 接 `ctx.logger`）；用于记录每次取数的来源与结果。 */
   log?: { info(message: string): void; warn(message: string, error?: unknown): void }
 }
@@ -203,9 +197,7 @@ export class AgYQuotaService extends TypertRemoteService {
   private readonly _cli: { run: CliRun; cliPath: string } | undefined
   private readonly _resolveCli: AgYQuotaServiceOptions['resolveCli']
   private readonly _cliQuotaEnabled: AgYQuotaServiceOptions['cliQuotaEnabled']
-  private readonly _mode: AgYQuotaServiceOptions['mode']
   private readonly _modelTarget: AgYQuotaServiceOptions['modelTarget']
-  private readonly _proxyQuota: AgYQuotaServiceOptions['proxyQuota']
   private readonly _log: AgYQuotaServiceOptions['log']
   private readonly _control: SettingsControl | undefined
   /** 在途取数：并发调用（多会话药丸 / 定时器 + 手动刷新）共享同一次取数，而不是各起一个进程。 */
@@ -226,9 +218,7 @@ export class AgYQuotaService extends TypertRemoteService {
     this._cli = options.cli
     this._resolveCli = options.resolveCli
     this._cliQuotaEnabled = options.cliQuotaEnabled
-    this._mode = options.mode
     this._modelTarget = options.modelTarget
-    this._proxyQuota = options.proxyQuota
     this._log = options.log
     this._control = options.control
   }
@@ -247,9 +237,6 @@ export class AgYQuotaService extends TypertRemoteService {
   async read(request?: AgYQuotaRequest): Promise<QuotaSnapshot> {
     // 会话可刻意保留旧 provider 的已选模型；此时不能把全局新模式的额度
     // 按旧 provider 广播给药丸。显式来源不匹配就失败，而不是错误归因。
-    if (request?.source !== undefined && request.source !== this.currentMode()) {
-      throw new Error('模型所属模式与当前生成模式不一致，请在会话中重新选择模型')
-    }
     const force = request?.force === true
     while (this._inflight) {
       const existing = this._inflight
@@ -289,10 +276,6 @@ export class AgYQuotaService extends TypertRemoteService {
     return { ...result, requestedModel: request.model, routeModel: this._modelTarget?.(request.model) || request.model }
   }
 
-  private currentMode(): 'acp' | 'proxy' {
-    return this._mode?.() === 'proxy' && this._proxyQuota !== undefined ? 'proxy' : 'acp'
-  }
-
   /** 用户是否显式允许调用本机 agy CLI 取数；默认不允许。 */
   private cliQuotaOn(): boolean {
     return this._cliQuotaEnabled?.() === true
@@ -304,9 +287,7 @@ export class AgYQuotaService extends TypertRemoteService {
    */
   private currentAccountKey(): string {
     const cliOn = this.cliQuotaOn()
-    return this.currentMode() === 'proxy'
-      ? `proxy:${this._proxyQuota?.credential.revision?.() ?? 0}:${cliOn ? 1 : 0}`
-      : `acp:${cliOn ? 1 : 0}`
+    return `acp:${cliOn ? 1 : 0}`
   }
 
   private async _read(request?: AgYQuotaRequest): Promise<QuotaSnapshot> {
@@ -315,12 +296,9 @@ export class AgYQuotaService extends TypertRemoteService {
     // 只有显式开启 CLI 取数时才解析并可能 spawn 官方 agy；默认零 agy 调用。
     const cliOn = this.cliQuotaOn()
     const cli = cliOn ? (this._resolveCli?.() ?? this._cli) : undefined
-    const proxyMode = this.currentMode() === 'proxy'
-    const source = proxyMode
-      ? 'proxy-account（代理模式）'
-      : cli ? `cli=${redactSensitiveText(cli.cliPath)}`
-        : cliOn ? 'http（已开启 CLI 取数但未找到 agy CLI）'
-          : 'http（未开启 agy CLI 取数）'
+    const source = cli ? `cli=${redactSensitiveText(cli.cliPath)}`
+      : cliOn ? 'http（已开启 CLI 取数但未找到 agy CLI）'
+        : 'http（未开启 agy CLI 取数）'
     this._log?.info(`antigravity-acp: 额度取数请求（force=${request?.force === true}，来源 ${source}）`)
     try {
       const now = Date.now()
@@ -349,8 +327,7 @@ export class AgYQuotaService extends TypertRemoteService {
       const previous = this._cache.value
       // 两个只读命令并发且各有超时，不把 45s + 45s 串成超过客户端 60s 的请求。
       const [fresh, freshCredits] = await Promise.all([
-        quotaCached ? Promise.resolve(cached!) : proxyMode
-          ? fetchProxyQuotaSnapshot({ credential: this._proxyQuota!.credential, transport: this._proxyQuota!.transport, log: this._log })
+        quotaCached ? Promise.resolve(cached!)
           : cli
             ? fetchAgyUsage(cli.run, cli.cliPath)
             : fetchQuotaSnapshot(this._cache, this._deps),

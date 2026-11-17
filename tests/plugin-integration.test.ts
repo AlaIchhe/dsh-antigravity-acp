@@ -7,7 +7,6 @@ import { PooledAcpAdapter } from '../src/pool/pooled-adapter.js'
 import { apply } from '../src/index.js'
 import { isVolatile, updateVolatile } from '@deepseek-ai/cosmokit'
 import { Config } from '../src/settings.js'
-import type { ProxyModeBus } from '../src/proxy/mode-bus.js'
 
 interface WorkerStub {
   options: AntigravityAcpAdapterOptions
@@ -172,76 +171,6 @@ afterEach(async () => {
 })
 
 describe('apply wiring with real pool and SettingsControl', () => {
-  it('代理 OAuth 显式继承宿主环境代理，与原生请求使用同一解析规则', () => {
-    vi.stubEnv('https_proxy', 'http://ambient:7890')
-    vi.stubEnv('HTTPS_PROXY', 'http://ambient:7890')
-    vi.stubEnv('no_proxy', '*.internal')
-    const instance = harness()
-    const config = { proxyMode: true, proxyUrl: '' }
-    apply(instance.ctx, config)
-    expect(external.fetchRoutes).toHaveLength(2)
-    expect(external.fetchRoutes[0]!()).toBeUndefined()
-    expect(external.fetchRoutes[1]!()).toMatchObject({ url: 'http://ambient:7890' })
-    config.proxyUrl = 'http://explicit:8080'
-    expect(external.fetchRoutes[1]!()?.url).toBe('http://explicit:8080')
-    config.proxyUrl = ''
-    expect(external.fetchRoutes[1]!()?.url).toBe('http://ambient:7890')
-  })
-  it('代理模式的设置页目录读取与刷新仅走代理目录，切回 ACP 后恢复原目录', async () => {
-    const instance = harness()
-    const parsed = Config({ proxyMode: true })
-    apply(instance.ctx, parsed)
-    const models = vi.fn(async () => [{ id: 'proxy-only', name: 'Proxy only' }])
-    instance.ctx.provide('antigravityProxyCatalog', { models })
-    ;(instance.ctx.get('antigravityProxyMode') as ProxyModeBus).setRouterReady(true)
-    expect((await instance.control().models(true)).models).toEqual([{ id: 'proxy-only', name: 'Proxy only' }])
-    expect(models).toHaveBeenCalledWith(true)
-    expect(external.workers[0]!.discoverModels).not.toHaveBeenCalled()
-
-    const flag = parsed.proxyMode
-    const next = Config({ proxyMode: false }).proxyMode
-    if (!isVolatile(flag) || !isVolatile(next)) throw new Error('Expected live mode flag')
-    updateVolatile(flag, next)
-    instance.updateSettings([['proxyMode']])
-    expect((await instance.control().models()).models[0]?.id).toBe('example')
-  })
-
-  it('代理组件缺席时仍关闭 ACP 目录、登录与预热', async () => {
-    const instance = harness()
-    apply(instance.ctx, Config({ proxyMode: true, autoWarmup: false }))
-    expect(await instance.control().models()).toMatchObject({ status: 'error', models: [] })
-    expect(instance.control().account().generationMode).toEqual({ requested: 'proxy', active: 'proxy', proxyRouterReady: false })
-    expect(() => instance.control().account('login')).toThrow('ACP 连接与预热功能已停用')
-    expect(() => instance.control().account('warmup')).toThrow('ACP 连接与预热功能已停用')
-    expect(external.workers[0]!.discoverModels).not.toHaveBeenCalled()
-    expect(external.download).not.toHaveBeenCalled()
-  })
-
-  it('代理组件上线与卸载自动切换路由和目录，并共享实时模型设置', async () => {
-    const instance = harness()
-    const parsed = Config({ proxyMode: true, modelOverrides: { proxy: { name: '自定义' } } })
-    apply(instance.ctx, parsed)
-    const bus = instance.ctx.get('antigravityProxyMode') as ProxyModeBus
-    const registration = (instance.ctx.llm.registerAdapter as Mock).mock.results[0]!.value as { replace: Mock }
-    expect(registration.replace).toHaveBeenLastCalledWith([])
-    instance.ctx.provide('antigravityProxyCatalog', { models: async () => [{ id: 'proxy', name: '自定义' }] })
-    bus.setRouterReady(true)
-    expect(registration.replace).toHaveBeenLastCalledWith([])
-    expect(instance.control().account().generationMode?.active).toBe('proxy')
-    expect(bus.modelSettings?.().modelOverrides?.proxy?.name).toBe('自定义')
-    expect((await instance.control().models()).models[0]?.id).toBe('proxy')
-    bus.setRouterReady(false)
-    expect(registration.replace).toHaveBeenLastCalledWith([])
-    expect(instance.control().account().generationMode?.active).toBe('proxy')
-    const flag = parsed.proxyMode
-    const next = Config({ proxyMode: false }).proxyMode
-    if (!isVolatile(flag) || !isVolatile(next)) throw new Error('Expected live mode flag')
-    updateVolatile(flag, next)
-    instance.updateSettings([['proxyMode']])
-    expect(registration.replace).toHaveBeenLastCalledWith(['antigravity-acp'])
-    expect((await instance.control().models()).models[0]?.id).toBe('example')
-  })
-
   it('passes live preferences to existing workers and notifies the host picker on saved model settings', () => {
     const instance = harness()
     const parsed = Config({ modelOverrides: { before: { enabled: false } } })
@@ -313,7 +242,7 @@ describe('apply wiring with real pool and SettingsControl', () => {
     await Promise.all([first, second])
     await Promise.all([a.return(undefined), b.return(undefined)])
     expect(external.workers.every(worker => worker.close.mock.calls.length === 1)).toBe(true)
-    expect(external.fetchClose).toHaveBeenCalledTimes(2)
+    expect(external.fetchClose).toHaveBeenCalledTimes(1)
     expect(instance.unregister).toHaveBeenCalledTimes(1)
     expect(external.events.indexOf('fetch-close')).toBeGreaterThan(external.events.indexOf('worker-1'))
     expect(() => instance.control().account()).toThrow('已卸载')

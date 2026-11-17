@@ -10,7 +10,6 @@
 |---|---|---|
 | `maxConcurrentSessions` | `2` | 最大独立 worker 数，整数 1–4，按需启动。不是单个官方进程的多 session 开关，也不增加账户额度。 |
 | `queueTimeoutMs` | `120000` | 等待 worker 的上限（毫秒），最小 1000；队列最多 64 项，排队可取消。 |
-| `cloakSensitiveWords` | `false` | 代理模式是否打散 system 里已知会被上游拒绝的身份文本（Claude Code / Codex 的身份句、`x-anthropic-billing-header` 计费行等）：命中区间内的 ASCII 词段首两个字符后插入零宽空格。作用面是整条 system 指令（`system` 设置与 `role: system/developer` 的消息），不动用户消息。属于绕过上游识别，默认关闭。 |
 | `agyCliPath` | 未设置 | 官方 `agy` CLI 路径，优先于 `AGY_CLI_BIN`、PATH 与平台默认位置；刷新时重新探测。 |
 | `autoWarmup` | `true` | 加载插件时预热已有登录态与连接，不发送聊天 prompt，不主动弹浏览器授权；无登录态时预热报错，需手动「连接 / 登录 ACP」。设为 `false` 时改为只预读已缓存的官方 exe 到系统文件缓存。常驻一个官方进程约 170MB 内存。 |
 | `binaryPath` | 未设置 | 本地官方 ACP server 入口，优先级最高；指定但不存在会报错，不静默换来源。 |
@@ -23,15 +22,13 @@
 | `promptTimeoutMs` | `1800000` | 单个 `session/prompt` 上限（毫秒）；工具 park 不表示上游 prompt 已结束。 |
 | `bridgeParkSettleMs` | `50` | 并发 MCP 工具调用聚合窗口（毫秒）；不是工具执行超时。 |
 | `modelOverrides` | `{}` | 按模型 ID 的目录设置，键是 DSH 选择器里的模型 ID：`enabled`（默认 `true`）决定是否出现在选择器，`effort` 是该模型未选思考强度时的默认档位，`name` 覆盖显示名，`target` 把该 ID 映射到官方模型 ID。只作用于目录中已存在的条目，不新增自造模型。 |
-| `proxyUrl` | 未设置 | 显式出网代理；留空继承 Host 代理环境，Host 也未配置才直连。代理模式支持 HTTP/HTTPS CONNECT；ACP 模式另支持 SOCKS5、SOCKS5H。 |
+| `proxyUrl` | 未设置 | 显式出网代理；留空继承 Host 代理环境，Host 也未配置才直连。支持 HTTP/HTTPS CONNECT、SOCKS5、SOCKS5H。 |
 | `proxyBypass` | 未设置 | 兼容既有配置的逗号分隔排除列表，支持域名匹配，不支持 CIDR；始终合并 localhost、127.0.0.1、::1。设置页不提供此控制项。 |
 | `reuseSessions` | `true` | 复用同一个 ACP 会话：同一 DSH 对话的后续回合只发送**新增消息**，不再每轮 `session/new` 并重放全部历史。历史被压缩、回退或编辑，模型/思考强度变化，工具目录变化，或 MCP 桥被其他对话接管时自动重建。关闭后回到旧的「每轮新会话 + 全量重放」。 |
 | `resumeSessions` | `false` | 插件或 Host 重启后，尝试用 `session/load` 恢复上次的 ACP 会话。映射写在缓存目录的 `sessions.json`，只存会话 ID、cwd、已发送条数、输入/输出与路由 sha256 和时间戳，不存对话内容、system 提示或工具 schema。恢复失败或前缀不一致时自动回退为新轮重建。 |
 | `keepProcessAfterCancel` | `false` | 用户按停止后是否保留官方进程。关闭时立即回收（下一轮冷启动）；开启后先等 `cancelGraceMs` 确认 agent 已停止，确认了就只丢弃会话、保留进程。 |
 | `cancelGraceMs` | `30000` | 取消后等待 agent 确认停止的上限（毫秒）；`0` 表示不等待、立即回收进程。热启动约 10 秒，30 秒留出余量。 |
 | `idleRecycleMs` | `300000` | 保留进程的最长空闲时间（毫秒），超时回收释放内存；`0` 表示不设上限。适用于聊天、预热及目录发现结束；等待工具和取消排空不算空闲。5 分钟是插件资源策略，不代表上游缓存寿命。 |
-| `proxyMode` | `false` | 代理模式开关（即时生效，保存即切换，无需重载）。开启后生成改由本 bundle 的代理路由 `antigravity-proxy` 直连上游：插件自持登录态（先导入官方 CLI 登录态，缺失时 loopback OAuth），以 agy CLI 线身份请求 Cloud Code Assist；同时注销官方 ACP 路由 `antigravity-acp`。关闭恢复 ACP 模式。两模式互斥；额度药丸跟随当前模式取对应账户。图片输入需宿主附件服务在场：单图 4MP / 1MB 请求版本、整请求 12MB 内联预算，超预算按最旧优先协商 offload；附件服务缺席时报 `UNSUPPORTED_MODALITY`。 |
-| `cliQuotaEnabled` | `false` | 是否允许额度取数调用本机官方 `agy` CLI（即时生效）。默认关闭：任何模式都不 spawn `agy`，套餐额度走内置直连，AI Credits 不查询。开启后 ACP 模式运行 `agy -p /usage` 与 `agy -p /credits`；代理模式套餐额度仍用代理账户，只有 AI Credits 调用 `agy -p /credits`。需要本机已安装并登录官方 CLI。 |
 
 示例（不包含代理密码或账号材料）：
 
@@ -73,29 +70,6 @@ ACP 官方 agent 在同一会话内会保留上下文（2026-10-23 真机验证�
 
 实测（2026-10-23，官方 1.4.0）：同一会话空闲 60s、120s 后仍能复述上一轮暗号，响应耗时稳定（约 3s）；`usage_update.used` 持续累计（3463 → 3628 → 3745）。官方会话空闲 TTL 未知；ACP 会话上下文、Gemini 显式缓存与模型前缀缓存不是同一个保证。默认 5 分钟仅是本插件在启动延迟与常驻资源之间选取的回收策略，可自行调整或设 0 禁用。
 
-### 代理模式（默认关闭）
-
-在「运行模式」中勾选并保存 `proxyMode` 后，宿主行立即撤下 `antigravity-acp`，第二组件 `antigravity-proxy-router` 就绪时注册 `antigravity-proxy`；关闭时恢复 ACP。代理组件未启用、卸载或注册失败时 ACP 仍保持停用，并在设置页解释原因。ACP 登录、预热、目录发现和二进制预读均不会运行。目录与额度按请求模式取数；未保存的开关只表示草稿。切换后需要在会话中选择新模式下的模型。
-
-- **登录态**：代理账户独立于 ACP 登录。连接时优先只读导入 `~/.gemini/antigravity-cli/antigravity-oauth-token`，过期则先换发；失效登录态不会被报告为连接成功。没有可用登录态时返回 PKCE 授权链接，请点击完成浏览器登录（回调 `http://localhost:51121/oauth-callback`，只绑 127.0.0.1）。连接还会只读检测上游已有项目，未返回项目时显示具体原因，检测完成后才显示已连接。副本落在缓存目录 `proxy-account.json`（原子写、尽力 0600），官方文件保持只读。
-- **无需安装 CLI**：点击「连接代理账户 → 打开 Google 授权页」，在运行 DSH 的同一台电脑上授权。插件自行处理回调、换码、项目检测及保存；账户需已有 Antigravity 使用权限。页面分别显示准备、等待授权和完成阶段，以及对应失败原因。
-- **取消与退出**：收到浏览器回调后的 token 交换仍可取消。退出会使在途刷新失效，并等待已有保存结束后清除副本；本次插件生命周期内，自动取数保持退出状态，点击「连接代理账户」可重新连接。
-- **出网代理**：OAuth、项目检测、模型目录、额度与生成使用同一解析规则：非空 `proxyUrl` 优先；留空依次读取 Host 的 `https_proxy` / `HTTPS_PROXY`、`all_proxy` / `ALL_PROXY`、`http_proxy` / `HTTP_PROXY`，都缺失才直连。`proxyBypass` 未配置时继承 `no_proxy` / `NO_PROXY`，始终合并 loopback；命中目标时直连。原生 TLS 不使用宿主全局 fetch dispatcher，因此仅启用其它插件的 fetch 代理不代表它已使用同一出口。
-- **线形态**：请求头按 agy CLI 口径固定（`antigravity/cli/<version> (aidev_client; …)` User-Agent、`:streamGenerateContent` 走 chunked、其余 Content-Length），端点白名单包含生成、目录、只读项目检测、额度与 Google token 方法；调用方不能注入任意头或目的地。出网代理沿用 `proxyUrl` / `proxyBypass`，代理模式支持 HTTP(S) CONNECT，SOCKS 会明确报错。
-- **模型目录**：core 审计快照 ∩ `fetchAvailableModels` 实况（30 秒 TTL）。登录完成或退出后自动更新目录；手动刷新绕过缓存。失败只可保留同账户已成功观测的目录，无成功记录时显示错误。隐藏、改名、默认思考档位和 `target` 映射均用于实际代理调用；隐藏项保留在设置页以便重新启用，映射优先于思考档位。切回 ACP 后恢复原来的 CLI / ACP 来源。
-- **额度**：默认不调用 `agy`。代理模式套餐额度走代理账户的 `loadCodeAssist` + `retrieveUserQuotaSummary`；ACP 模式走内置 Cloud Code Assist 直连。只有打开 `cliQuotaEnabled` 后，套餐额度与 AI Credits 才运行官方 CLI 只读命令。模式切换、退出、重新连接和开关翻转均失效旧快照，在途旧结果不覆盖新状态。打开 CLI 取数后，AI Credits 属于官方 CLI 账户，可能与代理账户不同。
-- **边界**：代理模式不 spawn 官方进程、没有 MCP 工具桥（工具仍由 DSH 自身执行面提供，与 ACP 模式相同）；429 不做多账户轮转，直接报 `RATE_LIMIT`；401/403 在未出块前换发一次重试一次——但 **403 且上游写明 `violation of Terms of Service` / `disabled in this account`** 时不再换发，直接报 `AGY_ACCOUNT_SUSPENDED` 并说明需要申诉（换发救不回被停用的账号）。
-- **提示词指纹**：Antigravity 会把「请求文本里出现已知客户端身份」的请求恒定伪装成 `429 Resource has been exhausted`（magpie 在真实账号上逐条试过：计费行、Claude Code / Agent SDK 身份句、Codex 的 GPT-5 身份句），与剩余额度无关。代理模式对 system 做只读诊断，并在 429 文案里点明可能原因；只有打开 `cloakSensitiveWords` 才按同一实测口径在命中词段插入零宽空格（零宽混淆属于绕过上游识别，默认关闭）。
-- **工具 schema 净化**：DSH 的工具参数会被裁成上游要的子集——本地 `$ref`（JSON Pointer 与 `$defs` / `definitions` 名字）展开，对象节点的兄弟 `oneOf` / `anyOf` 丢弃，节点**有 `items` 就是 array、有 `properties` 就是 object**（优先于显式 type 与由 enum / const 推断的类型），空数组补 `items`，空串与纯空白不算有效枚举值。这些形态会让上游 400，或让模型根本看不到参数结构。
-
-设置页字段通过宿主的即时配置引用保存：模型显示开关、显示名与映射随保存更新选择器，会话与进程偏好在下一轮聊天、预热或目录发现时读取，不打断正在输出或等待工具的回合。自动预热开关在下次启用插件时读取。代理和 CLI 路径用于后续请求及新启动的官方进程；已有 ACP 进程保留原启动环境，切换其出口仍需重新加载插件。
-
-并发、二进制（`binaryPath` / `autoDownload` / `acpVersion` / `extraArgs`）与各段超时（`requestTimeoutMs` / `handshakeTimeoutMs` / `authTimeoutMs` / `promptTimeoutMs` / `bridgeParkSettleMs` / `maxConcurrentSessions` / `queueTimeoutMs`）是**普通配置**：宿主只把即时（volatile）字段投影进设置文档，也会拒绝用 `mutate` 写这些路径。因此设置卡片不把它们做成输入框，只列出字段名作为指引；请在插件的普通配置编辑器里修改，保存后由宿主重载生效。
-
-工具回合尚未结束时保存偏好，其有效续轮以及不兼容续轮触发的 ACP prompt 重建仍沿用原回合快照；新值可能延至后续空闲新轮生效，不通过保存设置中断当前工具执行。
-
-需要代理时先保存再连接。非法代理不会让插件装载失败：装载期只记一条告警并继续加载，因此设置卡片仍可打开、修正并保存；真正用到代理的操作各自失败——启动 ACP 报 `AGY_INVALID_PROXY`，下载 / 换发 / 额度取数折叠成各自的可读错误。修正保存后下一次操作即读取新值，已有 ACP 进程保留原启动环境。不要把刷新网页当成 Host 已更新。
-
 ## 环境变量
 
 环境指 **运行插件的 Host 实际继承的变量**，不是任意终端当前的变量。只检查存在性和继承情况，不在反馈或日志里贴出敏感值。
@@ -124,7 +98,7 @@ ACP 官方 agent 在同一会话内会保留上下文（2026-10-23 真机验证�
 
 ## 设置页可以做什么
 
-页面分为「连接 / 模型 / 额度 / 高级」。连接页只显示当前模式所需的账户与操作；额度独立手动查询；高级页按网络 / CLI、ACP 启动、连接池、超时、会话进程与诊断分组展开。模型页使用紧凑列表，支持搜索、启停筛选和筛选结果批量启用 / 隐藏；完整 ID、输入能力、显示名与官方映射在单条详情中编辑。代理模式不显示 ACP 专属控制项；代理排除列表不显示。
+页面分为「连接 / 模型 / 额度 / 高级」。连接页只显示当前模式所需的账户与操作；额度独立手动查询；高级页按网络 / CLI、ACP 启动、连接池、超时、会话进程与诊断分组展开。模型页使用紧凑列表，支持搜索、启停筛选和筛选结果批量启用 / 隐藏；完整 ID、输入能力、显示名与官方映射在单条详情中编辑。
 
 模型改动合并成一份 `modelOverrides` 在保存时提交；清空显示名或映射等于移除该字段，不会留下空壳配置。已经保存但当前目录没有的 ID 仍保留并标注「不在目录」，可搜索后继续修改或清除。
 

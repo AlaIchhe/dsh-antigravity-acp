@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **移除代理模式**：删除 `src/proxy/` 整条链路（自有 OAuth 登录态、agy 线身份直连 Cloud Code Assist、代理模型适配器、提示词打散、额度取数），以及设置项 `proxyMode` / `cloakSensitiveWords`、代理账户面板、`antigravity-proxy-router` 组件与 `./proxy` 导出。插件现在只有一条路径：官方 ACP。移除原因：真机验证确认 `agy` 的工具是进程内实现、不委托 ACP 客户端能力，而代理模式需要伪装官方客户端线身份，属于违反上游使用条款的做法。
+
 - **`mcpCapabilities` 缺省不再判为「不支持」**：ACP v1 没有要求 agent 声明该字段，而官方 `agy acp`（Antigravity CLI 1.5.x）正是这种情况——`initialize` 不带 `mcpCapabilities`，却会在 `session/new` 里正常接受 `http` `mcpServers`（实测拿到注册后立刻对桥做 `server/discover` → `initialize` → `tools/list`）。原实现按 `!== true` 判死，凡是带工具的新会话都直接抛 `UNSUPPORTED_CAPABILITY`「ACP 服务端未声明 HTTP MCP 支持，无法安全接入 DSH 工具」，把官方 CLI 这条接入路径整条堵死。现在只在服务端**明确声明** `http` / `sse` 为 `false` 时拒绝；图像等其它能力声明的口径不变。
 - **OAuth client 元数据优先取已审计的 Antigravity 一份**：官方分发物里同时打包多组 client（实测 agy 1.5.9 Linux 有三组），原实现按位置配对；在真实二进制上选中的那一对换发会被 OAuth 端点回 `invalid_client` / `unauthorized_client`，表现为「换发 access token 失败（HTTP 401）」，随后退回浏览器登录并卡在 `error`（设置页「连接需要检查」）。现在只要分发物里同时存在已审计的 `ANTIGRAVITY_CLIENT_ID` 与 `ANTIGRAVITY_CLIENT_SECRET` 就优先这一对；不在时保留原位置配对，`AGY_OAUTH_CLIENT_ID` / `AGY_OAUTH_CLIENT_SECRET` 的优先级不变。
 

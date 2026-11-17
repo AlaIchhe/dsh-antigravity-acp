@@ -742,7 +742,6 @@ describe('额度药丸：remote 客户端挂载', () => {
       'dsh-bundle-antigravity-host#agyQuota/read',
       'dsh-bundle-antigravity-host#agyQuota/account',
       'dsh-bundle-antigravity-host#agyQuota/models',
-      'dsh-bundle-antigravity-host#agyProxyAccount/account',
     ])
     expect(call.package).toBe('dsh-bundle-antigravity-host')
     expect(call.descriptors?.[0]?.id).toBe('dsh-bundle-antigravity-host#agyQuota/read')
