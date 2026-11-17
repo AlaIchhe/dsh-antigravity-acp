@@ -699,6 +699,7 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
         catalogChanged()
       },
       // 冷启动目录：真实目录只能观测到之后才有，先用磁盘缓存兜住模型选择器。
+      agentMode: config.agentMode,
       loadCachedCatalog: () => readCachedCatalog({ cacheDir, acpVersion }),
       saveCatalog: (catalog) => writeCachedCatalog({ cacheDir, acpVersion, ...catalog }),
       // 官方清单补齐会话观测之外的型号（Opus 5.5 / Sonnet 5.5 / Argon 等）。

@@ -63,6 +63,7 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 - 兼容旧 agent：没有 `thought_level` 时，官方档位化目录（`claude-opus-5-5-high`）折叠成家族并退回「档位后缀」路由，缺档取最近档位，未指定通常使用 `medium`。`gpt-oss-120b` 家族不列入选择器。
 - 目录里没有任何档位变体、agent 也没声明 `thought_level` 的家族 id **不声明**思考强度菜单（省略 `reasoning` 字段）：宿主把 `efforts: []` 判为非法元数据（`INVALID_MODEL_REASONING`）并使该模型不可用，空数组不等于「没有档位」。
 - 旧 `server-default` 路由仍兼容：默认沿用上游模型，配置了映射时才写入映射目标；不再新增占位选择项。
+- **用满 agent 声明的 ACP 能力**：`_meta.antigravity.systemPrompt.append` 为 true 时，system prompt 随 `session/new` 的 `_meta` 交给 agent 追加到它自己的系统提示（实测 1.5.10 生效），prompt 里不再重复包 `<dsh-system>` 文本块；`sessionCapabilities.resume` 为 true 时跨进程恢复优先用 `session/resume`（不重放历史），否则退回 `session/load`；配置了 `agentMode` 且该 mode 出现在会话的 `availableModes` 里时才发 `session/set_mode`。fs / terminal / `session/request_permission` 仍然一律拒绝——工具必须回 DSH 审批执行。
 - 上下文容量与占用不填猜测值。`usage_update.size` 才作为窗口、`usage_update.used`（Tokens currently in context）才作为占用上报给宿主并缓存；首次观测前未知。ACP 的 `PromptResponse.usage` 是**整段会话累计值**（`inputTokens` = Total input tokens across all turns、`cachedReadTokens` = Total cache read tokens），不能当某一轮的 prompt 用量，本插件不再转发它。
 - 模型、容量与图片能力在 worker 间同步；不因增加 worker 就虚构新模型权益。
 

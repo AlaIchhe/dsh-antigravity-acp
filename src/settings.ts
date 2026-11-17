@@ -21,6 +21,8 @@ export interface AntigravityHostConfig {
   maxConcurrentSessions?: number
   /** Maximum wait for an available worker. */
   queueTimeoutMs?: number
+  /** 会话模式：agent 声明的 mode id（官方 1.5.10：default / accept-edits / auto / plan）。空串沿用默认。 */
+  agentMode?: string
   /** Explicit official CLI path, re-detected for manual reads. */
   agyCliPath?: string
   /** 插件启用时提前启动 ACP 连接并保留给聊天使用；不发送模型消息。 */
@@ -95,7 +97,7 @@ export interface AntigravityHostConfig {
 
 // Only fields owned by the custom settings card are live. Ordinary launch/pool
 // configuration remains ordinary, so editing it still follows the host lifecycle.
-export const LIVE_SETTING_KEYS = ['reuseSessions', 'modelOverrides', 'proxyUrl', 'proxyBypass', 'agyCliPath', 'resumeSessions', 'keepProcessAfterCancel', 'cancelGraceMs', 'idleRecycleMs', 'cliQuotaEnabled'] as const
+export const LIVE_SETTING_KEYS = ['agentMode', 'reuseSessions', 'modelOverrides', 'proxyUrl', 'proxyBypass', 'agyCliPath', 'resumeSessions', 'keepProcessAfterCancel', 'cancelGraceMs', 'idleRecycleMs', 'cliQuotaEnabled'] as const
 export type LiveSettingKey = typeof LIVE_SETTING_KEYS[number]
 export type AntigravityPluginConfig = Omit<AntigravityHostConfig, LiveSettingKey> & {
   [K in LiveSettingKey]?: AntigravityHostConfig[K] | Volatile<AntigravityHostConfig[K]>
@@ -117,6 +119,7 @@ export function liveHostConfig(config: AntigravityPluginConfig): AntigravityHost
     get modelOverrides() { return readSetting(config.modelOverrides) },
     get proxyUrl() { return readSetting(config.proxyUrl) },
     get proxyBypass() { return readSetting(config.proxyBypass) },
+    get agentMode() { return readSetting(config.agentMode) },
     get agyCliPath() { return readSetting(config.agyCliPath) },
     get resumeSessions() { return readSetting(config.resumeSessions) },
     get keepProcessAfterCancel() { return readSetting(config.keepProcessAfterCancel) },
@@ -144,6 +147,7 @@ const ModelOverrideSchema = Schema.object({
 export const Config = Schema.object({
   maxConcurrentSessions: Schema.natural().min(1).max(4).default(2).description('最大并发 ACP 连接数（1–4），按需启动；不同对话互不占用工具审批回合'),
   queueTimeoutMs: Schema.natural().min(1000).default(120000).description('等待空闲 ACP 连接的最长时间（毫秒），排队期间可取消'),
+  agentMode: Schema.string().volatile().description('会话模式（agent 声明的 mode id，如 plan）；留空沿用 agent 默认，只影响新建或恢复的会话'),
   agyCliPath: Schema.string().volatile().description('官方 agy CLI 路径；留空依次查 AGY_CLI_BIN、PATH 和默认安装目录'),
   binaryPath: Schema.string().description('官方 agy-acp-server 可执行文件路径；留空则按 AGY_ACP_BIN → 缓存 → 自动下载解析'),
   autoDownload: Schema.boolean().default(true).description('未找到本地二进制时自动从 dl.google.com 下载（仅 https + 官方域名 + 拒绝重定向）'),

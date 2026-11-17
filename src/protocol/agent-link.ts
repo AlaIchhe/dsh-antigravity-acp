@@ -35,9 +35,13 @@ import type {
   PromptResponse,
   RequestPermissionRequest,
   RequestPermissionResponse,
+  ResumeSessionRequest,
+  ResumeSessionResponse,
   SessionNotification,
   SetSessionConfigOptionRequest,
   SetSessionConfigOptionResponse,
+  SetSessionModeRequest,
+  SetSessionModeResponse,
   Stream,
 } from '@agentclientprotocol/sdk'
 import type { SubprocessHandle, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
@@ -555,6 +559,45 @@ export class AgentLink {
   async setConfigOption(params: SetSessionConfigOptionRequest, options?: AgentLinkRequestOptions): Promise<SetSessionConfigOptionResponse> {
     this.#requireInitialized('session/set_config_option')
     return this.request<SetSessionConfigOptionResponse>('session/set_config_option', params, options)
+  }
+
+  /**
+   * `_meta.antigravity.systemPrompt.append`：agent 愿意把客户端给的 system prompt
+   * 追加进它自己的系统提示。声明为 true 时，适配器不再把 system 编成文本块塞进
+   * prompt，而是随 `session/new` 的 `_meta` 交过去（实测 1.5.10 生效）。
+   */
+  supportsSystemPromptAppend(): boolean {
+    const meta = this.#initializeResponse?.agentCapabilities?._meta as
+      { antigravity?: { systemPrompt?: { append?: unknown } } } | null | undefined
+    return meta?.antigravity?.systemPrompt?.append === true
+  }
+
+  /**
+   * `sessionCapabilities.resume`：支持轻量恢复。与 `session/load` 的区别是
+   * resume 不重放历史，客户端不必再屏蔽入站 update。
+   */
+  supportsResumeSession(): boolean {
+    const caps = this.#initializeResponse?.agentCapabilities as
+      { sessionCapabilities?: { resume?: unknown }; session_capabilities?: { resume?: unknown } } | null | undefined
+    const resume = caps?.sessionCapabilities?.resume ?? caps?.session_capabilities?.resume
+    return resume !== undefined && resume !== null
+  }
+
+  /** 轻量恢复已有会话（仅当 agent 声明 `sessionCapabilities.resume` 时可用）。 */
+  async resumeSession(request: ResumeSessionRequest, options?: AgentLinkRequestOptions): Promise<ResumeSessionResponse> {
+    this.#requireInitialized('session/resume')
+    if (!this.supportsResumeSession()) {
+      throw new AgentLinkError(AGY_LINK_ERROR.UNSUPPORTED_CAPABILITY, 'ACP 服务端未声明 session/resume，无法轻量恢复会话')
+    }
+    const response = await this.request<ResumeSessionResponse>('session/resume', request, options)
+    this.#boundSessionId = request.sessionId
+    return response
+  }
+
+  /** 设置会话模式（default / accept-edits / auto / plan 由 agent 声明）。 */
+  async setMode(request: SetSessionModeRequest, options?: AgentLinkRequestOptions): Promise<SetSessionModeResponse> {
+    this.#requireInitialized('session/set_mode')
+    return this.request<SetSessionModeResponse>('session/set_mode', request, options)
   }
 
   /**

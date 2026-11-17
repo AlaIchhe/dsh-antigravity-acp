@@ -159,6 +159,14 @@ function createHarness(
     saveSessionMap?: (entries: Record<string, SessionMapEntry>) => Promise<void> | void
     /** 假 agent 是否声明 loadSession 能力。 */
     loadSessionCapability?: boolean
+    /** 假 agent 是否声明 `_meta.antigravity.systemPrompt.append`。 */
+    systemPromptAppend?: boolean
+    /** 假 agent 是否声明 `sessionCapabilities.resume`。 */
+    resumeCapability?: boolean
+    /** 假 agent 的 modes 声明（缺省 null）。 */
+    modes?: { currentModeId?: string; availableModes: Array<{ id: string; name: string }> } | null
+    /** 配置的会话模式。 */
+    agentMode?: string
     /** 让第 n 次 getLink 直接失败：模拟启动失败，而不是会话恢复失败。 */
     failGetLinkOnce?: () => boolean
     keepProcessAfterCancel?: boolean
@@ -180,12 +188,15 @@ function createHarness(
         promptCapabilities: { embeddedContext: false, image: options.imageCapability === true, audio: false },
         mcpCapabilities: { http: true },
         loadSession: options.loadSessionCapability === true,
+        ...(options.resumeCapability === true ? { sessionCapabilities: { resume: {} } } : {}),
+        ...(options.systemPromptAppend === true ? { _meta: { antigravity: { systemPrompt: { append: true } } } } : {}),
       },
     }))
     agent.on('authenticate', () => ({}))
     agent.on('session/new', () => ({
       sessionId: sessionSeq++ === 0 ? SESSION_1 : SESSION_2,
       configOptions,
+      ...(options.modes === undefined ? {} : { modes: options.modes }),
     }))
     agent.on('session/set_config_option', (params) => {
       configOptions = (configOptions ?? []).map((option) =>
@@ -201,7 +212,9 @@ function createHarness(
       return { configOptions }
     })
     agent.on('session/prompt', () => NO_REPLY)
-    agent.on('session/load', () => ({ configOptions }))
+    agent.on('session/load', () => ({ configOptions, ...(options.modes === undefined ? {} : { modes: options.modes }) }))
+    agent.on('session/resume', () => ({ configOptions, ...(options.modes === undefined ? {} : { modes: options.modes }) }))
+    agent.on('session/set_mode', () => ({}))
     agent.on('session/close', () => ({}))
   }
   configureAgent()
@@ -251,6 +264,7 @@ function createHarness(
     parkSettleMs: options.parkSettleMs ?? 15,
     log: options.log,
     promptTimeoutMs: options.promptTimeoutMs,
+    agentMode: options.agentMode,
     loadCachedCatalog: options.loadCachedCatalog,
     saveCatalog: options.saveCatalog,
     loadCliCatalog: options.loadCliCatalog,
@@ -570,6 +584,77 @@ describe('模型目录来自 ACP 会话配置', () => {
     // 没有 xhigh 变体的家族不会被并进这一档。
     const claude = (await harness.adapter.resolveModel(AGY_PROVIDER_ID, 'claude-opus-5-5')).reasoning
     expect(claude?.efforts.map((entry) => entry.id.toString())).toEqual(['low', 'medium', 'high'])
+  })
+
+  it('agent 声明 systemPrompt.append 时，system 走 session/new 的 _meta，prompt 不再重复包块', async () => {
+    const harness = createHarness({ systemPromptAppend: true })
+    const streaming = collect(harness.adapter.stream(baseOptions({ system: '你是测试用助手。' })))
+    await waitForRequest(harness.agent, 'session/prompt')
+    await replyWithText(harness, '收到')
+    await streaming
+    const meta = harness.agent.requestsFor('session/new')[0]?.params._meta as { antigravity?: { systemPrompt?: { append?: string } } }
+    expect(meta?.antigravity?.systemPrompt?.append).toBe('你是测试用助手。')
+    const prompt = harness.agent.requestsFor('session/prompt')[0]?.params.prompt as unknown[]
+    expect(JSON.stringify(prompt)).not.toContain('<dsh-system>')
+  })
+
+  it('未声明 systemPrompt.append 时 system 仍然按文本块发送', async () => {
+    const harness = createHarness()
+    const streaming = collect(harness.adapter.stream(baseOptions({ system: '你是测试用助手。' })))
+    await waitForRequest(harness.agent, 'session/prompt')
+    await replyWithText(harness, '收到')
+    await streaming
+    const meta = harness.agent.requestsFor('session/new')[0]?.params._meta as { antigravity?: { systemPrompt?: unknown } }
+    expect(meta?.antigravity?.systemPrompt).toBeUndefined()
+    const prompt = harness.agent.requestsFor('session/prompt')[0]?.params.prompt as unknown[]
+    expect(JSON.stringify(prompt)).toContain('<dsh-system>你是测试用助手。</dsh-system>')
+  })
+
+  it('agent 声明 session/resume 时优先用它恢复会话，不重放历史', async () => {
+    const sessionId = 'dsh-session-resume-meta' as unknown as NonNullable<GenerateOptions['sessionId']>
+    const messages = [
+      ...baseOptions().messages,
+      createAssistantMessage({ content: [{ type: 'text', text: '第一轮回答' }], source: { provider: AGY_PROVIDER_ID, model: 'gemini-3-pro' } }),
+      createUserMessage({ content: [{ type: 'text', text: '第二个问题' }], source: { kind: 'user' } }),
+    ]
+    const entry: SessionMapEntry = {
+      sessionId: 'saved-acp-resume',
+      cwd: process.cwd(),
+      sentCount: 1,
+      sentHash: prefixHash(messages, 1),
+      outputHash: outputHash([{ type: 'text', text: '第一轮回答' }]),
+      route: routeFingerprint(baseOptions({ sessionId, messages })),
+      updatedAt: Date.now(),
+    }
+    const restored = createHarness({
+      resumeCapability: true,
+      loadSessionCapability: true,
+      resumeSessions: true,
+      loadSessionMap: async () => ({ [`${sessionId}::chat`]: entry }),
+      saveSessionMap: () => undefined,
+    })
+    const streaming = collect(restored.adapter.stream(baseOptions({ sessionId, messages })))
+    await waitForRequest(restored.agent, 'session/prompt')
+    await replyWithText(restored, '第二轮回答')
+    await streaming
+    expect(restored.agent.requestsFor('session/resume')).toHaveLength(1)
+    expect(restored.agent.requestsFor('session/load')).toHaveLength(0)
+  })
+
+  it('配置的会话模式只在 agent 声明过时才写入', async () => {
+    const declared = createHarness({ agentMode: 'plan', modes: { currentModeId: 'default', availableModes: [{ id: 'default', name: 'Default' }, { id: 'plan', name: 'Plan' }] } })
+    const streaming = collect(declared.adapter.stream(baseOptions()))
+    await waitForRequest(declared.agent, 'session/prompt')
+    await replyWithText(declared, '已规划')
+    await streaming
+    expect(declared.agent.requestsFor('session/set_mode')[0]?.params).toMatchObject({ modeId: 'plan' })
+
+    const unknown = createHarness({ agentMode: 'plan', modes: { availableModes: [{ id: 'default', name: 'Default' }] } })
+    const second = collect(unknown.adapter.stream(baseOptions()))
+    await waitForRequest(unknown.agent, 'session/prompt')
+    await replyWithText(unknown, '照常')
+    await second
+    expect(unknown.agent.requestsFor('session/set_mode')).toHaveLength(0)
   })
 
   it('session/new 的 model select 配置项被映射为 LlmModelInfo 目录', async () => {

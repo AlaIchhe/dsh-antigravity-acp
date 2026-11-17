@@ -92,6 +92,11 @@ export interface AntigravityAcpAdapterOptions {
   /** session/new 使用的工作目录；缺省为进程 cwd。 */
   cwd?: string
   /**
+   * 会话模式（agent 声明的 mode id，例如 `plan`）。留空沿用 agent 默认。
+   * 只作用于新建/恢复的会话；未在 agent 的 availableModes 里声明时不发送。
+   */
+  agentMode?: string
+  /**
    * 按模型 ID 的目录设置：显示开关、显示名与官方模型 ID 映射。
    * 只作用于目录中已存在的条目，不新增自造模型。
    */
@@ -227,6 +232,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   readonly #promptTimeoutMs: number
   readonly #parkSettleMs: number
   readonly #cwd: string
+  /** 配置的会话模式；空串表示沿用 agent 默认。 */
+  #agentMode: string
   /** 用户模型设置的只读快照；每次读取设置时整体替换。 */
   #modelSettings: ReadonlyMap<string, ModelSetting> = new Map()
   readonly #readSettings?: AntigravityAcpAdapterOptions['readSettings']
@@ -307,6 +314,11 @@ export class AntigravityAcpAdapter extends LlmAdapter {
    * 省略 configOptions 时它不代表本会话的实际模型；用它短路会让新会话静默跑在
    * agent 默认模型上。短路只认本会话自己确认过的值。
    */
+  /**
+   * system prompt 已通过 `_meta.antigravity.systemPrompt.append` 交给 agent 的会话。
+   * 这些会话的 prompt 里不再重复包一个 `<dsh-system>` 文本块。
+   */
+  readonly #systemViaMeta = new Set<string>()
   #sessionModelValues = new Map<string, string>()
   /**
    * 建立时**自己声明过** model 选择器的会话。只有这种会话才能用
@@ -336,6 +348,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#promptTimeoutMs = options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS
     this.#parkSettleMs = options.parkSettleMs ?? DEFAULT_PARK_SETTLE_MS
     this.#cwd = options.cwd ?? process.cwd()
+    this.#agentMode = options.agentMode?.trim() ?? ''
     this.#modelSettings = normalizeModelSettings(options.modelOverrides)
     this.#readSettings = options.readSettings
     this.#loadCachedCatalog = options.loadCachedCatalog
@@ -882,26 +895,36 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       if (!this.#bridge.listening) await this.#bridge.start()
       mcpServers = this.#bridge.acpRegistration()
     }
+    // 优先 `session/resume`：它不重放历史，比 `session/load` 干净也更快；
+    // 旧 agent 只声明 loadSession 时仍走 load（期间屏蔽入站回放）。
+    const resume = link.supportsResumeSession()
     this.#suppressUpdates += 1
     try {
-      const response = await link.loadSession({
+      const timeoutMs = Math.min(this.#promptTimeoutMs, 120_000)
+      const request = {
         sessionId: entry.sessionId,
         cwd: this.#cwd,
         mcpServers,
         _meta: { antigravity: { enabledTools: [], eagerMcpServers: tools.length > 0 ? [BRIDGE_MCP_SERVER_NAME] : [] } },
-      }, { signal: options.signal, timeoutMs: Math.min(this.#promptTimeoutMs, 120_000) })
+      }
+      const response = resume
+        ? await link.resumeSession(request, { signal: options.signal, timeoutMs })
+        : await link.loadSession(request, { signal: options.signal, timeoutMs })
+      // load 恢复的是既有会话：它的 system prompt 已在创建时确定，这里既不重发
+      // meta（会重复追加）也不塞文本块（会重复指令）。
       this.observeSessionConfigOptions(response.configOptions)
       if (findModelSelector(response.configOptions)) this.#rememberSessionModelSelector(entry.sessionId)
       await this.#applyModelSelection(link, entry.sessionId, options.model, options.reasoningEffort, options.signal)
+      await this.#applyAgentMode(link, entry.sessionId, response.modes, options.signal)
       throwIfAborted(options.signal)
     } catch (error) {
-      this.#log?.warn(`antigravity-acp: session/load 恢复失败，按新轮重建 session=${entry.sessionId}`, error)
+      this.#log?.warn(`antigravity-acp: 会话恢复失败（${resume ? 'session/resume' : 'session/load'}），按新轮重建 session=${entry.sessionId}`, error)
       // 恢复失败可能仍有迟到回放；重建前回收连接。
       this.#bridge.invalidateRound('恢复失败')
       this.#scheduleRecycle(link)
       await this.#settleRecycle()
       throwIfAborted(options.signal)
-      return discard('session/load 失败')
+      return discard(resume ? 'session/resume 失败' : 'session/load 失败')
     } finally {
       this.#suppressUpdates -= 1
     }
@@ -1052,6 +1075,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#sessionModelValues.delete(record.sessionId)
     this.#sessionModelDeclared.delete(record.sessionId)
     this.#sessionThoughtValues.delete(record.sessionId)
+    this.#systemViaMeta.delete(record.sessionId)
     this.#log?.info(`antigravity-acp: 放弃 ACP 会话复用（${reason}）`)
     this.#closeSession(record.link, record.sessionId)
   }
@@ -1293,16 +1317,25 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       // 官方 1.4.0 tool_filter.py / mcp_servers.py 的会话扩展：禁用内置工具
       // （仅关闭 ACP clientCapabilities 不够），直接向模型加载完整 MCP schema。
       this.#lifecycle?.roundPhase('session')
+      const systemViaMeta = options.system !== undefined && options.system !== '' && link.supportsSystemPromptAppend()
       const session = await link.newSession({
         cwd: this.#cwd,
         mcpServers,
-        _meta: { antigravity: { enabledTools: [], eagerMcpServers: tools.length > 0 ? [BRIDGE_MCP_SERVER_NAME] : [] } },
+        _meta: { antigravity: {
+          enabledTools: [],
+          eagerMcpServers: tools.length > 0 ? [BRIDGE_MCP_SERVER_NAME] : [],
+          // agent 声明支持时把 system prompt 交给它追加到自己的系统提示里；否则
+          // 继续编成 `<dsh-system>` 文本块（见 stream 的 prompt 组装）。
+          ...(systemViaMeta ? { systemPrompt: { append: options.system } } : {}),
+        } },
       }, { signal: options.signal })
       check()
+      if (systemViaMeta) this.#systemViaMeta.add(session.sessionId)
       this.observeSessionConfigOptions(session.configOptions)
       if (findModelSelector(session.configOptions)) this.#rememberSessionModelSelector(session.sessionId)
       this.#lifecycle?.roundPhase('model')
       await this.#applyModelSelection(link, session.sessionId, options.model, options.reasoningEffort, options.signal)
+      await this.#applyAgentMode(link, session.sessionId, session.modes, options.signal)
       check()
       return { link, session, tools }
     })()
@@ -1450,9 +1483,11 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     // 复用会话只发增量；否则全量重建（含 system、工具策略与历史强调块）。
     let content: Awaited<ReturnType<typeof buildPromptWithImages>>
     try {
+      // system 已经通过 session/new 的 meta 交给 agent 时，prompt 里不再重复包装。
+      const systemBlock = this.#systemViaMeta.has(sessionId) ? undefined : options.system
       content = reused
         ? await buildPromptDeltaWithImages(incrementalMessages(options.messages, reused.sentCount), this.#imageOptions(options.signal))
-        : await buildPromptWithImages(options.system, options.messages, tools, this.#imageOptions(options.signal))
+        : await buildPromptWithImages(systemBlock, options.messages, tools, this.#imageOptions(options.signal))
     } catch (error) {
       // prompt 还没发出去就失败（图片不可用 / 被取消 / 内容不支持）：刚建立的
       // ACP 会话与磁盘 claim 必须当场回收，不能只靠空闲回收兜底。
@@ -1839,6 +1874,33 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     const response = await this.#setConfigOption(link, sessionId, fresh.configId, desired, signal)
     this.#rememberSessionThoughtValue(sessionId, desired)
     if (response.configOptions?.length) this.observeSessionConfigOptions(response.configOptions)
+  }
+
+  /**
+   * 应用配置的会话模式（如 `plan`）。
+   *
+   * 只提交 agent 在该会话里真正声明过的 mode id；没配置或没声明时保持 agent 默认，
+   * 不猜、不改写。
+   */
+  async #applyAgentMode(
+    link: AgentLink,
+    sessionId: string,
+    modes: { availableModes?: readonly { id: string }[] } | null | undefined,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const mode = this.#agentMode
+    if (mode === '') return
+    const declared = modes?.availableModes?.some((entry) => entry.id === mode) ?? false
+    if (!declared) {
+      this.#log?.warn(`antigravity-acp: 会话模式 ${mode} 未被 agent 声明，沿用默认模式`)
+      return
+    }
+    try {
+      await link.setMode({ sessionId, modeId: mode }, { signal })
+      this.#log?.info(`antigravity-acp: 会话模式已设为 ${mode} session=${sessionId}`)
+    } catch (error) {
+      this.#log?.warn(`antigravity-acp: session/set_mode 失败（mode=${mode}）`, error)
+    }
   }
 
   /** 写一个会话配置项；失败原因带 configId 落进宿主日志后再抛。 */
