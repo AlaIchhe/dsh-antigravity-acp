@@ -57,7 +57,7 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 模型目录来自会话 `configOptions`、`config_option_update` 与官方 CLI 的只读 `agy models`。`initialize` 本身不是无需登录即可获取完整模型目录的接口。没有缓存时目录可以为空，应先显式连接或刷新。
 
 - 观测目录写入 `$DSH_HOME/cache/antigravity-acp/catalog.json`，只含模型信息，不含凭据；CLI 目录使用同目录的 `cli-models.json`。版本不符或损坏的缓存不作为有效目录。
-- 设置页的模型列表按 Gemini / Claude / GPT / Argon / 其它家族分组，只做显示 / 隐藏：点击模型标签切换，隐藏项不在选择器中列出。停用不删除目录条目；`modelOverrides` 里的显示名 / 官方 ID 映射仍按配置生效，但不再提供 UI 编辑。
+- 设置页的模型列表按 Gemini / Claude / GPT / Argon / 其它家族分组，只做显示 / 隐藏：点击模型标签切换，隐藏项不在选择器中列出。列表 = ACP 观测目录 ∪ 官方 CLI 清单，CLI 的档位化原始行（`…-high`）会先折叠成家族再合并，所以同一模型不会按思考档位分行。停用不删除目录条目；`modelOverrides` 里的显示名 / 官方 ID 映射仍按配置生效，但不再提供 UI 编辑。
 - 映射（`target`）优先于路由回调；没有映射时才按「显式选择 → `thought_level` 选项」决定最终配置值。
 - **模型选择页只选模型，不列思考强度**：适配器**不声明** `reasoning` 元数据，宿主因此不在 `/model` 菜单里加档位一列，模型按钮上也不显示强度。官方 ACP 1.5 起把档位声明成独立的 `thought_level` 选择器（本机 `agy acp` 1.5.10 实测：`model` 只给家族 id，`thought_level` 给 Low / Medium / High，切到 Gemini 4 Hydrogen 后多一档 Extra/`xhigh`），插件照样观测并随目录缓存，但只用于写入：选模只发家族 id；若调用方（例如 API 直调）显式给了 `reasoningEffort`，才额外写一次 `session/set_config_option`，且请求值不在 agent 当前选项里时按 low → medium → high → xhigh 就近收敛，不把未知值发出去。UI 不给选择时，官方按自己的默认档位（medium）跑。
 - 兼容旧 agent：没有 `thought_level` 时，官方档位化目录（`claude-opus-5-5-high`）折叠成家族并退回「档位后缀」路由，缺档取最近档位，未指定通常使用 `medium`。`gpt-oss-120b` 家族不列入选择器。

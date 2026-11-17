@@ -17,6 +17,7 @@ import type { ClientCapabilities } from '@agentclientprotocol/sdk'
 import type { SubprocessHandle, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { AntigravityAcpAdapter, AGY_PROVIDER_ID } from './adapter/antigravity-adapter.js'
+import { mergeModelRows } from './adapter/model-rows.js'
 import type { AdapterMetadata } from './adapter/antigravity-adapter.js'
 import { PooledAcpAdapter } from './pool/pooled-adapter.js'
 import { AgentLink, agentStreamFromSubprocess, AGY_CLIENT_INFO, AGY_LINK_ERROR, launchAcpAgent } from './protocol/agent-link.js'
@@ -753,11 +754,8 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       if (findCli()) cli = await loadCliModels(force)
       else if (force) await adapter.discoverModels(undefined, false)
       const acp = await adapter.listModels(AGY_PROVIDER_ID)
-      const byId = new Map(acp.map((model) => [model.id, model]))
-      for (const row of cli) {
-        if (!byId.has(row.id)) byId.set(row.id, { id: row.id, name: row.name, provider: AGY_PROVIDER_ID, inputModalities: ['text'] })
-      }
-      return [...byId.values()]
+      // CLI 清单是档位化原始行：先折叠成家族再合并，模型页才不会按思考档位分行。
+      return mergeModelRows(AGY_PROVIDER_ID, acp, cli)
     },
   })
 

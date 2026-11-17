@@ -44,7 +44,9 @@ vi.mock('../src/runtime/proxied-fetch.js', async (original) => ({
     return Object.assign(external.fetch, { close: external.fetchClose })
   },
 }))
-vi.mock('../src/runtime/agy-cli.js', () => ({
+vi.mock('../src/runtime/agy-cli.js', async (importOriginal) => ({
+  // 真实折叠逻辑保留：模型行合并会用到它，只把取数入口换成桩。
+  ...await importOriginal<typeof import('../src/runtime/agy-cli.js')>(),
   agyCliCandidates: () => [], createSubprocessCliRun: () => external.cli, fetchAgyModels: external.cli,
 }))
 vi.mock('../src/runtime/catalog-cache.js', () => ({
