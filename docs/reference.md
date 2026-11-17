@@ -2,7 +2,7 @@
 
 [返回主页](../README.md) · [配置](configuration.md) · [更新记录](changelog.md) · [开发与验证](development.md)
 
-本文对应 `dsh-bundle-antigravity-acp` **0.1.39**。安装或连接成功不等于真实模型生成、图片识别或所有平台已验收。
+本文对应 `dsh-bundle-antigravity-acp` **0.1.40**。安装或连接成功不等于真实模型生成、图片识别或所有平台已验收。
 
 ## 安装与更新
 

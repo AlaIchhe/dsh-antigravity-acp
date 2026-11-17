@@ -4,6 +4,10 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.1.40 · 2026-11-17
+
+- **额度失败原因直接可见**：账号卡片的紧凑额度摘要不再只显示「额度读取失败」，而是显示服务返回的具体原因；`agy /usage` / `/credits` 打印 `Authentication required` 时折成「登录失效，或当前网络/代理无法访问 Google」的可行动提示，而不是等满 45 秒后只给一个退出码。
+
 ## 0.1.39 · 2026-11-17
 
 - **多账号与面板直接登录**：账号列表持久化在 `~/.antigravity-acp-accounts`（`AGY_ACP_ACCOUNTS_DIR` 可覆盖）。系统账号使用真实 HOME、只读导入本机官方 CLI 登录态且不可删除；`添加账号` / `重新登录` 在设置页直接跑 Google OAuth（PKCE + `127.0.0.1:51121` 回调 + state 校验），把 token 写进该账号隔离 HOME，并按官方 CLI 格式同时生成 ACP server 的 `acp_token.json` / `settings.json`，不要求先安装官方二进制。点「使用此账号」切换当前账号：ACP 启动、只读 CLI 与 HTTP 额度都按账号解析 HOME，下一次 worker 启动时按账号 id / 登录代际回收旧链路，正在跑的回合不受影响。额度缓存按账号隔离，面板可逐账号拉取，药丸跟随当前账号；删除只清理插件创建的隔离目录，当前账号删除后回落到系统账号。Linux 阻断系统 D-Bus、Windows 改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`；macOS 可能仍受系统钥匙串影响，已在配置文档标注。

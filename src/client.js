@@ -308,7 +308,7 @@ window.__ModuleLoader__.load({
      */
     function CompactQuotaRows({ data }) {
       const groups = quotaGroups(data).filter((group) => group.buckets.length > 0)
-      if (groups.length === 0) return h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, data?.status === 'error' ? '额度读取失败' : '额度未知')
+      if (groups.length === 0) return h('p', { role: 'status', style: { margin: 0, fontSize: '12px', overflowWrap: 'anywhere', color: data?.status === 'error' ? '#b42318' : undefined } }, data?.status === 'error' ? (data.error?.message ?? '额度读取失败') : '额度未知')
       return h('div', { style: { display: 'grid', gap: '5px' } },
         ...groups.map((group) => {
           const values = group.buckets.map((bucket) => bucket.disabled ? '停用' : percentage(bucket) === undefined ? '未知' : Math.round(percentage(bucket)) + '%')

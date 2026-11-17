@@ -10,6 +10,7 @@ import {
   AGY_CLI_TIMEOUT_MS,
   AGY_MODEL_EXCLUDED_FAMILIES,
   cliEnv,
+  createSubprocessCliRun,
   fetchAgyModels,
   fetchAgyUsage,
   foldAgyModelFamilies,
@@ -374,5 +375,30 @@ describe('cliEnv 代理补齐', () => {
     expect(cliEnv(parent)).not.toHaveProperty('UNRELATED_SECRET')
     expect(cliEnv(parent).SystemRoot).toBe('C:\Windows')
     expect(cliEnv(parent).USERPROFILE).toBe('C:\Users\tester')
+  })
+})
+
+describe('createSubprocessCliRun 的登录失效识别', () => {
+  const fakeSubprocess = (stderr: string, exitCode: number | null = 0) => ({
+    spawn: () => ({
+      collected: {
+        stdout: { readFrom: () => ({ text: '', nextOffset: 0, lossy: false }) },
+        stderr: { readFrom: () => ({ text: stderr, nextOffset: stderr.length, lossy: false }) },
+      },
+      done: Promise.resolve({ exitCode, signal: null }),
+      terminate: () => undefined,
+    }),
+  })
+
+  it('把 Authentication required 折成可行动登录提示', async () => {
+    const run = createSubprocessCliRun(fakeSubprocess('Authentication required. Please visit the URL to log in:\nhttps://accounts.google.com/...') as never)
+    await expect(run({ argv: ['/fake/agy', '-p', '/usage'] })).rejects.toThrow('无法完成登录态刷新')
+  })
+
+  it('普通非零退出不被误判成登录问题', async () => {
+    const run = createSubprocessCliRun(fakeSubprocess('network down', 1) as never)
+    const result = await run({ argv: ['/fake/agy', '-p', '/usage'] })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toBe('network down')
   })
 })

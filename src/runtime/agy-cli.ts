@@ -326,6 +326,12 @@ function firstString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
+/** 官方 CLI 未登录时会先打印授权 URL 再挂起；把这种超时/非零退出折成可行动文案。 */
+function describeCliAuthFailure(stderr: string, exitCode: number | null): string | undefined {
+  if (!/Authentication required|Please visit the URL to log in|not logged (?:in|into)/i.test(stderr)) return undefined
+  return `官方 agy CLI 无法完成登录态刷新${exitCode === null ? '（等待登录超时）' : `（退出码 ${exitCode}）`}：登录已失效，或当前网络/代理无法访问 Google；请先检查出网代理，再重新登录 Antigravity 账号`
+}
+
 /**
  * 用 DSH 的 subprocess 服务实现 {@link CliRun}（本模块不碰 child_process）。
  * 环境按最小可用集显式传入：Windows 系统键 + 用户目录键 + 出网代理键；
@@ -338,8 +344,9 @@ export function createSubprocessCliRun(
   return async ({ argv, timeoutMs, homeDir }) => {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs ?? AGY_CLI_TIMEOUT_MS)
+    let handle: ReturnType<SubprocessRuntime['spawn']> | undefined
     try {
-      const handle = subprocess.spawn({
+      handle = subprocess.spawn({
         argv,
         // cwd 用 CLI 自身目录：与 ACP server 的启动约定一致，避免工作目录
         // 影响官方二进制的相对资源解析。
@@ -354,11 +361,19 @@ export function createSubprocessCliRun(
         signal: controller.signal,
       })
       const outcome = await handle.done
+      const stderr = handle.collected.stderr?.readFrom(0).text ?? ''
+      const authMessage = describeCliAuthFailure(stderr, outcome.exitCode)
+      if (authMessage) throw new Error(authMessage)
       return {
         exitCode: outcome.exitCode,
         stdout: handle.collected.stdout?.readFrom(0).text ?? '',
-        stderr: handle.collected.stderr?.readFrom(0).text ?? '',
+        stderr,
       }
+    } catch (error) {
+      const stderr = handle?.collected.stderr?.readFrom(0).text ?? ''
+      const authMessage = describeCliAuthFailure(stderr, null)
+      if (authMessage) throw new Error(authMessage)
+      throw error
     } finally {
       clearTimeout(timer)
     }
