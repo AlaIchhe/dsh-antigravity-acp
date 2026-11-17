@@ -83,9 +83,9 @@ async function mount(remote: unknown, control?: unknown, readQuota?: unknown) {
   return { renderer, intervals }
 }
 
-async function mountPill(readQuota: unknown) {
+async function mountPill(readQuota: unknown, model = 'gemini-flash') {
   const { Pill } = loadCard()
-  const modelSnapshot = { current: { provider: 'antigravity-acp', model: 'gemini-flash' } }
+  const modelSnapshot = { current: { provider: 'antigravity-acp', model } }
   const store = {
     subscribe: () => () => {},
     getSnapshot: () => modelSnapshot,
@@ -105,16 +105,40 @@ function fieldInput(renderer: ReactTestRenderer, name: string): ReactTestInstanc
 function renderedText(renderer: ReactTestRenderer): string { return JSON.stringify(renderer.toJSON()) }
 
 describe('quota pill with real React state and effects', () => {
-  it('打开额度详情即可查看，不再出现刷新按钮', async () => {
+  it('胶囊只展示当前模型家族的额度，不可点开', async () => {
     const snapshot = { status: 'ok', groups: [{ name: 'Gemini', buckets: [{ window: '5h', remainingPct: 82 }] }] }
     const readQuota = vi.fn(async () => snapshot)
     const renderer = await mountPill(readQuota)
     expect(readQuota).toHaveBeenCalled()
-    await act(async () => { await renderer.root.findByProps({ 'aria-haspopup': 'dialog' }).props.onClick() })
-    expect(renderer.root.findAll((node) => node.type === 'button' && node.children.join('') === '刷新额度')).toHaveLength(0)
-    expect(renderedText(renderer)).toContain('82')
-    await act(async () => { renderer.root.findByProps({ 'aria-label': '关闭额度详情' }).props.onClick() })
+    // 族名 + 百分比 + 迷你条都在，pill 本身不是按钮，也没有弹层。
+    expect(renderedText(renderer)).toContain('Gemini')
+    expect(renderedText(renderer)).toContain('82%')
+    expect(renderer.root.findAll((node) => node.type === 'button' && node.props['aria-haspopup'] === 'dialog')).toHaveLength(0)
     expect(renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
+    expect(renderer.root.findByProps({ role: 'status' }).props['aria-label']).toContain('Gemini 82%')
+  })
+
+  it('Argon 模型只读自己的额度组，不借用 Gemini 组', async () => {
+    const readQuota = async () => ({
+      status: 'ok',
+      groups: [
+        { name: 'Gemini', buckets: [{ window: '5h', remainingPct: 81 }] },
+      ],
+    })
+    // 没有 Argon 组时显示未知，而不是拿 Gemini 组的 81% 冒充。
+    const missing = await mountPill(readQuota, 'gemini-4-argon')
+    expect(missing.root.findByProps({ role: 'status' }).props['aria-label']).toContain('未知')
+    expect(renderedText(missing)).not.toContain('81%')
+    // 有独立 Argon 组时就读它自己的。
+    const own = await mountPill(async () => ({
+      status: 'ok',
+      groups: [
+        { name: 'Gemini', buckets: [{ window: '5h', remainingPct: 81 }] },
+        { name: 'Argon', buckets: [{ window: '5h', remainingPct: 33 }] },
+      ],
+    }), 'gemini-4-argon')
+    expect(own.root.findByProps({ role: 'status' }).props['aria-label']).toContain('33%')
+    expect(renderedText(own)).not.toContain('81%')
   })
 
   it('跨家族官方映射使用实际路由模型的额度组', async () => {
@@ -130,9 +154,8 @@ describe('quota pill with real React state and effects', () => {
 
   it('失败信封转成可读错误，不把异常抛出组件', async () => {
     const renderer = await mountPill(async () => ({ ok: false, error: { message: 'remote denied' } }))
-    expect(renderer.root.findByProps({ 'aria-haspopup': 'dialog' }).props['aria-label']).toContain('额度读取失败')
-    await act(async () => { await renderer.root.findByProps({ 'aria-haspopup': 'dialog' }).props.onClick() })
-    expect(renderedText(renderer)).toContain('remote denied')
+    expect(renderer.root.findByProps({ role: 'status' }).props['aria-label']).toContain('额度读取失败')
+    expect(renderer.root.findByProps({ role: 'status' }).props['aria-label']).toContain('remote denied')
   })
 
 })
@@ -203,6 +226,27 @@ describe('settings card with real React state and effects', () => {
     // 连接与额度合并；高级页并入账号页后只剩「账号 / 模型」。
     const tabs = renderer.root.findAll((node) => node.type === 'button' && node.props.role === 'tab')
     expect(tabs.map((node) => node.children.join(''))).toEqual(['账号', '模型'])
+  })
+
+  it('设置页额度块铺开分组明细与 Credits，不再折叠成详情', async () => {
+    const service = transport()
+    const control = accountControl()
+    const snapshot = {
+      status: 'ok', updatedAt: '2026-11-17T00:00:00.000Z', plan: '示例套餐',
+      groups: [{ name: 'Gemini Models', buckets: [{ window: '5h', remainingPct: 73 }] }],
+      credits: { status: 'ok', remainingCredits: 128 },
+    }
+    const readQuota = Object.assign(vi.fn(async () => snapshot), { readAccount: vi.fn(async () => snapshot) })
+    const { renderer } = await mount(service.remote, control, readQuota)
+    await act(async () => {})
+    const text = renderedText(renderer)
+    // 分组、窗口名、百分比、重置倒计时与 Credits 都在页面上，不再藏在折叠里。
+    expect(text).toContain('Gemini')
+    expect(text).toContain('5 小时')
+    expect(text).toContain('73%')
+    expect(text).toContain('AI Credits')
+    expect(text).toContain('128')
+    expect(renderer.root.findAllByType('details')).toHaveLength(0)
   })
 
   it('面板添加账号：显示授权链接，取消后回到空闲', async () => {

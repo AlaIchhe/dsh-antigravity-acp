@@ -208,7 +208,7 @@ function elements(node: unknown): StubElement[] {
   return [value, ...(value.children ?? []).flatMap(elements)]
 }
 function pillLabel(node: unknown): string {
-  return String(elements(node).find((item) => item.type === 'button')?.props['aria-label'] ?? '')
+  return String(elements(node).find((item) => item.props.role === 'status')?.props['aria-label'] ?? '')
 }
 
 /** 构造模型目录 store 快照（决定药丸是否出现）。 */
@@ -441,54 +441,21 @@ describe('browser client module', () => {
 })
 
 describe('AI Credits 展示', () => {
-  it.each([
-    [{ status: 'ok', remainingCredits: 0 }, '0'],
-    [{ status: 'ok', remainingCredits: 42 }, '42'],
-    // 开关已开但 CLI 缺失/上游无数据都是可排查故障，必须显示而不是静默隐藏。
-    [{ status: 'unavailable', error: { code: 'cli-unavailable', message: '未找到官方 agy CLI' } }, '未提供'],
-    [{ status: 'error', error: { code: 'request-failed', message: '查询超时' } }, '查询失败'],
-    [{ status: 'ok' }, '未提供'],
-  ])('余额状态独立呈现且不混淆零与未知', (credits, expected) => {
-    const data = { status: 'ok', groups: [], credits }
-    const tree = loadRegistrations({ quotaSnapshot: data, stateOverrides: { 2: true } }).get('antigravity-quota')!.component({ store: modelStore('antigravity-acp') })
-    const card = elements(tree).find((item) => item.props['aria-label'] === 'AI Credits 余额')!
-    expect(texts(card)).toContain(expected)
-    if (expected !== '0') expect(texts(card)).not.toContain('0')
-  })
-
-  it('未开启 CLI 积分查询（cli-disabled）时隐藏 AI Credits 区块', () => {
-    const data = { status: 'ok', groups: [], credits: { status: 'unavailable', error: { code: 'cli-disabled', message: '未开启 agy CLI 取数，不查询 AI Credits。' } } }
-    const tree = loadRegistrations({ quotaSnapshot: data, stateOverrides: { 2: true } }).get('antigravity-quota')!.component({ store: modelStore('antigravity-acp') })
+  it('胶囊不再承载 AI Credits：明细已移到设置页额度块', () => {
+    const data = { status: 'ok', groups: [], credits: { status: 'ok', remainingCredits: 42 } }
+    const tree = loadRegistrations({ quotaSnapshot: data }).get('antigravity-quota')!.component({ store: modelStore('antigravity-acp') })
     expect(elements(tree).filter((item) => item.props['aria-label'] === 'AI Credits 余额')).toHaveLength(0)
-    expect(texts(tree).join('')).not.toContain('未开启 agy CLI 取数')
-  })
-
-  it('开关已开但 CLI 缺失（cli-unavailable）时保留 AI Credits 区块便于排查', () => {
-    const data = { status: 'ok', groups: [], credits: { status: 'unavailable', error: { code: 'cli-unavailable', message: '未找到官方 agy CLI，无法查询 AI Credits' } } }
-    const tree = loadRegistrations({ quotaSnapshot: data, stateOverrides: { 2: true } }).get('antigravity-quota')!.component({ store: modelStore('antigravity-acp') })
-    const card = elements(tree).find((item) => item.props['aria-label'] === 'AI Credits 余额')!
-    expect(card).toBeTruthy()
-    expect(texts(card).join('')).toContain('未找到官方 agy CLI')
-  })
-
-  it('缓存余额只在药丸详情显示旧值与独立错误', () => {
-    const data = { status: 'ok', groups: [], credits: { status: 'ok', remainingCredits: 42, stale: true, staleReason: '余额刷新超时', updatedAt: '2026-01-01T00:00:00Z' } }
-    const tree = loadRegistrations({ quotaSnapshot: data, stateOverrides: { 2: true } }).get('antigravity-quota')!.component({ store: modelStore('antigravity-acp') })
-    const card = elements(tree).find((item) => item.props['aria-label'] === 'AI Credits 余额')!
-    expect(texts(card)).toContain('42')
-    expect(texts(card).join('')).toContain('余额缓存 · 余额刷新超时')
-    expect(texts(card).join('')).not.toContain('余额更新于')
   })
 })
 
 describe('额度药丸（conversation.input.right）', () => {
-  it('药丸只有单个紧凑额度按钮，不轮询或启动 ACP', () => {
+  it('药丸是纯展示：没有按钮、没有弹层，也不启动 ACP', () => {
     const control = vi.fn()
     const { component } = loadPill()
     const tree = component({ store: modelStore('antigravity-acp'), control })
-    const buttons = elements(tree).filter((item) => item.type === 'button')
-    expect(buttons).toHaveLength(1)
-    expect(buttons[0]?.props.style).toMatchObject({ minHeight: '26px', maxWidth: 'min(46vw, 240px)' })
+    expect(elements(tree).filter((item) => item.type === 'button')).toHaveLength(0)
+    expect(elements(tree).filter((item) => item.props.role === 'dialog')).toHaveLength(0)
+    expect(elements(tree).find((item) => item.props.role === 'status')?.props.style).toMatchObject({ minHeight: '26px', maxWidth: 'min(52vw, 260px)' })
     expect(control).not.toHaveBeenCalled()
   })
 
@@ -509,51 +476,25 @@ describe('额度药丸（conversation.input.right）', () => {
     { name: 'Gemini 4 Argon', buckets: [{ window: 'weekly', remainingPct: 12 }] },
   ] }
 
-  it('药丸只显示选中模型的迷你条与简短状态；展开完整额度组和余额', () => {
+  it('药丸显示选中模型家族的族名 + 百分比 + 迷你条', () => {
     const props = { store: { ...modelStore('antigravity-acp'), getSnapshot: () => ({ current: { provider: 'antigravity-acp', model: 'gemini-4-argon-high' } }) } }
-    const closed = loadRegistrations({ quotaSnapshot: completeQuota }).get('antigravity-quota')!.component(props)
-    expect(texts(closed)).toEqual(['偏少'])
-    const bars = elements(closed).filter((item) => item.props.role === 'progressbar')
+    const tree = loadRegistrations({ quotaSnapshot: completeQuota }).get('antigravity-quota')!.component(props)
+    const text = texts(tree).join(' ')
+    expect(text).toContain('Gemini 4 Argon')
+    expect(text).toContain('12%')
+    // 只有当前家族那一组窗口的迷你条。
+    const bars = elements(tree).filter((item) => item.props.role === 'progressbar')
     expect(bars).toHaveLength(1)
     expect(bars[0]?.props['aria-valuenow']).toBe(12)
-    const opened = loadRegistrations({ quotaSnapshot: completeQuota, stateOverrides: { 2: true } }).get('antigravity-quota')!.component(props)
-    const text = texts(opened).join(' ')
-    for (const label of ['Gemini', 'Claude / GPT', 'Gemini 4 Argon', 'AI Credits', '未提供']) expect(text).toContain(label)
-    expect(elements(opened).filter((item) => item.props.role === 'dialog')).toHaveLength(1)
-    const openBars = elements(opened).filter((item) => item.props.role === 'progressbar')
-    expect(openBars).toHaveLength(5)
-    expect(openBars.slice(1).every((item) => (item.props.style as { height?: string }).height === '4px')).toBe(true)
-    const gemini = elements(opened).find((item) => item.props['aria-label'] === 'Gemini额度')!
-    expect(gemini.props.style).toMatchObject({ padding: '9px 0' })
-    expect(elements(gemini).some((item) => (item.props.style as { gridTemplateColumns?: string } | undefined)?.gridTemplateColumns === 'repeat(auto-fit, minmax(120px, 1fr))')).toBe(true)
+    expect(pillLabel(tree)).toBe('Gemini 4 Argon 12% · 每周 12% 剩余')
   })
 
   it('未知自定义模型不借用其它模型额度；缓存状态与禁用窗口有明确语义', () => {
     const pill = loadRegistrations({ quotaSnapshot: { ...completeQuota, stale: true } }).get('antigravity-quota')!.component
     const tree = pill({ store: { ...modelStore('antigravity-acp'), getSnapshot: () => ({ current: { provider: 'antigravity-acp', model: 'custom-id' } }) } })
-    expect(pillLabel(tree)).toContain('额度未匹配')
+    expect(pillLabel(tree)).toContain('未知')
     expect(pillLabel(tree)).toContain('缓存数据')
     expect(elements(tree).filter((item) => item.props.role === 'progressbar')).toHaveLength(0)
-  })
-
-  it('展开后 Escape / 外部点击可关闭，卸载清理事件监听', () => {
-    const listeners = new Map<string, (event: { key?: string; target?: unknown }) => void>()
-    const pill = loadRegistrations({ quotaSnapshot: completeQuota, stateOverrides: { 2: true }, listeners }).get('antigravity-quota')!.component
-    pill({ store: modelStore('antigravity-acp') })
-    listeners.get('keydown')?.({ key: 'Escape' })
-    expect(lastStateCalls.at(-1)).toBe(false)
-    listeners.get('pointerdown')?.({ target: {} })
-    expect(lastStateCalls.at(-1)).toBe(false)
-    for (const cleanup of effectCleanups.splice(0)) cleanup()
-    expect(listeners.size).toBe(0)
-  })
-
-  it('窄屏靠左的药丸展开时把弹层夹在视口内', () => {
-    const pill = loadRegistrations({ stateOverrides: { 2: true }, refStateBindings: { 3: 3 }, refOverrides: {
-      4: { getBoundingClientRect: () => ({ right: 75, top: 760, bottom: 786 }) },
-    } }).get('antigravity-quota')!.component
-    pill({ store: modelStore('antigravity-acp') })
-    expect(lastStateCalls).toContainEqual(expect.objectContaining({ position: 'fixed', left: 12, width: 340, bottom: 92 }))
   })
 
   it('挂载后立即卸载不接收迟到的额度响应', async () => {
@@ -584,18 +525,18 @@ describe('额度药丸（conversation.input.right）', () => {
     model = 'gemini-4-argon'
     expect(pillLabel(pill(props))).toContain('2%')
     model = 'server-default'
-    expect(pillLabel(pill(props))).toContain('额度未匹配')
+    expect(pillLabel(pill(props))).toContain('未知')
   })
 
-  it('官方未单列 Argon 额度时使用 Gemini 共享组，独立组存在时优先使用', () => {
+  it('Argon 只读自己的额度组，没有独立组时显示未知而不是借用 Gemini 组', () => {
     const quotaSnapshot = { status: 'ok', groups: [
       { name: 'Gemini Models', buckets: [{ window: '5h', remainingPct: 82 }] },
       { name: 'Claude and GPT models', buckets: [{ window: '5h', remainingPct: 43 }] },
     ] }
     const store = { ...modelStore('antigravity-acp'), getSnapshot: () => ({ current: { provider: 'antigravity-acp', model: 'gemini-4-argon-high' } }) }
     const shared = loadRegistrations({ quotaSnapshot }).get('antigravity-quota')!.component({ store })
-    expect(pillLabel(shared)).toContain('82%')
-    expect(pillLabel(shared)).not.toContain('额度未知')
+    expect(pillLabel(shared)).toContain('未知')
+    expect(pillLabel(shared)).not.toContain('82%')
     const separate = loadRegistrations({ quotaSnapshot: { ...quotaSnapshot, groups: [...quotaSnapshot.groups, { name: 'Gemini 4 Argon', buckets: [{ window: 'weekly', remainingPct: 12 }] }] } }).get('antigravity-quota')!.component({ store })
     expect(pillLabel(separate)).toContain('12%')
     expect(pillLabel(separate)).not.toContain('82%')

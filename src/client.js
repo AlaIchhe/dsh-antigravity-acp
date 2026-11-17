@@ -133,25 +133,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 账号卡片里的紧凑额度摘要：参考本插件额度胶囊的迷你条设计，
-     * 每组一行（组名 + 并排窗口条 + 百分比），重置时间与 Credits 放在「详情」里。
-     */
-    function CompactQuotaRows({ data }) {
-      const groups = quotaGroups(data).filter((group) => group.buckets.length > 0)
-      if (groups.length === 0) return h('p', { role: 'status', style: { margin: 0, fontSize: '12px', overflowWrap: 'anywhere', color: data?.status === 'error' ? '#b42318' : undefined } }, data?.status === 'error' ? (data.error?.message ?? '额度读取失败') : '额度未知')
-      return h('div', { style: { display: 'grid', gap: '5px' } },
-        ...groups.map((group) => {
-          const values = group.buckets.map((bucket) => bucket.disabled ? '停用' : percentage(bucket) === undefined ? '未知' : Math.round(percentage(bucket)) + '%')
-          const title = group.name + ' · ' + group.buckets.map((bucket) => windowName(bucket) + ' ' + (bucket.disabled ? '已停用' : percentage(bucket) === undefined ? '额度未知' : Math.round(percentage(bucket)) + '% 剩余')).join(' · ')
-          return h('div', { key: group.key, title, style: { display: 'flex', alignItems: 'center', gap: '8px' } },
-            h('span', { style: { fontSize: '12px', minWidth: '82px', maxWidth: '110px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, group.name),
-            h('span', { style: { display: 'grid', gap: '2px', flex: 1, minWidth: 0 } },
-              ...group.buckets.map((bucket, index) => remainingBar(bucket, false, data?.stale, group.name + ' ' + windowName(bucket) + '剩余额度', 3))),
-            h('span', { style: { fontSize: '12px', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', color: data?.stale ? '#d99b28' : 'inherit' } }, values.join(' · ')))
-        }))
-    }
-
-    /**
      * 单个账号的额度块：挂载时自动读取，失败保留旧快照并标缓存。
      * 用 `readQuota.readAccount`（存在时）避免把非当前账号的额度广播给药丸。
      */
@@ -194,21 +175,10 @@ window.__ModuleLoader__.load({
           h('span', { style: { flex: 1 } }),
           refreshing ? h('span', { role: 'status', style: { fontSize: '11px' } }, '读取中…') : null),
         data
-          ? h('div', { style: { display: 'grid', gap: '5px' } },
-            CompactQuotaRows({ data }),
-            data?.credits && data.credits.status === 'ok' && Number.isSafeInteger(data.credits.remainingCredits)
-              ? h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px' } },
-                h('span', { style: { fontSize: '12px' } }, 'AI Credits'),
-                h('span', { style: { flex: 1 } }),
-                h('strong', { style: { fontSize: '13px', fontVariantNumeric: 'tabular-nums' } }, data.credits.remainingCredits.toLocaleString()))
-              : null,
-            data?.stale ? h('p', { role: 'status', style: { margin: 0, fontSize: '11px', color: '#d99b28' } }, '缓存数据 · ' + (data.staleReason ?? '刷新失败')) : null,
-            h('details', { style: { marginTop: '2px' } },
-              h('summary', { style: { fontSize: '11px', cursor: 'pointer' } }, '详情'),
-              h('div', { style: { marginTop: '6px' } }, QuotaDetails({ data, showHeader: false, showCredits: false }))))
-          : data?.status === 'error'
-            ? h('p', { role: 'alert', style: { margin: 0, fontSize: '12px', color: '#ef4444', overflowWrap: 'anywhere' } }, data.error?.message ?? '额度读取失败')
-            : h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, refreshing ? '正在读取…' : '尚未查询'))
+          // 设置页直接铺胶囊面板的内容：分组 + 窗口百分比 + 余量条 + 重置倒计时 + Credits，
+          // 不再折叠、也不再有一个可点开的弹层（对话页胶囊已是纯展示）。
+          ? QuotaDetails({ data, showHeader: false, showCredits: true })
+          : h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, refreshing ? '正在读取…' : '尚未查询'))
     }
 
     /** 登录流程提示：等待时给出授权链接与取消，完成/失败只显示结果。 */
@@ -735,61 +705,36 @@ window.__ModuleLoader__.load({
     function AgYQuotaPill({ store, readQuota }) {
       const state = React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
       const isAcp = state?.current?.provider === PROVIDER
-      const enabled = isAcp
       const model = state?.current?.model
-      const quota = useQuota(readQuota, enabled, state?.current?.provider, model)
-      const [expanded, setExpanded] = React.useState(false)
-      const [position, setPosition] = React.useState(null)
-      const root = React.useRef(null)
-      const button = React.useRef(null)
-      React.useEffect(() => { setExpanded(false) }, [enabled])
-      React.useEffect(() => {
-        if (!expanded) { setPosition(null); return undefined }
-        const reposition = () => {
-          if (!button.current?.getBoundingClientRect) return
-          const rect = button.current.getBoundingClientRect()
-          const viewport = document.documentElement.clientWidth
-          const height = window.innerHeight
-          const width = Math.min(340, viewport - 24)
-          const above = rect.top - 20
-          const below = height - rect.bottom - 20
-          setPosition({ position: 'fixed', right: 'auto', width,
-            left: Math.max(12, Math.min(rect.right - width, viewport - width - 12)),
-            ...(above >= Math.min(480, below)
-              ? { bottom: height - rect.top + 8, maxHeight: Math.max(32, above) }
-              : { bottom: 'auto', top: rect.bottom + 8, maxHeight: Math.max(32, below) }),
-          })
-        }
-        reposition()
-        window.addEventListener('resize', reposition)
-        window.addEventListener('scroll', reposition, true)
-        const outside = (event) => { if (!root.current?.contains(event.target)) setExpanded(false) }
-        const key = (event) => { if (event.key === 'Escape') { setExpanded(false); button.current?.focus() } }
-        document.addEventListener('pointerdown', outside)
-        document.addEventListener('keydown', key)
-        return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', key); window.removeEventListener('resize', reposition); window.removeEventListener('scroll', reposition, true) }
-      }, [expanded])
-      if (!enabled) return null
+      const quota = useQuota(readQuota, isAcp, state?.current?.provider, model)
+      if (!isAcp) return null
       const groups = quotaGroups(quota.data)
+      // 只显示**当前所选模型所属家族**的额度；Argon 有独立额度组，不借用 Gemini 组。
       const family = modelGroup(quota.data?.routeModel ?? model)
-      // 官方 /usage 可能只报告 Gemini 共享额度；只有真实 Argon 分组存在时，
-      // 才把 Argon 型号绑定到独立组，不能命中一个预建的空组而误报未知。
-      const group = groups.find((g) => g.key === family && (family !== 'argon' || g.buckets.length > 0))
-        ?? (family === 'argon' ? groups.find((g) => g.key === 'gemini') : undefined)
+      const group = family === undefined ? undefined : groups.find((entry) => entry.key === family)
       const buckets = group?.buckets ?? []
-      const pillStatus = quotaPillStatus(quota.data, buckets)
+      const usable = buckets.filter((bucket) => !bucket.disabled && percentage(bucket) !== undefined)
+      // 多窗口时取最低的那个当家族余量，避免一个稀疏窗口把整体说成充足。
+      const worst = usable.length ? Math.min(...usable.map(percentage)) : undefined
+      const stale = quota.data?.stale === true
+      const failed = quota.data?.status === 'error'
+      const familyName = (GROUPS.find((entry) => entry.key === family) ?? {}).name ?? '额度'
+      const status = quotaPillStatus(quota.data, buckets)
+      const value = failed ? '读取失败'
+        : !quota.data ? '读取中'
+        : !group ? '未知'
+        : worst === undefined ? (buckets.some((bucket) => bucket.disabled) ? '已停用' : '未知')
+        : Math.round(worst) + '%'
+      const label = failed
+        ? familyName + ' 额度读取失败' + (quota.data?.error?.message ? '：' + quota.data.error.message : '')
+        : familyName + ' ' + value + (buckets.length ? ' · ' + buckets.map((bucket) => windowName(bucket) + ' ' + (bucket.disabled ? '已停用' : percentage(bucket) === undefined ? '额度未知' : Math.round(percentage(bucket)) + '% 剩余')).join(' · ') : '') + (stale ? ' · 缓存数据' : '')
       const miniBuckets = buckets.slice(0, 5)
       const miniHeight = miniBuckets.length <= 1 ? 6 : miniBuckets.length === 2 ? 5 : miniBuckets.length === 3 ? 4 : miniBuckets.length === 4 ? 3 : 2
-      const label = quota.data?.status === 'error' ? '额度读取失败' : !quota.data ? '正在读取额度' : !group ? '额度未匹配，请选择具体模型' : !buckets.length ? '额度未知' : buckets.map((b) => windowName(b) + ' ' + (b.disabled ? '已停用' : percentage(b) === undefined ? '额度未知' : Math.round(percentage(b)) + '% 剩余')).join(' · ')
-      const title = String(model ?? '未选择模型') + ' · ' + label + (quota.data?.stale ? ' · 缓存数据' : '')
-      return h('span', { ref: root, className: 'antigravity-usage-pill', 'data-expanded': String(expanded), style: { position: 'relative', display: 'inline-flex', alignItems: 'center' } },
-        h('button', { ref: button, type: 'button', title, 'aria-label': title, 'aria-expanded': expanded, 'aria-haspopup': 'dialog', onClick: () => setExpanded((value) => !value),
-          style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: pillStatus.short ? '4px 11px 4px 9px' : '5px 10px', minHeight: '26px', boxSizing: 'border-box', borderRadius: '99px', border: '1px solid ' + (pillStatus.tint ? pillStatus.color + '73' : 'rgba(128,128,128,.3)'), background: pillStatus.tint ? pillStatus.color + '1a' : 'transparent', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', maxWidth: 'min(46vw, 240px)' } },
-          miniBuckets.length ? h('span', { style: { display: 'grid', gap: miniBuckets.length <= 2 ? '3px' : '2px', opacity: quota.data?.stale ? .5 : 1 } }, ...miniBuckets.map((b, i) => h('span', { key: i }, remainingBar(b, true, quota.data?.stale, group.name + ' ' + windowName(b) + '剩余额度', miniHeight))))
-            : h('span', { 'aria-hidden': true, style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', borderRadius: '50%', background: pillStatus.color, color: '#fff', fontSize: '11px' } }, pillStatus.icon),
-          pillStatus.short ? h('span', null, pillStatus.short) : null),
-        expanded ? h('div', { role: 'dialog', 'aria-label': 'Antigravity 额度详情', style: { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 50, width: 'min(340px, calc(100vw - 24px))', maxHeight: 'min(70vh, calc(100vh - 72px))', overflowY: 'auto', boxSizing: 'border-box', overflowWrap: 'anywhere', padding: '12px', borderRadius: '12px', background: 'var(--dsh-surface, Canvas)', color: 'var(--dsh-text, CanvasText)', border: '1px solid rgba(128,128,128,.28)', boxShadow: '0 12px 32px rgba(0,0,0,.28)', fontSize: '12px', ...position } },
-          QuotaDetails({ data: quota.data, model, onClose: () => { setExpanded(false); button.current?.focus?.() } })) : null)
+      return h('span', { className: 'antigravity-usage-pill', role: 'status', 'aria-label': label, title: label,
+        style: { display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '5px 10px', minHeight: '26px', boxSizing: 'border-box', borderRadius: '99px', border: '1px solid ' + (status.tint ? status.color + '73' : 'rgba(128,128,128,.3)'), background: status.tint ? status.color + '1a' : 'transparent', color: 'inherit', fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', maxWidth: 'min(52vw, 260px)', opacity: stale ? .6 : 1 } },
+        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, familyName),
+        h('span', { style: { fontVariantNumeric: 'tabular-nums' } }, value),
+        miniBuckets.length ? h('span', { 'aria-hidden': true, style: { display: 'grid', gap: miniBuckets.length <= 2 ? '3px' : '2px' } }, ...miniBuckets.map((bucket, index) => h('span', { key: index }, remainingBar(bucket, true, stale, familyName + ' ' + windowName(bucket) + '剩余额度', miniHeight)))) : null)
     }
 
     /** 给 promise 加超时：Host 侧异常时界面也要落到可读错误，而不是永远 pending。 */
