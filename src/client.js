@@ -94,18 +94,27 @@ window.__ModuleLoader__.load({
           '模型目录还没有可用模型，发一次对话后再来管理。')
       }
       const hidden = rows.filter((row) => overrideFor(overrides, row.id).enabled === false).length
-      return h('div', { style: { display: 'grid', gap: '8px' } },
-        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } }, ...rows.map((row) => {
-          const isHidden = overrideFor(overrides, row.id).enabled === false
-          const title = row.id + (row.inCatalog ? '' : ' · 不在当前目录')
-          return h('button', {
-            key: row.id, type: 'button', title, disabled,
-            'aria-pressed': !isHidden,
-            onClick: () => onEdit(row.id, { enabled: isHidden }),
-            style: { ...ACTION, padding: '3px 9px', borderRadius: '99px', fontSize: '11px', minHeight: '27px',
-              ...(isHidden ? { opacity: .45, textDecoration: 'line-through' } : {}) },
-          }, row.name)
-        })),
+      const families = [
+        ...GROUPS.map((group) => ({ ...group, rows: rows.filter((row) => modelGroup(row.id) === group.key) })),
+        { key: 'other', name: '其它', rows: rows.filter((row) => modelGroup(row.id) === undefined) },
+      ].filter((group) => group.rows.length > 0)
+      const chips = (list) => h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } }, ...list.map((row) => {
+        const isHidden = overrideFor(overrides, row.id).enabled === false
+        const title = row.id + (row.inCatalog ? '' : ' · 不在当前目录')
+        return h('button', {
+          key: row.id, type: 'button', title, disabled,
+          'aria-pressed': !isHidden,
+          onClick: () => onEdit(row.id, { enabled: isHidden }),
+          style: { ...ACTION, padding: '3px 9px', borderRadius: '99px', fontSize: '11px', minHeight: '27px',
+            ...(isHidden ? { opacity: .45, textDecoration: 'line-through' } : {}) },
+        }, row.name)
+      }))
+      return h('div', { style: { display: 'grid', gap: '10px' } },
+        ...families.map((family) => h('section', { key: family.key, 'aria-label': family.name + ' 模型' },
+          h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '5px' } },
+            h('strong', { style: { fontSize: '12px' } }, family.name),
+            h('span', { style: { fontSize: '11px' } }, String(family.rows.length))),
+          chips(family.rows))),
         h('span', { style: { fontSize: '11px', lineHeight: 1.5 } },
           '点击切换显示 / 隐藏；关闭的模型不在模型选择器中列出，进行中的会话不受影响。'),
         hidden === rows.length

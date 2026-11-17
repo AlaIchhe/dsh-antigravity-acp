@@ -4,6 +4,10 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.1.46 · 2026-11-17
+
+- **模型按家族分组**：模型标签按 Gemini / Claude / GPT / Argon / 其它分组展示，仍只做显示 / 隐藏切换。
+
 ## 0.1.45 · 2026-11-17
 
 - **模型列表改为 dsh-agy-link 式标签**：模型以可点击标签展示，点击切换显示 / 隐藏；移除搜索、筛选、批量启停、逐模型思考档位 / 显示名 / 官方 ID 编辑器。`modelOverrides` 里已有的档位与映射仍按配置生效，且不会再被 UI 规范化丢掉 `xhigh`。
