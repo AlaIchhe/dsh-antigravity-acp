@@ -320,7 +320,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 单个账号的额度块：手动拉取，失败保留旧快照并标缓存。
+     * 单个账号的额度块：挂载时自动读取，失败保留旧快照并标缓存。
      * 用 `readQuota.readAccount`（存在时）避免把非当前账号的额度广播给药丸。
      */
     function AccountQuota({ readQuota, source, account }) {
@@ -331,13 +331,13 @@ window.__ModuleLoader__.load({
       const pull = (force) => readQuota?.readAccount
         ? readQuota.readAccount(force, source, account.id)
         : readQuota?.(force, source, undefined, account.id)
-      const load = async () => {
+      const load = async (force = true) => {
         if (!pull || pending.current) return
         pending.current = true
         const current = ++version.current
         setRefreshing(true)
         try {
-          const value = await pull(true)
+          const value = await pull(force)
           if (current === version.current) setData(value)
         } catch (error) {
           if (current === version.current) {
@@ -350,13 +350,17 @@ window.__ModuleLoader__.load({
           if (current === version.current) { pending.current = false; setRefreshing(false) }
         }
       }
-      React.useEffect(() => () => { ++version.current }, [])
+      React.useEffect(() => {
+        void load(false)
+        return () => { ++version.current }
+        // 账号切换 / 服务变化时重读；额度缓存由 Host 按账号隔离，打开面板不会重复打上游。
+      }, [account.id, source, readQuota])
       return h('div', { style: { display: 'grid', gap: '8px', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(128,128,128,.12)' } },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
           h('strong', { style: { fontSize: '12px' } }, '套餐额度'),
           data?.plan ? h('span', { style: { fontSize: '12px' } }, data.plan) : null,
           h('span', { style: { flex: 1 } }),
-          h('button', { type: 'button', style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' }, disabled: !readQuota || refreshing, 'aria-busy': refreshing || undefined, 'aria-label': '拉取额度 ' + account.alias, onClick: load }, refreshing ? '正在拉取…' : '拉取额度')),
+          refreshing ? h('span', { role: 'status', style: { fontSize: '11px' } }, '读取中…') : null),
         data
           ? h('div', { style: { display: 'grid', gap: '5px' } },
             CompactQuotaRows({ data }),
@@ -370,7 +374,9 @@ window.__ModuleLoader__.load({
             h('details', { style: { marginTop: '2px' } },
               h('summary', { style: { fontSize: '11px', cursor: 'pointer' } }, '详情'),
               h('div', { style: { marginTop: '6px' } }, QuotaDetails({ data, refreshing, showHeader: false, showCredits: false }))))
-          : h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, refreshing ? '正在读取…' : '尚未查询'))
+          : data?.status === 'error'
+            ? h('p', { role: 'alert', style: { margin: 0, fontSize: '12px', color: '#ef4444', overflowWrap: 'anywhere' } }, data.error?.message ?? '额度读取失败')
+            : h('p', { role: 'status', style: { margin: 0, fontSize: '12px' } }, refreshing ? '正在读取…' : '尚未查询'))
     }
 
     /** 登录流程提示：等待时给出授权链接与取消，完成/失败只显示结果。 */

@@ -405,10 +405,9 @@ describe('settings card with real React state and effects', () => {
     })
     const { renderer } = await mount(service.remote, control, readQuota)
     expect(button(renderer, '连接 / 登录 ACP')).toBeDefined()
-    expect(button(renderer, '拉取额度 主账号（系统登录）')).toBeDefined()
-    expect(renderedText(renderer)).toContain('尚未查询')
-    await act(async () => { await button(renderer, '拉取额度 主账号（系统登录）').props.onClick() })
-    expect(readQuota.readAccount).toHaveBeenCalledWith(true, 'antigravity-acp', 'primary')
+    await act(async () => {})
+    expect(readQuota.readAccount).toHaveBeenCalledWith(false, 'antigravity-acp', 'primary')
+    expect(renderer.root.findAll((node) => node.type === 'button' && node.children.join('') === '拉取额度')).toHaveLength(0)
     expect(renderedText(renderer)).toContain('73%')
     expect(renderedText(renderer)).toContain('示例套餐')
     // 连接与额度合并；高级页并入账号页后只剩「账号 / 模型」。

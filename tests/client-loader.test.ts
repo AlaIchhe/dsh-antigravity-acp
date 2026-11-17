@@ -252,7 +252,7 @@ describe('browser client module', () => {
     expect(control).toHaveBeenCalledWith('account', { action: 'login' })
     expect(control).toHaveBeenCalledWith('account', { action: 'warmup' })
     expect(control).toHaveBeenCalledWith('models', { force: true })
-    expect(readQuota).not.toHaveBeenCalled()
+    expect(readQuota).toHaveBeenCalled()
     expect(texts(tree).join(' ')).not.toContain('AI Credits 余额')
   })
 
@@ -277,8 +277,6 @@ describe('browser client module', () => {
     expect(tabs.find((item) => texts(item).join('') === '账号')?.props['aria-selected']).toBe(true)
     expect(text).toContain('添加账号')
     expect(text).toContain('连接 / 登录 ACP')
-    expect(elements(tree).some((item) => item.props['aria-label'] === '拉取额度 主账号（系统登录）')).toBe(true)
-    expect(text).toContain('尚未查询')
     // 默认模型由 DSH 自己的模型选择器负责，设置页不再重复维护。
     expect(text).not.toContain('默认模型')
     expect(text).not.toContain('套餐额度管理')

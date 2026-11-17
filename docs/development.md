@@ -72,7 +72,7 @@ npm pack
 | 多账号 | 账号持久化 / 坏文件回退 / 跨目录记录拒绝；系统账号不可删除、不可面板重登；真实 loopback OAuth 回调（state 不匹配不消费流程）、取消清理暂存目录、换码失败与登录后自动激活；隔离 HOME 的 Linux D-Bus / Windows USERPROFILE / Unix HOME 覆盖；ACP 启动按账号 id 与登录代际回收旧链路；额度缓存与在途请求按账号隔离；不触真实 Google 账户 |
 | 面板 OAuth | PKCE / authorize URL 参数、授权码换 token、userinfo 邮箱、CLI token 文件形态与 0600、ACP 凭据文件直写；授权 URL 只含 state / challenge，不下发 code 或 token；测试使用 127.0.0.1 与假 fetch，不代表真实 Google 可达性 |
 | 无 CLI 授权闭环 | 不存在的 CLI 文件 → 实际 OAuth/PKCE → 生产监听器随机测试端口的真实 HTTP 回调 → 模拟 Google 换码/项目 → 真实临时 store → 真实适配器目录 → 重建读取；拒绝/缺码/过期/端口冲突/项目及保存失败/取消后可重试 |
-| 设置页 UX | 精简首屏、无修改时隐藏保存区、当前账户、紧凑模型列表、搜索/筛选/批量启停与完整详情、折叠的会话分组；未保存计数/撤销/只读/冲突，取消可用性、授权链接/阶段；手动额度、实际路由家族、账户切换及旧广播、共享刷新收尾 |
+| 设置页 UX | 精简首屏、无修改时隐藏保存区、当前账户、紧凑模型列表、搜索/筛选/批量启停与完整详情、折叠的会话分组；未保存计数/撤销/只读/冲突，取消可用性、授权链接/阶段；自动额度、实际路由家族、账户切换及旧广播、共享刷新收尾 |
 | 浏览器布局 | 已注册 Chrome + 既有 Playwright 1.63.0，离线真实 Client 静态夹具；320/390/1280 宽度、深浅主题及顶部/中部/底部共 36 项检查，保存栏可见且无横向溢出；静态布局不替代桌面实例验收 |
 | 桌面注册契约 | 核对当前桌面分发包内 Core 0.2.1-rc.5 / Cordis 4.0.5 的 Typert 注册实现；使用该包实际依赖隔离导入构建产物，真实 Context 中只出现一个 package-face，provider 注册生效，卸载后路由和 ready 状态清理。未连接当前运行中的 Host 或真实账户 |
 | 代理（出网） | 合成依赖、动态变更与清空、不打断旧响应、卸载释放、失败不直连、运行期地址变坏时按 Promise 拒绝、装载期非法地址不阻断插件、本地 SOCKS 测试；不是 Google 网络可达性保证 |
@@ -91,11 +91,11 @@ npm pack
 node scripts/preview-ui.mjs
 ```
 
-输出 `.local-preview/quota-ui.html`，以及有独立滚动容器的 `.local-preview/settings-ux.html`。覆盖额度药丸、账号页（账号卡片 + 逐账号额度 + 连接操作）、模型页、常驻保存栏与手动额度；使用真实 Client 和**模拟数据 / hooks**生成静态 HTML，按钮不执行真实操作。状态交互由 `tests/client-interaction.test.ts` 的 React 18 renderer 覆盖，布局另由离线浏览器核验。
+输出 `.local-preview/quota-ui.html`，以及有独立滚动容器的 `.local-preview/settings-ux.html`。覆盖额度药丸、账号页（账号卡片 + 逐账号自动额度 + 连接操作）、模型页、常驻保存栏与自动额度；使用真实 Client 和**模拟数据 / hooks**生成静态 HTML，按钮不执行真实操作。状态交互由 `tests/client-interaction.test.ts` 的 React 18 renderer 覆盖，布局另由离线浏览器核验。
 
 ### 本次改动的补充验证
 
-2026-11-17 的「账号」页合并与多账号通过 `npm run check`：类型检查、**38 个文件 / 688 项测试**与构建。新增覆盖账号页默认选中且只剩「账号 / 模型」两个分页、连接操作与逐账号「拉取额度」同页可用、添加账号的授权链接 / 取消 / 完成后自动切换、切换与两段确认删除、按账号额度缓存隔离、隔离 HOME 环境、ACP 账号切换回收链路，以及面板 OAuth 的真实 loopback 回调与 token 落盘。`node scripts/preview-ui.mjs` 重新生成了 `.local-preview/quota-ui.html` 与 `.local-preview/settings-ux.html`，离线预览确认账号卡片、额度与状态布局在 390 / 760px 下无横向溢出。该验证仍是隔离回归与静态夹具：OAuth 使用假 Google 响应，未在运行中的 Desktop GUI 或真实 Google 账户上重新验收。
+2026-11-17 的「账号」页合并与多账号通过 `npm run check`：类型检查、**38 个文件 / 688 项测试**与构建。新增覆盖账号页默认选中且只剩「账号 / 模型」两个分页、连接操作与逐账号自动额度同页可用、添加账号的授权链接 / 取消 / 完成后自动切换、切换与两段确认删除、按账号额度缓存隔离、隔离 HOME 环境、ACP 账号切换回收链路，以及面板 OAuth 的真实 loopback 回调与 token 落盘。`node scripts/preview-ui.mjs` 重新生成了 `.local-preview/quota-ui.html` 与 `.local-preview/settings-ux.html`，离线预览确认账号卡片、额度与状态布局在 390 / 760px 下无横向溢出。该验证仍是隔离回归与静态夹具：OAuth 使用假 Google 响应，未在运行中的 Desktop GUI 或真实 Google 账户上重新验收。
 
 2026-10-30 的可靠性加固通过类型检查、**38 个文件 / 658 项测试**与构建。新增覆盖：额度 HTTP 请求超时折叠为可读错误（不留下永不结束的在途 promise）、401/403 按状态码而非错误文案触发一次换发重试、OAuth 元数据多份时按出现顺序配对、非法代理不再阻断插件装载（告警留痕且设置页仍可修正，启动时转成 `AGY_INVALID_PROXY`）、运行期代理地址变坏时按 Promise 契约拒绝、恢复启动失败归还磁盘 claim、中止错误码统一为 `AGY_ABORTED`、MCP 桥 Bearer 头改常数时间比较、zip 条目数与解压大小上限（含中央目录谎报大小时被拒）、单条畸形 JSON-RPC 帧只丢弃留痕而不再判死链路、带 id 的畸形响应立即拒绝而不是等满超时、留痕回调自身抛错不关链路、额度超时不足 1 秒报毫秒且主动中止与超时分开、非正数超时配置回落默认预算。
 
