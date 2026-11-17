@@ -20,7 +20,6 @@
  */
 import type { ContentBlock, TextContent } from '@agentclientprotocol/sdk'
 import type { RequestMessage, ToolSchema } from '@deepseek-ai/dsh-llm'
-import { LlmError } from '@deepseek-ai/dsh-llm'
 import { renderToolSignatures } from './tool-args.js'
 
 /** 消息信封的起始标签前缀（后跟 `role="…"` 与 `>`）。 */
@@ -225,17 +224,4 @@ function parseMessageEnvelopes(text: string): TranscriptEntry[] {
     cursor = bodyEnd + MESSAGE_CLOSE.length
   }
   return entries
-}
-
-/** Legacy text-only helper; native image results use buildToolResultContent. */
-export function renderToolResultText(blocks: readonly { type: string; [key: string]: unknown }[]): string {
-  const parts: string[] = []
-  for (const block of blocks) {
-    if (block.type === 'text' && typeof block.text === 'string') {
-      parts.push(block.text)
-      continue
-    }
-    throw new LlmError('非文本工具结果必须使用原生内容通道，不能序列化为 JSON 文本', 'AGY_UNSUPPORTED_CONTENT')
-  }
-  return parts.join('\n')
 }

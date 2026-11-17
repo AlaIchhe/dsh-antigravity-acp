@@ -205,7 +205,6 @@ describe('resolveOAuthClient 的二进制扫描', () => {
       const visited: string[] = []
       const client = await resolveOAuthClient({
         env: { AGY_ACP_HOME: installRoot, AGY_CLI_BIN: explicitCli, DSH_HOME: dataCache },
-        cacheDir: dataCache,
         homedir: () => root,
         readFileImpl: async (path) => { visited.push(path); return path === join(extractDir, serverName) ? CLIENT_TEXT : 'no metadata' },
       })

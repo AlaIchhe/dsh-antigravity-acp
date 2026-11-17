@@ -25,8 +25,3 @@ export const ACCOUNTS_FILE = 'accounts.json'
 export function accountsFilePath(baseDir: string): string {
   return join(baseDir, ACCOUNTS_FILE)
 }
-
-/** 隔离账号的 HOME 目录（id 已在 manager 侧校验过字符集）。 */
-export function accountDir(baseDir: string, id: string): string {
-  return join(baseDir, id)
-}

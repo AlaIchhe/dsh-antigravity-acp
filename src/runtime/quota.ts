@@ -127,8 +127,7 @@ export interface QuotaDeps {
   env?: Readonly<Record<string, string | undefined>>
   now?: () => number
   homedir?: () => string
-  cacheDir?: string
-  /** 可执行文件安装根；与模型/额度的数据 cacheDir 分开。 */
+  /** 可执行文件安装根；与模型/额度数据分开。 */
   installRoot?: string
   /** 设置中显式选择的官方 CLI 路径，优先于环境变量和 PATH。 */
   cliPath?: string

@@ -23,14 +23,14 @@ import type { CliRun } from '../runtime/agy-cli.js'
 import type { SettingsControl, AccountSnapshot, ModelSnapshot } from './control.js'
 import { redactSensitiveText } from '../runtime/redact.js'
 import { ACCOUNT_ADMIN_ACTIONS } from '../accounts/types.js'
-import type { AccountAdminAction, AccountAdminRequest, AccountsSnapshot } from '../accounts/types.js'
+import type { AccountAdminAction, AccountAdminRequest } from '../accounts/types.js'
 import type { AccountsManager } from '../accounts/manager.js'
 
 export const PACKAGE_NAME = 'dsh-bundle-antigravity-acp'
 /** Typert service / wire namespace。 */
 export const AGY_QUOTA_SERVICE = 'agyQuota'
 
-/** `read` 的请求体：`force` 绕过缓存；`source` 防止旧模型误领新模式的额度。 */
+/** `read` 的请求体：`force` 绕过缓存；`source` 标记调用来源。 */
 export interface AgYQuotaRequest {
   force?: boolean
   source?: 'acp'
@@ -199,7 +199,7 @@ export interface AgYQuotaServiceOptions {
   /**
    * 官方 CLI 只读取数通道（`agy -p /usage` 与 `agy -p /credits`）。
    * 仅当 {@link cliQuotaEnabled} 返回 true 时才会被使用；缺省 / 关闭时
-   * 任何模式都不 spawn agy（套餐额度走内置直连，AI Credits 不查询）。
+   * 默认不 spawn agy（套餐额度走内置直连，AI Credits 不查询）。
    */
   cli?: { run: CliRun; cliPath: string }
   /** Re-detect installations without restarting the host. */

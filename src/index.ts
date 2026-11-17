@@ -9,7 +9,7 @@
  */
 import { createReadStream, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-llm'
@@ -34,7 +34,7 @@ import {
   defaultAgentArgs,
 } from './runtime/binary.js'
 import type { RuntimeDirectoryLease } from './runtime/binary.js'
-import { ProxyConfigError, resolveHttpsProxy, resolveProxy } from './runtime/proxy-env.js'
+import { ProxyConfigError, resolveProxy } from './runtime/proxy-env.js'
 import { createLiveProxiedFetch, createProxiedFetch } from './runtime/proxied-fetch.js'
 import type { ResolvedProxy } from './runtime/proxy-env.js'
 import { ensureAcpCredentials, writeAcpCredentialFiles } from './runtime/credentials.js'
@@ -766,7 +766,7 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
     control,
     accounts,
     // HTTP 回退路径要从对应版本的缓存二进制里提取 OAuth client 元数据。
-    deps: { cacheDir, acpVersion, cliPath: config.agyCliPath, fetchImpl: pluginFetch },
+    deps: { acpVersion, cliPath: config.agyCliPath, fetchImpl: pluginFetch },
     cliQuotaEnabled: () => config.cliQuotaEnabled === true,
     resolveCli: () => { const cliPath = findCli(); return cliPath ? { run: cliRun, cliPath } : undefined },
     modelTarget: (model) => config.modelOverrides?.[model]?.target?.trim() || model,

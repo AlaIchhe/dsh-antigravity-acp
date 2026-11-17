@@ -20,7 +20,7 @@ import type {
   RequestMessage,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import type { AnyRequest, McpServer as AcpMcpServer, SessionConfigOption, SessionNotification, Usage } from '@agentclientprotocol/sdk'
+import type { AnyRequest, McpServer as AcpMcpServer, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk'
 import type { AgentLink, AgentLinkHandlers } from '../protocol/agent-link.js'
 import { BRIDGE_MCP_SERVER_NAME, McpToolBridge } from '../bridge/mcp-bridge.js'
 import type { BridgeToolResult } from '../bridge/mcp-bridge.js'
@@ -60,11 +60,6 @@ export const AGY_PROVIDER_ID = 'antigravity-acp'
  * session/set_config_option，沿用官方会话默认模型。
  */
 export const AGY_PLACEHOLDER_MODEL_ID = 'server-default'
-
-/**
- * @deprecated 兼容旧导出的错误码；temperature / stop 现在只警告并忽略，不再抛此码。
- */
-export const AGY_UNSUPPORTED_OPTION = 'UNSUPPORTED_OPTION'
 
 /** 本 adapter 的其余原创错误码（AGY_* 体系）。 */
 export const AGY_ADAPTER_ERROR = {
