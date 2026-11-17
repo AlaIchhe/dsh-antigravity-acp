@@ -4,6 +4,10 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 未发布
+
+- **`mcpCapabilities` 缺省不再判为「不支持」**：ACP v1 没有要求 agent 声明该字段，而官方 `agy acp`（Antigravity CLI 1.5.x）正是这种情况——`initialize` 不带 `mcpCapabilities`，却会在 `session/new` 里正常接受 `http` `mcpServers`（实测拿到注册后立刻对桥做 `server/discover` → `initialize` → `tools/list`）。原实现按 `!== true` 判死，凡是带工具的新会话都直接抛 `UNSUPPORTED_CAPABILITY`「ACP 服务端未声明 HTTP MCP 支持，无法安全接入 DSH 工具」，把官方 CLI 这条接入路径整条堵死。现在只在服务端**明确声明** `http` / `sse` 为 `false` 时拒绝；图像等其它能力声明的口径不变。
+
 ## 0.1.38 · 2026-11-12
 
 - **无档位模型不再产出非法元数据**：目录里没有思考强度变体的家族 id 之前返回 `reasoning: { efforts: [] }`，宿主把空数组判为 `INVALID_MODEL_REASONING` 并让该模型完全不可用；现在改为省略 `reasoning`（不支持档位就是不声明菜单）。
