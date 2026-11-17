@@ -4,7 +4,7 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
-## 未发布 · 2026-11-17
+## 0.1.52 · 2026-11-17
 
 - **用上 agent 声明的更多 ACP 能力**：`systemPrompt.append` 时 system prompt 走 `session/new` 的 `_meta`（真机实测 1.5.10 生效，prompt 里不再重复包 `<dsh-system>`）；跨进程恢复优先 `session/resume`（不重放历史），没有该能力才退回 `session/load`；新增配置 `agentMode`，只在会话的 `availableModes` 里声明过时才 `session/set_mode`（可设 `plan`）。
 - **修复上下文占用被算成窗口数倍**：ACP `PromptResponse.usage` 的字段是**整段会话累计值**（`inputTokens` = Total input tokens across all turns、`cachedReadTokens` = Total cache read tokens），插件之前把它当本轮 prompt 用量交给宿主，而宿主上下文压力 = `input + cacheRead + cacheWrite`，于是短会话也会显示 60%+，长会话直接冲到数倍窗口被截到 100%（实测同一会话出现 360% / 411%）。现在占用只认 `usage_update.used`（当前上下文 token），并按 `usage_update.size` 夹住上限；没有 `usage_update` 时不上报（宁可没有也不报累计值）。
