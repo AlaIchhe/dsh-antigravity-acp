@@ -4,7 +4,7 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
-## 未发布 · 2026-11-17
+## 0.1.49 · 2026-11-17
 
 - **修复设置页模型列表按思考档位分行**：设置页的模型列表会额外合并官方 CLI 的原始清单，而那份清单是档位化的（`claude-opus-5-5-high`、“Claude Opus 5.5 (High)”），于是同一个模型按档位显示成多个标签。现在 CLI 行先折叠成家族再合并（ACP 观测到的条目优先），模型页只剩模型；`gpt-oss-120b` 仍按既有约定排除。新增 `mergeModelRows` 与 3 项回归测试。
 
