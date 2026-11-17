@@ -114,13 +114,13 @@ node scripts/preview-ui.mjs
 
 ## 维护与发布到 npm
 
-现有工作流为 [Publish package](https://github.com/KouzakiUmi/dsh-antigravity-acp/actions/workflows/publish.yml)，定义见 [publish.yml](https://github.com/KouzakiUmi/dsh-antigravity-acp/blob/main/.github/workflows/publish.yml)。它仅由 **workflow_dispatch 手动触发**：推送 `main` 或创建 tag 本身不会发布。
+现有工作流为 [Publish package](https://github.com/AlaIchhe/dsh-antigravity-acp/actions/workflows/publish.yml)，定义见 [publish.yml](https://github.com/AlaIchhe/dsh-antigravity-acp/blob/main/.github/workflows/publish.yml)。由 **push `v*` tag** 或 **workflow_dispatch** 触发；tag 名必须与 `package.json` 版本一致，否则在发布前失败。
 
 流程：
 
 1. 核对版本、锁文件、变更范围、文档与测试；确保目标版本未发布。
 2. 提交并推送到目标分支，确认远端 SHA 与已验证内容一致。
-3. 手动在对应 ref 运行工作流。现有任务使用 GitHub-hosted Ubuntu、Node 24，执行 `npm ci --ignore-scripts`、`npm run check`，再 `npm publish --provenance --access public`。
+3. 推送 `v<version>` tag（或在对应 ref 手动运行工作流）。现有任务使用 GitHub-hosted Ubuntu、Node 24，校验 tag 与版本一致，执行 `npm ci --ignore-scripts`、`npm run check`，再用 `NPM_TOKEN` 与 OIDC provenance 发布。
 4. 观察这一次运行的 SHA、检查结果与 publish 步骤。失败时先判断是否已经产生远端副作用，不盲目重跑同一版本。
 5. 在 registry 核对版本、dist-tag、tarball、仓库来源和 provenance；仅 workflow 返回成功还不足以宣称用户已装上该版本。
 
@@ -131,7 +131,7 @@ npm view dsh-bundle-antigravity-acp version dist-tags --json
 npm view dsh-bundle-antigravity-acp@0.1.39 version gitHead dist --json
 ```
 
-发布使用 npm trusted publishing 的 GitHub Actions OIDC，工作流声明 `id-token: write`，不应为本流程保存长期 npm 写入 token。npm 上必须已有与仓库 / 工作流匹配的 trusted publisher 授权；本地 `npm whoami` 不能验证 CI 的 OIDC 权限。当前流程不创建 GitHub Release，也不安装 / 升级任何本机 Profile。
+工作流声明 `id-token: write` 生成 provenance；npm 认证优先使用仓库 secret `NPM_TOKEN`（当前发布账号的 granular token）。信任发布（trusted publishing）仍是更长期的方向，但本次绑定以 secret 为准：npm 上若以后配置了与 `AlaIchhe/dsh-antigravity-acp` + `publish.yml` 匹配的 trusted publisher，可以在确认 OIDC 可用后移除 secret。当前流程不创建 GitHub Release，也不安装 / 升级任何本机 Profile。
 
 ## 文档来源与已知覆盖缺口
 
