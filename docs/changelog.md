@@ -4,7 +4,7 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
-## 未发布
+## 0.1.41 · 2026-11-17
 
 - **系统代理自动检测**：`proxyUrl` 未配置时依次继承 Host 环境变量、Windows 注册表、macOS `scutil`、Linux GNOME 的代理设置；结果缓存 5 分钟。设置页不再显示「出网代理」和「官方 CLI 路径」——前者有配置/环境/系统检测兜底，后者由 `agyCliCandidates` 自动定位。
 - **代理模式残留清理**：删除 `acpEnabled` / `generationMode` / `acpOnly` / `modeTag`、无引用的导出与客户端代理账户 codec；高级页并入账号页，分页减为「账号 / 模型」。
