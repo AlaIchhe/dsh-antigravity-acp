@@ -72,6 +72,8 @@ export const AGY_ADAPTER_ERROR = {
   MODEL_SELECTION_MISMATCH: 'AGY_MODEL_SELECTION_MISMATCH',
   /** 历史无法接上（会话映射失效 / agent 不支持 resume）：按约定不回退重放。 */
   SESSION_UNRECOVERABLE: 'AGY_SESSION_UNRECOVERABLE',
+  /** 请求的思考档位不在 agent 声明的选项里：按约定不做就近收敛。 */
+  EFFORT_UNSUPPORTED: 'AGY_EFFORT_UNSUPPORTED',
 } as const
 
 /** MCP 桥与回合的可调参数（由 index.ts 从插件配置注入）。 */
@@ -1883,8 +1885,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       || (this.#sessionModelDeclared.has(sessionId) && fresh.currentValue === desired)
     if (settled) return
     this.#log?.info(
-      `antigravity-acp: 档位路由 dsh=${model} effort=${effortId} → configId=${fresh.configId} value=${desired}` +
-        `${desired === effortId ? '' : '（已收敛到 agent 声明的档位）'}`,
+      `antigravity-acp: 档位路由 dsh=${model} effort=${effortId} → configId=${fresh.configId} value=${desired}`,
     )
     const response = await this.#setConfigOption(link, sessionId, fresh.configId, desired, signal)
     this.#rememberSessionThoughtValue(sessionId, desired)
@@ -2008,27 +2009,17 @@ function reasoningsFrom(
 }
 
 /**
- * 把请求的档位收敛到 agent 实际声明的选项：完全匹配优先，否则按强弱顺序取最近
- * 的一档；都不在已知顺序里时退到声明列表的第一项。声明为空返回 undefined。
+ * 请求的档位必须与 agent 声明的选项完全一致。没有就近收敛、没有退到第一项：
+ * 请求了不存在的档位就报错，让调用方换档位，而不是替它猜。
  */
 function clampEffort(requested: string, options: readonly { value: string }[]): string | undefined {
   const values = options.map((option) => option.value)
   if (values.length === 0) return undefined
   if (values.includes(requested)) return requested
-  const wanted = (EFFORT_ORDER as readonly string[]).indexOf(requested)
-  if (wanted === -1) return values[0]
-  let best: string | undefined
-  let bestDistance = Number.POSITIVE_INFINITY
-  for (const value of values) {
-    const index = (EFFORT_ORDER as readonly string[]).indexOf(value)
-    if (index === -1) continue
-    const distance = Math.abs(index - wanted)
-    if (distance < bestDistance) {
-      best = value
-      bestDistance = distance
-    }
-  }
-  return best ?? values[0]
+  throw new LlmError(
+    `agent 未声明思考档位 ${requested}（可选：${values.join(' / ')}）。已禁用就近收敛：请改选一个已声明的档位。`,
+    AGY_ADAPTER_ERROR.EFFORT_UNSUPPORTED,
+  )
 }
 
 /**

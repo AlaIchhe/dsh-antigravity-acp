@@ -25,7 +25,6 @@ import type { AgentLinkHandlers } from './protocol/agent-link.js'
 import {
   AGY_BINARY_ERROR,
   cleanupStaleRuntimeDirectories,
-  cleanupStaleStagingDirs,
   DEFAULT_ACP_SERVER_VERSION,
   ensureAgentBinary,
   resolveCacheDir,
@@ -290,11 +289,8 @@ async function startAcpRuntime(
   try {
     const resolution = await ensureAgentBinary({
       binaryPath: config.binaryPath,
-      autoDownload: config.autoDownload,
       version: config.acpVersion,
       signal: startupSignal,
-      // 下载只允许 dl.google.com 且不跟随重定向：包一层只换传输，不放宽这两条。
-      fetchImpl: (url, init) => pluginFetch(url, init) as Promise<Response>,
     })
     // Windows：映像文件若带 Low 强制完整性标签（例如装在带该标签的 DSH home 下），
     // 官方进程会被降成 LOW，受 MIC「禁止向上写」约束而写不进 ~/.gemini/antigravity-acp，
@@ -527,7 +523,6 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
 
   // 只回收带本插件所有权且已确认退出的运行目录；未知 / 活跃目录不按年龄删除。
   void cleanupStaleRuntimeDirectories().catch(() => 0)
-  void cleanupStaleStagingDirs(resolveInstallRoot()).catch(() => 0)
 
   // 官方 agy CLI 的只读取数通道（额度 /usage 与模型清单 models）。2026-10-16
   // 用户授权「不 wrap agy CLI」**仅限只读取数用途**：只跑这两个只读命令，

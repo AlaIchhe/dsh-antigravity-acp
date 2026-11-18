@@ -60,35 +60,32 @@ export function normalizeAccounts(baseDir: string, raw: unknown): AccountRecord[
 }
 
 function readFile(file: string): AccountsFile | undefined {
+  let raw: string
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-    const value = parsed as Record<string, unknown>
-    if (!Array.isArray(value.accounts)) return undefined
-    return {
-      version: FILE_VERSION,
-      accounts: value.accounts as AccountRecord[],
-      ...(typeof value.activeAccountId === 'string' ? { activeAccountId: value.activeAccountId } : {}),
-    }
-  } catch {
-    return undefined
+    raw = readFileSync(file, 'utf8')
+  } catch (error) {
+    // 没有文件就是首次运行；其他读取错误直接抛出，不装作「还没有账号」。
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  const parsed = JSON.parse(raw) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`账号文件结构无效（不是对象）: ${file}`)
+  }
+  const value = parsed as Record<string, unknown>
+  if (!Array.isArray(value.accounts)) throw new Error(`账号文件缺少 accounts 数组: ${file}`)
+  return {
+    version: FILE_VERSION,
+    accounts: value.accounts as AccountRecord[],
+    ...(typeof value.activeAccountId === 'string' ? { activeAccountId: value.activeAccountId } : {}),
   }
 }
 
-/** 读账号列表；损坏时保留取证副本并回退到上一次干净快照。 */
+/** 读账号列表；没有文件即首次运行，文件损坏则直接抛错（没有 last-good 回退）。 */
 export function loadAccountsFile(baseDir: string): AccountsFile {
   const file = accountsFilePath(baseDir)
   const primary = readFile(file)
-  if (primary) {
-    return { ...primary, accounts: normalizeAccounts(baseDir, primary) }
-  }
-  if (existsSync(file)) {
-    try { copyFileSync(file, `${file}.corrupt-${Date.now()}`) } catch { /* 取证失败不影响回退 */ }
-  }
-  const lastGood = readFile(`${file}.last-good`)
-  if (lastGood) {
-    return { ...lastGood, accounts: normalizeAccounts(baseDir, lastGood) }
-  }
+  if (primary) return { ...primary, accounts: normalizeAccounts(baseDir, primary) }
   return { version: FILE_VERSION, accounts: [] }
 }
 
@@ -97,21 +94,9 @@ function writeAtomic(file: string, body: string): void {
   try {
     writeFileSync(temp, body, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
     JSON.parse(readFileSync(temp, 'utf8'))
-    if (existsSync(file)) {
-      try { copyFileSync(file, `${file}.last-good`) } catch { /* last-good 是尽力而为 */ }
-    }
-    let lastError: unknown
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        renameSync(temp, file)
-        return
-      } catch (error) {
-        lastError = error
-      }
-    }
-    throw lastError
+    renameSync(temp, file)
   } catch (error) {
-    try { rmSync(temp, { force: true }) } catch { /* best effort */ }
+    try { rmSync(temp, { force: true }) } catch { /* 清理失败不掩盖原始错误 */ }
     throw error
   }
 }

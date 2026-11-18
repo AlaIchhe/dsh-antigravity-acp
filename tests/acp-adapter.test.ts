@@ -996,15 +996,7 @@ describe('模型目录来自 ACP 会话配置', () => {
     ])
   })
 
-  it('thought_level 没声明该档位时就近收敛（xhigh → high），不把未知值发出去', async () => {
-    const harness = createHarness({ configOptions: THOUGHT_CONFIG_OPTIONS })
-    const streaming = collect(harness.adapter.stream(baseOptions({ model: 'claude-opus-5-5', reasoningEffort: 'xhigh' as never })))
-    await waitForRequest(harness.agent, 'session/set_config_option', 2)
-    await harness.agent.reply('session/prompt', { stopReason: 'end_turn' })
-    await streaming
-    const calls = harness.agent.requestsFor('session/set_config_option').map((request) => request.params as { configId: string; value: string })
-    expect(calls.at(-1)).toMatchObject({ configId: 'thought_level', value: 'high' })
-  })
+  
 
   it('切到支持 xhigh 的模型后按新声明的选项发 xhigh', async () => {
     const harness = createHarness({

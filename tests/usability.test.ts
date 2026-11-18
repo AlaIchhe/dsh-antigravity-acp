@@ -7,7 +7,6 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { AnyMessage, Stream } from '@agentclientprotocol/sdk'
 import { AgentLink, AGY_CLIENT_INFO, AGY_LINK_ERROR } from '../src/protocol/agent-link.js'
-import { downloadBinary } from '../src/runtime/binary.js'
 import { ensureAcpCredentials } from '../src/runtime/credentials.js'
 import { createProxiedFetch, matchesBypass } from '../src/runtime/proxied-fetch.js'
 import type { UndiciLike } from '../src/runtime/proxied-fetch.js'
@@ -91,23 +90,6 @@ describe('createProxiedFetch', () => {
   })
 })
 
-describe('downloadBinary 超时与取消', () => {
-  const hang = (_url: string, init: { signal?: AbortSignal }): Promise<never> =>
-    new Promise((_resolve, reject) => {
-      init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
-    })
-
-  it('网络挂住时按超时中止，而不是永远等待', async () => {
-    await expect(downloadBinary('https://dl.google.com/x.zip', { fetchImpl: hang, timeoutMs: 30 })).rejects.toBeDefined()
-  })
-
-  it('调用方 signal（插件卸载）可立即取消下载', async () => {
-    const controller = new AbortController()
-    const pending = downloadBinary('https://dl.google.com/x.zip', { fetchImpl: hang, signal: controller.signal, timeoutMs: 60_000 })
-    controller.abort(new Error('插件已卸载'))
-    await expect(pending).rejects.toThrow('插件已卸载')
-  })
-})
 
 const HOME = '/home/tester'
 const ACP_DIR = join(HOME, '.gemini', 'antigravity-acp')

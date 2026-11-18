@@ -381,6 +381,9 @@ export class AgYQuotaService extends TypertRemoteService {
         : 'http（未开启 agy CLI 取数）'
     this._log?.info(`antigravity-acp: 额度取数请求（账号 ${account.id}，force=${request?.force === true}，来源 ${source}）`)
     try {
+      if (cliOn && !cli) {
+        throw new Error('已开启 cliQuotaEnabled 但找不到 agy CLI：请配置 agyCliPath，或关闭该开关（不再回落到 HTTP 取数）')
+      }
       const now = Date.now()
       // 双路 CLI 的完成时间可能不同：本轮时间戳必须一致，且不能早于请求开始。
       const fetchedAt = Math.max(now, entry.at ?? 0, entry.creditsAt ?? 0)

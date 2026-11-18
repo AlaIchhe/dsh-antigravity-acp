@@ -97,116 +97,10 @@ export function defaultAgentArgs(platform: NodeJS.Platform = process.platform): 
   return platform === 'linux' ? [...ACP_DISTRIBUTIONS.linux.defaultArgs] : []
 }
 
-/** 拼接官方下载 URL，架构命名与本地 Node 架构名称分开处理。 */
-export function resolveDownloadUrl(
-  platform: AcpPlatform,
-  arch: AcpArch,
-  version: string = DEFAULT_ACP_SERVER_VERSION,
-): string {
-  if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.BLOCKED_URL, 'ACP 版本号格式无效')
-  }
-  const distribution = ACP_DISTRIBUTIONS[platform]
-  const publishedArch = arch === 'aarch64' ? 'arm64' : 'x86_64'
-  return `https://${DOWNLOAD_HOST_WHITELIST}/agy-extensions/releases/${distribution.directory}/agy-acp-server-${version}-${platform}-${publishedArch}.zip`
-}
 
-/** 校验下载 URL：仅 https + 白名单域名，其余一律拒绝。 */
-export function assertDownloadUrl(url: string): URL {
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch (cause) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.BLOCKED_URL, `下载 URL 无法解析: ${url}`, { cause })
-  }
-  if (parsed.protocol !== 'https:') {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.BLOCKED_URL, `仅允许 https 下载，拒绝: ${parsed.protocol}`)
-  }
-  if (parsed.hostname !== DOWNLOAD_HOST_WHITELIST) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.BLOCKED_URL, `仅允许 ${DOWNLOAD_HOST_WHITELIST} 域，拒绝: ${parsed.hostname}`)
-  }
-  return parsed
-}
 
-/** downloadBinary 可注入的最小 HTTP 响应形状（结构化，便于测试伪造）。 */
-export interface HttpResponseLike {
-  ok: boolean
-  status: number
-  arrayBuffer(): Promise<ArrayBuffer>
-  body?: unknown
-}
 
-export type FetchLike = (
-  url: string,
-  init: { redirect: 'manual'; signal?: AbortSignal },
-) => Promise<HttpResponseLike>
 
-/** 执行下载请求并校验安全策略（白名单域名、https、拒绝 3xx 重定向、2xx 状态）。 */
-async function fetchDownloadResponse(
-  url: string,
-  options: { fetchImpl?: FetchLike; signal?: AbortSignal; timeoutMs?: number } = {},
-): Promise<HttpResponseLike> {
-  assertDownloadUrl(url)
-  const doFetch: FetchLike = options.fetchImpl ?? ((url2, init) => fetch(url2, init))
-  // 整体超时：无超时的 fetch 在网络挂住时会让首轮对话永远等下去（连同 single-flight
-  // 汇聚的所有并发回合）。调用方的 signal（卸载取消）与超时任一触发都中止。
-  const timeout = AbortSignal.timeout(options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS)
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
-  const response = await doFetch(url, { redirect: 'manual', signal })
-  if (response.status >= 300 && response.status < 400) {
-    throw new AgyBinaryError(
-      AGY_BINARY_ERROR.REDIRECT_REFUSED,
-      `下载返回重定向 ${response.status}，安全策略拒绝跟随: ${url}`,
-    )
-  }
-  if (!response.ok) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.BAD_STATUS, `下载失败，HTTP ${response.status}: ${url}`)
-  }
-  return response
-}
-
-/**
- * 下载二进制到内存。redirect 显式设为 'manual'，任何 3xx 都视为错误——
- * 官方分发应直链；重定向意味着 URL 失效或被劫持，不跟随。
- */
-export async function downloadBinary(
-  url: string,
-  options: { fetchImpl?: FetchLike; signal?: AbortSignal; timeoutMs?: number } = {},
-): Promise<Uint8Array> {
-  const response = await fetchDownloadResponse(url, options)
-  return new Uint8Array(await response.arrayBuffer())
-}
-
-/**
- * 流式下载二进制并直接写入指定文件路径。
- * 若 response.body 提供可读流则以管道直写，避免将 ~100MB 的 zip 整包载入 V8 堆内存；
- * 若未提供流（如测试用 arrayBuffer 替身）则回退到 arrayBuffer 写入。
- */
-export async function downloadBinaryToFile(
-  url: string,
-  destPath: string,
-  options: { fetchImpl?: FetchLike; signal?: AbortSignal; timeoutMs?: number } = {},
-): Promise<void> {
-  const response = await fetchDownloadResponse(url, options)
-  if (response.body && typeof Readable.fromWeb === 'function') {
-    try {
-      const nodeStream = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
-      await pipeline(nodeStream, createWriteStream(destPath))
-      return
-    } catch (error) {
-      // body 已经被流式读取消费，再调 `response.arrayBuffer()` 只会抛
-      // 「Body is unusable」，把断网/超时/写盘失败的真实原因盖掉。直接上报。
-      throw new AgyBinaryError(
-        AGY_BINARY_ERROR.TRANSFER_FAILED,
-        `下载中断（${url}）：${error instanceof Error ? error.message : String(error)}`,
-        { cause: error },
-      )
-    }
-  }
-  // 没有可读流（测试替身或探针响应）时才走整包读取。
-  const bytes = new Uint8Array(await response.arrayBuffer())
-  await writeFile(destPath, bytes)
-}
 
 /**
  * 校验单个 zip 条目路径，返回规范化的 POSIX 相对路径（目录条目保留尾随 `/`）。
@@ -457,61 +351,9 @@ export async function cleanupStalePyiTempDirs(
 }
 
 /** 下载解压暂存目录前缀。 */
-export const STAGING_DIR_PREFIX = '.staging-'
 /** 判定暂存目录「陈旧」的默认阈值（1 小时）。 */
 export const STAGING_MAX_AGE_MS = 3_600_000
 
-/**
- * 清理下载或解压过程中因强杀/异常中断而残留的陈旧 `.staging-*` 目录。
- * 遍历指定目录自身及其直接子目录（如 `<installRoot>/<version>/.staging-*`）。
- * 仅删除有所有权记录、宿主 PID 已确认死亡且 mtime 超过阈值的目录。
- * 旧版未记录 owner 的目录保留，避免干扰仍在执行的安装。
- */
-export async function cleanupStaleStagingDirs(
-  dir: string,
-  options: { maxAgeMs?: number; now?: () => number; isProcessAlive?: ProcessLiveness } = {},
-): Promise<number> {
-  const maxAgeMs = options.maxAgeMs ?? STAGING_MAX_AGE_MS
-  const now = (options.now ?? Date.now)()
-  let removed = 0
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => undefined)
-  if (!entries) return 0
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    if (entry.name.startsWith(STAGING_DIR_PREFIX)) {
-      const target = join(dir, entry.name)
-      try {
-        const info = await stat(target)
-        const owner = await readDirectoryOwner(target)
-        if (now - info.mtimeMs >= maxAgeMs && owner && await (options.isProcessAlive ?? isProcessAlive)(owner.pid) === false) {
-          await rm(target, { recursive: true, force: true, maxRetries: 2 })
-          removed += 1
-        }
-      } catch {
-        // 忽略删除失败
-      }
-    } else {
-      const subdir = join(dir, entry.name)
-      const subentries = await readdir(subdir, { withFileTypes: true }).catch(() => undefined)
-      if (!subentries) continue
-      for (const sub of subentries) {
-        if (!sub.isDirectory() || !sub.name.startsWith(STAGING_DIR_PREFIX)) continue
-        const subtarget = join(subdir, sub.name)
-        try {
-          const info = await stat(subtarget)
-          const owner = await readDirectoryOwner(subtarget)
-          if (now - info.mtimeMs >= maxAgeMs && owner && await (options.isProcessAlive ?? isProcessAlive)(owner.pid) === false) {
-            await rm(subtarget, { recursive: true, force: true, maxRetries: 2 })
-            removed += 1
-          }
-        } catch {
-          // 忽略删除失败
-        }
-      }
-    }
-  }
-  return removed
-}
 
 /**
  * Node 的 process.platform / process.arch → 下载坐标映射。
@@ -548,135 +390,6 @@ export interface ExtractLimits {
   maxEntryBytes?: number
 }
 
-/** 用 yauzl 把 zip 安全解到 destDir；返回全部已校验的相对条目路径。 */
-export async function extractZipSafely(zipPath: string, destDir: string, limits: ExtractLimits = {}): Promise<readonly string[]> {
-  const maxEntries = limits.maxEntries ?? MAX_EXTRACT_ENTRIES
-  const maxTotalBytes = limits.maxTotalBytes ?? MAX_EXTRACT_BYTES
-  const maxEntryBytes = limits.maxEntryBytes ?? MAX_EXTRACT_ENTRY_BYTES
-  const zip = await new Promise<yauzl.ZipFile>((resolveOpen, rejectOpen) => {
-    yauzl.open(zipPath, { lazyEntries: true, autoClose: true }, (error, file) => {
-      if (error) rejectOpen(new AgyBinaryError(AGY_BINARY_ERROR.ARCHIVE_READ, `无法打开 zip: ${zipPath}`, { cause: error }))
-      else resolveOpen(file!)
-    })
-  })
-  const extracted: string[] = []
-  let entryCount = 0
-  let totalBytes = 0
-  try {
-    for (;;) {
-      const entry = await new Promise<yauzl.Entry | null>((resolveNext, rejectNext) => {
-        // 每次读取只挂一条 entry/error/end 监听，settle 后立即摘除：条目很多时
-        // 累积监听器会触发 MaxListenersExceededWarning，并让旧条目的事件重复结算。
-        let settled = false
-        const cleanup = (): void => {
-          zip.removeListener('entry', onEntry)
-          zip.removeListener('error', onError)
-          zip.removeListener('end', onEnd)
-        }
-        const settleOnce = (run: () => void): void => {
-          if (settled) return
-          settled = true
-          cleanup()
-          run()
-        }
-        const onEntry = (e: yauzl.Entry): void => settleOnce(() => resolveNext(e))
-        // yauzl 自身也会对恶意 fileName 报 error（absolute path / invalid
-        // relative path / invalid characters in fileName）；统一映射为
-        // UNSAFE_ENTRY，与我们的条目校验共用一个错误码。
-        const onError = (error: Error): void => settleOnce(() => {
-          const message = error instanceof Error ? error.message : String(error)
-          const unsafe = /fileName|relative path|absolute path/.test(message)
-          rejectNext(
-            new AgyBinaryError(
-              unsafe ? AGY_BINARY_ERROR.UNSAFE_ENTRY : AGY_BINARY_ERROR.ARCHIVE_READ,
-              `读取 zip 条目失败: ${zipPath}`,
-              { cause: error },
-            ),
-          )
-        })
-        const onEnd = (): void => settleOnce(() => resolveNext(null))
-        zip.on('entry', onEntry)
-        zip.on('error', onError)
-        zip.on('end', onEnd)
-        zip.readEntry()
-      })
-      if (!entry) break
-      // 上限判定先于任何写盘：解压炸弹必须在产生磁盘副作用之前拦住。
-      entryCount += 1
-      if (entryCount > maxEntries) {
-        throw new AgyBinaryError(
-          AGY_BINARY_ERROR.ARCHIVE_TOO_LARGE,
-          `zip 条目数超过上限 ${maxEntries}：${zipPath}`,
-        )
-      }
-      const declared = entry.uncompressedSize
-      if (declared > maxEntryBytes) {
-        throw new AgyBinaryError(
-          AGY_BINARY_ERROR.ARCHIVE_TOO_LARGE,
-          `zip 条目声明大小超过上限 ${maxEntryBytes} 字节：${entry.fileName}`,
-        )
-      }
-      totalBytes += declared
-      if (totalBytes > maxTotalBytes) {
-        throw new AgyBinaryError(
-          AGY_BINARY_ERROR.ARCHIVE_TOO_LARGE,
-          `zip 解压后总大小超过上限 ${maxTotalBytes} 字节：${zipPath}`,
-        )
-      }
-      const safeRelative = validateZipEntryPath(entry.fileName)
-      // 双保险：join 后的绝对路径必须仍限定在 destDir 内。
-      const target = resolve(destDir, safeRelative)
-      if (target !== normalize(destDir) && !target.startsWith(normalize(destDir) + sep)) {
-        throw new AgyBinaryError(AGY_BINARY_ERROR.UNSAFE_ENTRY, `zip 条目逃出解压目录: ${entry.fileName}`)
-      }
-      if (entry.fileName.endsWith('/')) {
-        await mkdir(target, { recursive: true })
-        continue
-      }
-      await mkdir(dirname(target), { recursive: true })
-      // 中央目录里声明的 uncompressedSize 可以撒谎（zip 允许缺失/伪造）。
-      // 当前 yauzl 默认开启 validateEntrySizes，声明不符会在流内就报错，所以
-      // 正常情况下走不到这里的上限；它守的是「该校验被关掉或换实现」的纵深，
-      // 以及单条目合规但累计超限时必须按实际字节即时中止。
-      let written = 0
-      const budget = Math.min(maxEntryBytes, maxTotalBytes - (totalBytes - declared))
-      const guard = new Transform({
-        transform(chunk: Buffer, _encoding, callback) {
-          written += chunk.length
-          if (written > budget) {
-            callback(new AgyBinaryError(
-              AGY_BINARY_ERROR.ARCHIVE_TOO_LARGE,
-              `zip 条目实际大小超过上限 ${budget} 字节：${entry.fileName}`,
-            ))
-            return
-          }
-          callback(null, chunk)
-        },
-      })
-      await new Promise<void>((resolveWrite, rejectWrite) => {
-        zip.openReadStream(entry, (error, stream) => {
-          if (error || !stream) {
-            rejectWrite(new AgyBinaryError(AGY_BINARY_ERROR.ARCHIVE_READ, `读取条目内容失败: ${entry.fileName}`, { cause: error }))
-            return
-          }
-          // yauzl 的 openReadStream 产出 node Readable；经 guard 后写盘。
-          pipeline(stream, guard, createWriteStream(target))
-            // 把预检时按「声明值」记的账改成「实际写出值」：声明偏大时不把没写出的
-            // 字节算作已用，避免后续条目被虚假的累计量挤掉。夹到非负，防止异常
-            // 时序下 totalBytes 漂成负数后反过来放宽上限。
-            .then(() => { totalBytes = Math.max(0, totalBytes - declared + written); resolveWrite() })
-            .catch((cause) => rejectWrite(cause instanceof AgyBinaryError
-              ? cause
-              : new AgyBinaryError(AGY_BINARY_ERROR.ARCHIVE_READ, `写出条目失败: ${entry.fileName}`, { cause })))
-        })
-      })
-      extracted.push(safeRelative)
-    }
-  } finally {
-    zip.close()
-  }
-  return extracted
-}
 
 export interface AgentBinaryResolution {
   /** 可直接交给 ctx.subprocess 的可执行文件路径。 */
@@ -689,15 +402,17 @@ export interface AgentBinaryResolution {
   checksumVerified: false
 }
 
+/** 可注入的 fetch 形状。 */
+export type FetchLike = (
+  url: string,
+  init?: RequestInit,
+) => Promise<Response>
+
 export interface AgentBinaryOptions {
   /** 用户显式配置的二进制路径，最高优先级。 */
   binaryPath?: string
-  /** 是否允许自动下载（默认 true）。 */
-  autoDownload?: boolean
   /** 目标版本（默认 1.4.0）。 */
   version?: string
-  /** 下载 URL 覆盖（未验证平台组合的逃生门；仍受域名白名单约束）。 */
-  downloadUrl?: string
   fetchImpl?: FetchLike
   signal?: AbortSignal
   env?: Readonly<Record<string, string | undefined>>
@@ -775,48 +490,10 @@ export async function ensureAgentBinary(options: AgentBinaryOptions = {}): Promi
     return { executablePath: cached, source: 'cache', version, checksumVerified: false }
   }
 
-  const autoDownload = options.autoDownload ?? true
-  if (!autoDownload) {
-    throw new AgyBinaryError(
-      AGY_BINARY_ERROR.BINARY_MISSING,
-      `未找到 ACP server 二进制（binaryPath 未配置、AGY_ACP_BIN 未设置、缓存无 ${version} 版本）且 autoDownload=false`,
-    )
-  }
-
-  // URL 覆盖仅供未验证平台组合使用；无论来源都过域名白名单。
-  const url = options.downloadUrl ?? env.AGY_ACP_URL ?? resolveDownloadUrl(platform, arch, version)
-  await mkdir(versionDir, { recursive: true })
-  const staging = await mkdtemp(join(versionDir, '.staging-'))
-  const zipTmp = join(staging, 'agy-acp-server.zip.tmp')
-  try {
-    await writeDirectoryOwner(staging)
-    await downloadBinaryToFile(url, zipTmp, { fetchImpl: options.fetchImpl, signal: options.signal })
-    const stagingExtract = join(staging, 'extract')
-    await mkdir(stagingExtract, { recursive: true })
-    const entries = await extractZipSafely(zipTmp, stagingExtract)
-    const relative = pickExecutablePath(entries, flavor)
-    const finalExtract = extractDir
-    try {
-      await rename(stagingExtract, finalExtract)
-    } catch (error) {
-      // 另一个宿主可能刚提交了同版本；不得删除它正在使用的完整产物。
-      const winner = await findExtractedExecutable(finalExtract, flavor)
-      if (winner) {
-        await ensureExecutable(winner, flavor)
-        return { executablePath: winner, source: 'cache', version, checksumVerified: false }
-      }
-      // 只有「目标已存在」这一类可自愈的失败才清掉旧目录重试：权限、跨设备
-      // 重命名、路径过长等错误把目录删掉再重试只会吞掉真实原因。
-      const code = (error as NodeJS.ErrnoException | null)?.code
-      if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
-      await rm(finalExtract, { recursive: true, force: true })
-      await rename(stagingExtract, finalExtract)
-    }
-    const executablePath = join(finalExtract, relative)
-    await ensureExecutable(executablePath, flavor)
-    return { executablePath, source: 'download', version, checksumVerified: false }
-  } finally {
-    // 失败/成功都要清掉暂存残渣（zip 临时文件与可能的半成品）。
-    await rm(staging, { recursive: true, force: true }).catch(() => undefined)
-  }
+  // 没有自动下载：本地找不到就报错，由用户显式配置 binaryPath / AGY_ACP_BIN
+  // 或把官方二进制放进缓存目录。
+  throw new AgyBinaryError(
+    AGY_BINARY_ERROR.BINARY_MISSING,
+    `未找到 ACP server 二进制（binaryPath 未配置、AGY_ACP_BIN 未设置、缓存无 ${version} 版本）。本插件不再自动下载。`,
+  )
 }

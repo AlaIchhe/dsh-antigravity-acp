@@ -29,7 +29,6 @@ export interface AntigravityHostConfig {
   /** 官方 agy-acp-server 可执行文件路径；优先级高于 AGY_ACP_BIN 与自动下载。 */
   binaryPath?: string
   /** 未找到本地二进制时是否自动从 dl.google.com 下载（默认 true）。 */
-  autoDownload?: boolean
   /** 传给 ACP server 的额外命令行参数。 */
   extraArgs?: string[]
   /** 自动下载的目标版本（默认 1.4.0）。 */
@@ -150,7 +149,6 @@ export const Config = Schema.object({
   agentMode: Schema.string().volatile().description('会话模式（agent 声明的 mode id，如 plan）；留空沿用 agent 默认，只影响新建或恢复的会话'),
   agyCliPath: Schema.string().volatile().description('官方 agy CLI 路径；留空依次查 AGY_CLI_BIN、PATH 和默认安装目录'),
   binaryPath: Schema.string().description('官方 agy-acp-server 可执行文件路径；留空则按 AGY_ACP_BIN → 缓存 → 自动下载解析'),
-  autoDownload: Schema.boolean().default(true).description('未找到本地二进制时自动从 dl.google.com 下载（仅 https + 官方域名 + 拒绝重定向）'),
   extraArgs: Schema.array(Schema.string()).default([]).description('传给 ACP server 的额外命令行参数'),
   acpVersion: Schema.string().default(DEFAULT_ACP_SERVER_VERSION).description('自动下载的 ACP server 版本'),
   requestTimeoutMs: Schema.natural().default(30_000).description('单个 ACP 请求默认超时（毫秒）'),

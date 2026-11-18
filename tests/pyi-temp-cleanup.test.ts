@@ -12,11 +12,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   cleanupStalePyiTempDirs,
-  cleanupStaleStagingDirs,
   PYI_TEMP_MAX_AGE_MS,
   PYI_TEMP_PREFIX,
   STAGING_MAX_AGE_MS,
-  STAGING_DIR_PREFIX,
 } from '../src/runtime/binary.js'
 
 const dirs: string[] = []
@@ -68,46 +66,3 @@ describe('cleanupStalePyiTempDirs', () => {
   })
 })
 
-describe('cleanupStaleStagingDirs', () => {
-  it('删除陈旧的 .staging-* 目录（包含直接子目录与版本子目录下的），保留新鲜目录', async () => {
-    const now = Date.parse('2026-10-16T12:00:00.000Z')
-    const root = await makeTempRoot()
-    // 根目录下的 stale staging
-    const directStale = await makeMeiDir(root, `${STAGING_DIR_PREFIX}111`, STAGING_MAX_AGE_MS + 10_000, now)
-    // 根目录下的 fresh staging
-    const directFresh = await makeMeiDir(root, `${STAGING_DIR_PREFIX}222`, 1_000, now)
-    // 版本目录 1.4.0 下的 stale staging
-    const versionSubdir = join(root, '1.4.0')
-    const nestedStale = await makeMeiDir(versionSubdir, `${STAGING_DIR_PREFIX}333`, STAGING_MAX_AGE_MS + 20_000, now)
-    const nestedFresh = await makeMeiDir(versionSubdir, `${STAGING_DIR_PREFIX}444`, 2_000, now)
-
-    for (const path of [directStale, directFresh, nestedStale, nestedFresh]) {
-      await writeFile(join(path, 'dsh-owner.json'), JSON.stringify({ version: 1, pid: 12345, id: 'test', startedAt: '2026-01-01', state: 'active' }))
-      // Writing the marker updates mtime; restore the fixture's age afterwards.
-      const age = path === directStale || path === nestedStale ? STAGING_MAX_AGE_MS + 60_000 : 1_000
-      await utimes(path, new Date(now - age), new Date(now - age))
-    }
-    const removed = await cleanupStaleStagingDirs(root, { now: () => now, isProcessAlive: () => false })
-    expect(removed).toBe(2)
-    expect(existsSync(directStale)).toBe(false)
-    expect(existsSync(directFresh)).toBe(true)
-    expect(existsSync(nestedStale)).toBe(false)
-    expect(existsSync(nestedFresh)).toBe(true)
-  })
-
-  it('即使很旧也保留活跃、状态未知以及无所有权标记的 staging', async () => {
-    const root = await makeTempRoot()
-    const now = Date.now()
-    const path = await makeMeiDir(root, `${STAGING_DIR_PREFIX}live`, STAGING_MAX_AGE_MS * 2, now)
-    expect(await cleanupStaleStagingDirs(root, { now: () => now, isProcessAlive: () => false })).toBe(0)
-    await writeFile(join(path, 'dsh-owner.json'), JSON.stringify({ version: 1, pid: 12345, id: 'test', startedAt: '2026-01-01' }))
-    await utimes(path, new Date(now - STAGING_MAX_AGE_MS * 2), new Date(now - STAGING_MAX_AGE_MS * 2))
-    expect(await cleanupStaleStagingDirs(root, { now: () => now, isProcessAlive: () => true })).toBe(0)
-    expect(await cleanupStaleStagingDirs(root, { now: () => now, isProcessAlive: () => undefined })).toBe(0)
-    expect(existsSync(path)).toBe(true)
-  })
-
-  it('不存在的目录返回 0', async () => {
-    expect(await cleanupStaleStagingDirs(join(tmpdir(), 'staging-missing-xyz'))).toBe(0)
-  })
-})

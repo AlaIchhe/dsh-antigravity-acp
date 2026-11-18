@@ -44,18 +44,21 @@ const MAX_ENTRIES = Number.POSITIVE_INFINITY
 /** 默认文件名。 */
 const FILE_NAME = 'sessions.json'
 
-/** 读取会话映射；任何异常都返回空表（调用方回退重建）。 */
+/** 读取会话映射；没有文件即首次运行，文件损坏直接抛错（没有「当空表」回退）。 */
 export async function readSessionMap(cacheDir: string): Promise<Record<string, SessionMapEntry>> {
   const file = join(cacheDir, FILE_NAME)
   let raw: string
   try {
     raw = await readFile(file, 'utf8')
-  } catch {
-    return {}
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
   }
   try {
     const parsed = JSON.parse(raw) as SessionMapFile
-    if (parsed.format !== SESSION_MAP_FORMAT || typeof parsed.entries !== 'object' || parsed.entries === null) return {}
+    if (parsed.format !== SESSION_MAP_FORMAT || typeof parsed.entries !== 'object' || parsed.entries === null) {
+      throw new Error(`会话映射文件格式无效（format=${String(parsed?.format)}）: ${file}`)
+    }
     const entries: Record<string, SessionMapEntry> = {}
     for (const [key, entry] of Object.entries(parsed.entries)) {
       if (!entry || typeof entry !== 'object') continue
