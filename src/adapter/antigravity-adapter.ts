@@ -1181,6 +1181,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
    */
   #scheduleCancelGrace(link: AgentLink, turn: PromptTurn): void {
     this.#clearCancelGrace()
+    // prompt 已经应答（例如 cancelled）：agent 已停，直接保留，不设宽限。
+    if (turn.promptSettled) {
+      this.#log?.info('antigravity-acp: 取消已被 agent 应答，保留 ACP 进程与会话')
+      this.#maybeIdle()
+      this.#wakeAccessWaiters()
+      return
+    }
     if (this.#cancelGraceMs <= 0) {
       this.#scheduleRecycle(link)
       return
@@ -1239,7 +1246,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       // 能续轮的前提有两个：ACP prompt 尚未应答（同一 prompt 内才能继续
       // 产出），且尾部 tool 结果与 park 表按调用 id 一一匹配。
       if (!turn.promptSettled && matchesParkedCalls(turn, tail, this.#bridge) && this.#continuationState?.accepts(options, tail.length)) {
-        this.#continuationState = new ContinuationState(options)
+    this.#continuationState = new ContinuationState(options)
         yield* this.#runContinuation(turn, options, tail)
         return
       }
@@ -1365,6 +1372,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   }
 
   async *#runNewRound(options: GenerateOptions): AsyncGenerator<StreamChunk> {
+    // 用户已经在发下一条消息：上一轮取消宽限的 pending 不该再挡住新回合。
+    this.#clearCancelGrace()
     this.#clearIdleRecycle()
     await withAbort(this.#settleRecycle(), options.signal)
     if (this.#disposed) throw new LlmError('Antigravity ACP adapter 已卸载', 'AGY_LINK_CLOSED')
