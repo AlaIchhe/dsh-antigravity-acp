@@ -1,36 +1,30 @@
 /** ACP 会话的输入前缀、已交付输出与上下文去重。DSH 始终是历史权威。 */
 import { createHash } from 'node:crypto'
 import type { ContentBlock, GenerateOptions, RequestMessage } from '@deepseek-ai/dsh-llm'
-import { messageValue, stable } from './continuation-state.js'
+import { isInjectedContext, messageSourceForm, messageSourceKind, messageValue, stable } from './continuation-state.js'
 
 export function reusableSessionKey(options: Pick<GenerateOptions, 'sessionId' | 'purpose'>): string | undefined {
   if (options.purpose !== undefined || !options.sessionId) return undefined
   return `${options.sessionId}::chat`
 }
 
-export function messageSourceKind(message: RequestMessage): string | undefined {
-  const source = (message as { readonly source?: { readonly kind?: unknown } }).source
-  return source && typeof source.kind === 'string' ? source.kind : undefined
-}
-
-export function messageSourceForm(message: RequestMessage): string | undefined {
-  const source = (message as { readonly source?: { readonly form?: unknown } }).source
-  return source && typeof source.form === 'string' ? source.form : undefined
-}
+// 注入块判定是会话复用与续轮校验的共同前提，实现集中在 continuation-state.ts，
+// 这里只做再导出，避免两处判定漂移。
+export { isInjectedContext, messageSourceForm, messageSourceKind }
 
 /** assistant 只有通过 outputMatches 验证后才可跳过；context form 本身不是丢弃依据。 */
 export function shouldSendIncrement(message: RequestMessage): boolean {
   return message.role !== 'assistant'
 }
 
-/** 只对上下文载体去重；真实用户输入、notice、relay 与未知类别每次都保留。 */
+/**
+ * 上下文去重用的键：由 `source.kind` 与 `source.form` 共同确定。
+ *
+ * 只对注入块返回键（判定见 `isInjectedContext`），真实用户输入、
+ * 压缩检查点与模型选择记录返回 undefined——它们每次都必须发送。
+ */
 function contextKey(message: RequestMessage): string | undefined {
-  if (message.role !== 'user') return undefined
-  const kind = messageSourceKind(message)
-  if (!kind || kind === 'user' || kind === 'compact-checkpoint' || kind === 'model-selection') return undefined
-  const form = messageSourceForm(message)
-  if (!['snapshot', 'catalog', 'instructions', 'recall'].includes(form ?? '')) return undefined
-  return stable([kind, form])
+  return isInjectedContext(message) ? stable([messageSourceKind(message), messageSourceForm(message)]) : undefined
 }
 
 /**

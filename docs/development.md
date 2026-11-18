@@ -95,6 +95,14 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-18 的「工具循环中途注入不再让整轮失败」通过 `npm run check`：类型检查、**33 个文件 / 393 项测试**与构建。**真实上游证据**（`AGY_REAL_ACP=1 npx vitest run tests/real-injection-regression.test.ts`，模型 `gemini-4-hydrogen`，官方 `agy acp` 真进程、真 adapter、真 MCP 桥）：
+
+- 修复前：第 2 轮在工具结果之后追加一条 `time-context` 形状的注入块 → `trailingToolResults()` 返回空 → `matchesParkedCalls()` 首行 false → `#abandonTurn()` 丢弃会话与会话映射 → 整轮 `AGY_SESSION_UNRECOVERABLE`（无法接上原 ACP 会话（没有可用的会话映射））。日志顺序为「取消后保留 ACP 会话」→「放弃 ACP 会话复用（MCP 桥已被其他对话接管）」。
+- 修复后：同一场景 `finish={"kind":"stop"}`，日志保留「复用 ACP 会话 … 本轮新增=2」，不再出现「放弃 ACP 会话复用」；对照组（尾部为纯工具结果）行为不变。
+- 离线锁：`tests/continuation-state.test.ts` 新增 4 例覆盖「尾部注入仍可续轮」「中间注入不破坏前缀」「真实用户消息仍破坏前缀」「篡改交付块仍被拒」。
+
+该复现同时纠正了两条此前的推测：一是 `resetPending()` 并**不**清空桥的 owner（`invalidateRound()` 才清空并轮换 token），二是「把 `bridge.owner` 空值也当作被接管」的改法**不能**采纳——工具会话的 MCP 连接握的是旧 token，放行会得到一条工具已死的会话。本次修复只发生在续轮判定层，桥的归属守卫保持原样。
+
 2026-11-17 的「模型选择页只列模型」通过 `npm run check`：类型检查、**39 个文件 / 682 项测试**与构建。适配器不再声明 `reasoning`（宿主据此渲染档位控件），相关断言改为「`resolveModel` 在有无 `thought_level` 观测时都返回 `reasoning: undefined`」；档位观测、落盘（`catalog.json` v2）与写入路径仍有测试覆盖：显式传 `reasoningEffort` 时写入 `thought_level`、未声明档位就收敛（`xhigh` → `high`）、切到 Hydrogen 后按新选项发 `xhigh`、缓存恢复后仍能写入。未在运行中的 GUI 上重验「菜单里不再出现档位」以及旧会话重新选模后的发送，发布前仍需实机确认。
 
 

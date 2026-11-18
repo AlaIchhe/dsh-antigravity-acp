@@ -43,7 +43,7 @@ import { buildPromptDeltaWithImages, buildPromptWithImages, buildToolResultConte
 import type { ImageReader } from './image-content.js'
 import { AGY_TURN_ERROR, PromptTurn } from './prompt-turn.js'
 import type { AcpLifecycle } from '../runtime/lifecycle.js'
-import { ContinuationState } from './continuation-state.js'
+import { ContinuationState, isInjectedContext } from './continuation-state.js'
 import { incrementalMessages, outputHash, outputMatches, prefixHash, prefixMatches, reusableSessionKey, routeFingerprint } from './session-reuse.js'
 import { SessionMapStore } from '../runtime/session-map.js'
 import type { SessionMapEntry } from '../runtime/session-map.js'
@@ -1248,7 +1248,9 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       // 能续轮的前提有两个：ACP prompt 尚未应答（同一 prompt 内才能继续
       // 产出），且尾部 tool 结果与 park 表按调用 id 一一匹配。
       if (!turn.promptSettled && matchesParkedCalls(turn, tail, this.#bridge) && this.#continuationState?.accepts(options, tail.length)) {
-    this.#continuationState = new ContinuationState(options)
+        // 续轮接受后重置账本：本批 assistant 块必须记在**新**状态上，否则下一批
+        // 工具调用的 accepts() 会把这两批块累加比较而永远失败。
+        this.#continuationState = new ContinuationState(options)
         yield* this.#runContinuation(turn, options, tail)
         return
       }
@@ -2053,10 +2055,23 @@ function unsupportedOptions(options: GenerateOptions): string[] {
   return unsupported
 }
 
-/** 取 messages 尾部连续的 tool 结果消息（按原顺序）。 */
+/**
+ * 取 messages 尾部连续的 tool 结果消息（按原顺序）。
+ *
+ * 会先跳过落在工具结果**之后**的注入块：`time-context` 按 600s 墙钟到期、
+ * `runtime-context` 随宿主服务变化，DSH 的 pre-step 会把它们追加到请求
+ * `messages` 的最后一条。它们在语义上不属于「上一步的模型输出」，只是请求
+ * 生成时附带的上下文，因此不能因为它们排在末尾就判定「尾部没有工具结果」——
+ * 那会让续轮条件假失败、进而丢弃 ACP 会话（真机实测：整轮 AGY_SESSION_UNRECOVERABLE）。
+ *
+ * 注意：跳过的注入块仍然留在 `options.messages` 里，各自被正常发给 agent；
+ * 这里只是改变「向下找工具结果」的起点。
+ */
 function trailingToolResults(messages: readonly RequestMessage[]): RequestMessage[] {
+  let end = messages.length - 1
+  while (end >= 0 && isInjectedContext(messages[end]!)) end -= 1
   const tail: RequestMessage[] = []
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  for (let index = end; index >= 0; index -= 1) {
     const message = messages[index]
     if (!message || message.role !== 'tool') break
     tail.unshift(message)

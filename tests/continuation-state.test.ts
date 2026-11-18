@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, ToolCallBlock } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, RequestMessage, ToolCallBlock } from '@deepseek-ai/dsh-llm'
 import { ContinuationState } from '../src/adapter/continuation-state.js'
 
 const call: ToolCallBlock = { type: 'tool-call', id: ToolCallId('call-1'), name: 'read', arguments: '{"path":"a"}' }
@@ -47,5 +47,63 @@ describe('continuation request integrity', () => {
     const next = continuation(base)
     next.messages[2] = createToolResultMessage({ callId: call.id, content: [{ type: 'text', text: 'rewritten' }], isError: false })
     expect(state.accepts(next, 1)).toBe(false)
+  })
+})
+
+describe('注入块不参与续轮前缀比较', () => {
+  function injected(text: string): RequestMessage {
+    return createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'time-context', form: 'snapshot', sections: [{ name: 'time-context', text }] },
+    } as never) as RequestMessage
+  }
+
+  it('尾部注入块仍可续轮（真机 AGY_SESSION_UNRECOVERABLE 的离线锁）', () => {
+    const base = initial()
+    const state = new ContinuationState(base)
+    state.emitted(call)
+    const next = continuation(base)
+    // 注入块落在工具结果之后：DSH pre-step 的真实位置。
+    next.messages = [...next.messages, injected('Time sampled while preparing turn 2, step 10: ...')]
+    // resultCount 只数尾部真实 tool 结果，不看被注入块挡住的那些。
+    expect(state.accepts(next, 1)).toBe(true)
+  })
+
+  it('历史中间的注入块同样不破坏前缀', () => {
+    const base = initial()
+    const state = new ContinuationState(base)
+    state.emitted(call)
+    const next = continuation(base)
+    next.messages = [
+      next.messages[0]!,
+      injected('中间快照'),
+      ...next.messages.slice(1),
+    ]
+    expect(state.accepts(next, 1)).toBe(true)
+  })
+
+  it('真实用户消息仍然破坏前缀（注入豁免不能变成任意篡改）', () => {
+    const base = initial()
+    const state = new ContinuationState(base)
+    state.emitted(call)
+    const next = continuation(base)
+    next.messages = [
+      ...next.messages,
+      createUserMessage({ content: [{ type: 'text', text: '插入的用户消息' }], source: { kind: 'user' } }),
+    ]
+    expect(state.accepts(next, 1)).toBe(false)
+  })
+
+  it('注入块被剔除后不影响「实际交付块」的判定', () => {
+    const base = initial()
+    const state = new ContinuationState(base)
+    state.emitted(call)
+    // 把**交付的块**本身换掉必须拒绝：注入豁免不能掩盖真实输出被改。
+    const tampered = continuation(base)
+    tampered.messages[1] = createAssistantMessage({
+      content: [{ ...call, arguments: '{"path":"other"}' }],
+      source: { provider: base.provider, model: base.model },
+    })
+    expect(state.accepts(tampered, 1)).toBe(false)
   })
 })

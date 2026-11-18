@@ -4,6 +4,10 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.2.2 · 2026-11-18
+
+- **修复：工具循环中途的宿主注入让整轮报 `AGY_SESSION_UNRECOVERABLE`**（真机复现于 2026-11-18 19:20 的会话）。DSH 的 pre-step 会把 `time-context`（默认 600s 墙钟到期）、`runtime-context`、技能目录与工作区指令追加到请求 `messages` 的**最后一条**；续轮判定原先只检查尾部是否连续 tool 结果，末尾一旦是注入块就返回空数组，续轮假失败 → `#abandonTurn()` 丢弃 ACP 会话与磁盘映射 → 下一轮因无映射失败，对话永久失效。现在 `isInjectedContext()` 统一认定注入块：`trailingToolResults()` 先跳过尾部注入块再找工具结果，`ContinuationState.accepts()` 剔除注入块后再比前缀；注入块本身仍正常发给 agent，真实用户消息与模型输出不获得豁免。
+
 ## 0.2.1 · 2026-11-18
 
 - **删除全部历史重放路径**：会话接不上一律报 `AGY_SESSION_UNRECOVERABLE`（取消后也一样）——包括删除「用户取消后编辑提示词」的一次性重放例外与 `#cancelledKeys`。取消只保留 ACP 会话、下一轮按增量续上；接不上就请新开会话。原因：重放会把整段 DSH 历史（实测 287 个信封、单条工具结果 2MB）灌给上游，agy 按体积截断成 `<truncated N bytes>`，模型据此推断「会话中断/换了模型」，前几步都在重新对齐。ACP 的 `session/resume` 保持原样（不重放）。
