@@ -1441,9 +1441,10 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       oneShot: options.purpose !== undefined,
       onPromptSettled: (settledTurn, response) => {
         if (this.#cancelGrace?.turn === settledTurn) {
-          if (response && ['cancelled', 'end_turn', 'max_tokens', 'max_turn_requests', 'refusal'].includes(response.stopReason)) {
-            this.#confirmCancelGrace(settledTurn)
-          } else this.#scheduleRecycle(link)
+          // 只要 prompt 有应答（不论 stopReason），agent 就已经结束本轮；白名单
+          // 只会把未验证的 stopReason 当成“没应答”而多回收一次进程。
+          if (response) this.#confirmCancelGrace(settledTurn)
+          else this.#scheduleRecycle(link)
         }
       },
       onTerminate: (reason, info) => {
