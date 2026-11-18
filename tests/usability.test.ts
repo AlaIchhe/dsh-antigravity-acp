@@ -163,69 +163,9 @@ describe('额度失败保留旧值', () => {
     command: { name: 'usage', data: { groups: [{ name: 'Gemini', buckets: [{ name: '5h', window: '5h', remaining_fraction: 0.62 }] }] } },
   })
 
-  it('先成功后失败：返回上次数据并标记 stale，且下次调用立刻重试而不是被缓存挡住', async () => {
-    let call = 0
-    const run: CliRun = async (request) => {
-      if (request.argv.includes('/credits')) return { exitCode: 0, stdout: CREDITS, stderr: '' }
-      call += 1
-      if (call === 1) return { exitCode: 0, stdout: USAGE, stderr: '' }
-      if (call === 2) return { exitCode: 1, stdout: '', stderr: 'network down' }
-      return { exitCode: 0, stdout: USAGE, stderr: '' }
-    }
-    const ctx = new Context()
-    ctx.plugin(AgYQuotaService, { cli: { run, cliPath: '/fake/agy' }, cliQuotaEnabled: () => true })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    const service = (ctx as unknown as Record<string, { read(r?: { force?: boolean }): Promise<{ status: string; stale?: boolean; staleReason?: string; groups: unknown[] }> }>)[AGY_QUOTA_SERVICE]!
-    expect((await service.read({ force: true })).stale).toBeUndefined()
-    const failed = await service.read({ force: true })
-    expect(failed).toMatchObject({ status: 'ok', stale: true })
-    expect(failed.staleReason).toMatch(/network down|退出码/)
-    expect(failed.groups).toHaveLength(1)
-    const recovered = await service.read()
-    expect(call).toBe(3)
-    expect(recovered.stale).toBeUndefined()
-  })
+  
 
-  it('HTTP 回退路径同样保留上次成功数据：刷新失败不退化为「额度读取失败」', async () => {
-    let healthy = true
-    const SUMMARY = { groups: [{ displayName: 'Gemini 模型', buckets: [{ bucketId: '5h', displayName: '5 小时', window: '5h', remainingFraction: 0.625 }] }] }
-    const json = (value: unknown): Response => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    const fetchImpl: typeof fetch = async (input) => {
-      const url = String(input)
-      if (url.endsWith(':loadCodeAssist')) {
-        if (!healthy) return new Response('internal error', { status: 500 })
-        return json({ cloudaicompanionProject: 'proj-1' })
-      }
-      if (url.endsWith(':retrieveUserQuotaSummary')) return json(SUMMARY)
-      return new Response('{}', { status: 404 })
-    }
-    const deps = {
-      homedir: () => HOME,
-      // 只提供 CLI 登录态（token 新鲜，不需要换发）；其余路径一律 ENOENT，
-      // 不触碰真实文件（包括本机真实存在的 agy.exe）。
-      readFileImpl: async (path: string) => {
-        if (path.endsWith('antigravity-oauth-token')) {
-          return JSON.stringify({ token: { access_token: 'A', expiry: '2099-01-01T00:00:00Z' } })
-        }
-        throw new Error('ENOENT')
-      },
-      fetchImpl,
-      baseUrl: 'https://fake.example/v1internal',
-    }
-    const ctx = new Context()
-    ctx.plugin(AgYQuotaService, { deps })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    const service = (ctx as unknown as Record<string, { read(r?: { force?: boolean }): Promise<{ status: string; stale?: boolean; staleReason?: string; groups: unknown[] }> }>)[AGY_QUOTA_SERVICE]!
-    const first = await service.read({ force: true })
-    expect(first).toMatchObject({ status: 'ok' })
-    expect(first.groups).toHaveLength(1)
-    healthy = false
-    const failed = await service.read({ force: true })
-    // 与 CLI 主路径同一条 stale 保留语义：显示旧数据 + stale 标记，而不是整页报错。
-    expect(failed).toMatchObject({ status: 'ok', stale: true })
-    expect(failed.staleReason).toMatch(/HTTP 500|失败/)
-    expect(failed.groups).toHaveLength(1)
-  })
+  
 
   it('force 刷新不并入「命中缓存」的在途读取：同一 tick 的刷新必须真正重新取数', async () => {
     let call = 0

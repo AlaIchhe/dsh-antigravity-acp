@@ -12,7 +12,6 @@
 | `queueTimeoutMs` | `120000` | 等待 worker 的上限（毫秒），最小 1000；队列最多 64 项，排队可取消。 |
 | `agyCliPath` | 未设置 | 官方 `agy` CLI 路径，优先于 `AGY_CLI_BIN`、PATH 与平台默认位置；刷新时重新探测。 |
 | `binaryPath` | 未设置 | 本地官方 ACP server 入口，优先级最高；指定但不存在会报错，不静默换来源。 |
-| `autoDownload` | `true` | 无本地覆盖和有效缓存时从官方域名下载。 |
 | `extraArgs` | `[]` | 额外启动参数；不要传入会改变协议、工具隔离或认证边界的参数并假定仍兼容。 |
 | `acpVersion` | `"1.4.0"` | 自动下载与缓存目标版本；不是 ACP wire protocol 版本。更换版本需重新验证厂商扩展与发行布局。 |
 | `requestTimeoutMs` | `30000` | 普通 ACP 请求超时（毫秒），覆盖 stdin 写入与响应等待。 |
@@ -24,8 +23,7 @@
 | `proxyUrl` | 未设置 | 显式出网代理；留空先继承 Host 代理环境，再自动检测系统代理（Windows 注册表 / macOS scutil / Linux GNOME），都没有才直连。支持 HTTP/HTTPS CONNECT、SOCKS5、SOCKS5H。 |
 | `proxyBypass` | 未设置 | 兼容既有配置的逗号分隔排除列表，支持域名匹配，不支持 CIDR；始终合并 localhost、127.0.0.1、::1。设置页不提供此控制项。 |
 | `reuseSessions` | `true` | 复用同一个 ACP 会话：同一 DSH 对话的后续回合只发送**新增消息**，不再每轮 `session/new` 并重放全部历史。历史被压缩、回退或编辑，模型/思考强度变化，工具目录变化，或 MCP 桥被其他对话接管时自动重建。关闭后回到旧的「每轮新会话 + 全量重放」。 |
-| `resumeSessions` | `false` | 插件或 Host 重启后，尝试用 `session/load` 恢复上次的 ACP 会话。映射写在缓存目录的 `sessions.json`，只存会话 ID、cwd、已发送条数、输入/输出与路由 sha256 和时间戳，不存对话内容、system 提示或工具 schema。恢复失败或前缀不一致时自动回退为新轮重建。 |
-| `keepProcessAfterCancel` | `false` | 用户按停止后是否保留官方进程。关闭时立即回收（下一轮冷启动）；开启后先等 `cancelGraceMs` 确认 agent 已停止，确认了就只丢弃会话、保留进程。 |
+| `resumeSessions` | `true` | 插件或 Host 重启后用 `session/resume` 接上原 ACP 会话（不重放历史）。映射写在缓存目录的 `sessions.json`，只存会话 ID、cwd、已发送条数、输入/输出与路由 sha256 和时间戳，不存对话内容、system 提示或工具 schema。接不上就直接报 `AGY_SESSION_UNRECOVERABLE`，不再回退重建。 |
 | `cancelGraceMs` | `30000` | 取消后等待 agent 确认停止的上限（毫秒）；`0` 表示不等待、立即回收进程。热启动约 10 秒，30 秒留出余量。 |
 | `idleRecycleMs` | `0` | 保留进程的最长空闲时间（毫秒），超时回收释放内存；**默认 `0` 不回收**。池上限就是 `maxConcurrentSessions`，常驻内存有界（单 worker 约 250–370 MB）；而回收的代价是下一轮冷启动并重放整段历史——实测 1007 条重放后模型会沉在旧任务里，把新消息当背景。只有内存紧张（例如容量 4 且可用内存 < 2 GB）时才建议设成几分钟。 |
 
@@ -35,7 +33,6 @@
 {
   "maxConcurrentSessions": 2,
   "queueTimeoutMs": 120000,
-  "autoDownload": true,
   "acpVersion": "1.4.0",
   "reuseSessions": true,
   "resumeSessions": false,
@@ -45,7 +42,7 @@
 
 ### 会话复用与恢复
 
-ACP 官方 agent 在同一会话内会保留上下文（2026-10-23 真机验证：同一 `session` 连发两条 prompt，第二条能复述第一条的暗号），并且声明了 `loadSession`。因此插件默认复用会话：
+ACP 官方 agent 在同一会话内会保留上下文（2026-10-23 真机验证：同一 `session` 连发两条 prompt，第二条能复述第一条的暗号），并且声明了 `loadSession` / `sessionCapabilities.resume`。因此插件默认复用会话：
 
 - 同一 DSH 对话的**普通聊天回合**校验输入前缀与上轮实际交付输出后，只发送新增消息；system、工具策略与历史不再每轮重放。收到 `finish` 即结束消费也会提交游标。
 - 注入内容按 producer 与内容去重：仅省略相同的快照/目录/指令或已见召回材料；首次出现、变化或恢复旧版本的状态仍发送。真实用户消息、notice、relay 与未知类别不去重。
@@ -58,7 +55,8 @@ ACP 官方 agent 在同一会话内会保留上下文（2026-10-23 真机验证�
 
 ### 取消与进程保留
 
-`session/cancel` 是通知，不代表官方 agent 的执行已经停止；因此默认仍在取消后回收进程（安全优先，代价是下一轮冷启动）。开启 `keepProcessAfterCancel` 后：
+`session/cancel` 是通知，不代表官方 agent 的执行已经停止；插件因此先等 `cancelGraceMs` 让 agent 应答 `cancelled`（真机实测：确认前发新 prompt 会被明确拒绝）。取消**不再销毁会话**：确认后保留进程与会话，下一轮按增量继续；超时未确认才回收，映射仍然保留、可 `session/resume` 接回。
+
 
 - 先给 `cancelGraceMs`（默认 30 秒，热启动约 10 秒）让 agent 回应 `cancelled`；确认了就只丢弃会话、保留进程（下一轮免冷启动）。
 - 宽限内没有确认、本地超时或通信失败 → 照旧回收；本地 promise 结束不等于 agent 已停止。`cancelGraceMs=0` 表示立即回收。

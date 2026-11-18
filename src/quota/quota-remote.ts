@@ -412,18 +412,14 @@ export class AgYQuotaService extends TypertRemoteService {
               : '未开启 agy CLI 取数，不查询 AI Credits。在设置页「账号」的「额度取数方式」打开「用 agy CLI 查询额度」并保存后才会调用本机 agy。',
           } }),
       ])
-      const credits: CreditsSnapshot = freshCredits.status === 'error' && previousCredits?.status === 'ok'
-        ? { ...previousCredits, stale: true, staleReason: freshCredits.error?.message ?? '余额刷新失败' }
-        : freshCredits
+      // 刷新失败就如实报错：不再把上一次成功的数据当「stale」继续展示。
+      const credits: CreditsSnapshot = freshCredits
       entry.credits = credits
-      if (credits.stale || credits.status === 'error') delete entry.creditsAt
+      if (credits.status === 'error') delete entry.creditsAt
       else if (!creditsCached) entry.creditsAt = fetchedAt
-      // 刷新失败但手里有上一次成功的数据：继续展示并标记 stale。
-      const snapshot: QuotaSnapshot = fresh.status === 'error' && previous?.status === 'ok'
-        ? { ...previous, stale: true, staleReason: fresh.error?.message ?? '刷新失败' }
-        : fresh
+      const snapshot: QuotaSnapshot = fresh
       entry.value = snapshot
-      if (snapshot.stale === true) delete entry.at
+      if (snapshot.status === 'error') delete entry.at
       else if (!quotaCached) entry.at = fetchedAt
       this._log?.info(
         `antigravity-acp: 额度取数结果（账号 ${account.id}）status=${snapshot.status} 组数=${snapshot.groups.length}` +

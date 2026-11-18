@@ -63,7 +63,7 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 - 兼容旧 agent：没有 `thought_level` 时，官方档位化目录（`claude-opus-5-5-high`）折叠成家族并退回「档位后缀」路由，缺档取最近档位，未指定通常使用 `medium`。`gpt-oss-120b` 家族不列入选择器。
 - 目录里没有任何档位变体、agent 也没声明 `thought_level` 的家族 id **不声明**思考强度菜单（省略 `reasoning` 字段）：宿主把 `efforts: []` 判为非法元数据（`INVALID_MODEL_REASONING`）并使该模型不可用，空数组不等于「没有档位」。
 - 旧 `server-default` 路由仍兼容：默认沿用上游模型，配置了映射时才写入映射目标；不再新增占位选择项。
-- **用满 agent 声明的 ACP 能力**：`_meta.antigravity.systemPrompt.append` 为 true 时，system prompt 随 `session/new` 的 `_meta` 交给 agent 追加到它自己的系统提示（实测 1.5.10 生效），prompt 里不再重复包 `<dsh-system>` 文本块；`sessionCapabilities.resume` 为 true 时跨进程恢复优先用 `session/resume`（不重放历史），否则退回 `session/load`；配置了 `agentMode` 且该 mode 出现在会话的 `availableModes` 里时才发 `session/set_mode`。fs / terminal / `session/request_permission` 仍然一律拒绝——工具必须回 DSH 审批执行。
+- **用满 agent 声明的 ACP 能力**：`_meta.antigravity.systemPrompt.append` 为 true 时，system prompt 随 `session/new` 的 `_meta` 交给 agent 追加到它自己的系统提示（实测 1.5.10 生效），prompt 里不再重复包 `<dsh-system>` 文本块；`sessionCapabilities.resume` 为 true 时跨进程恢复用 `session/resume`（不重放历史），没有该能力就报错（不再退回 `session/load`）；配置了 `agentMode` 且该 mode 出现在会话的 `availableModes` 里时才发 `session/set_mode`。fs / terminal / `session/request_permission` 仍然一律拒绝——工具必须回 DSH 审批执行。
 - 上下文容量与占用不填猜测值。`usage_update.size` 才作为窗口、`usage_update.used`（Tokens currently in context）才作为占用上报给宿主并缓存；首次观测前未知。ACP 的 `PromptResponse.usage` 是**整段会话累计值**（`inputTokens` = Total input tokens across all turns、`cachedReadTokens` = Total cache read tokens），不能当某一轮的 prompt 用量，本插件不再转发它。
 - 模型、容量与图片能力在 worker 间同步；不因增加 worker 就虚构新模型权益。
 
@@ -199,10 +199,8 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 | 标题 / 压缩走当前 provider | DSH 用当前模型生成标题、做压缩，各自新建一次 ACP 会话（约 3–20 秒、消耗额度）。 | 标题超时已收紧到 90 秒、压缩 10 分钟；可在 DSH 侧关闭自动标题或改用更便宜的 provider。 |
 | `temperature` / `stop` 不生效 | ACP v1 没有对应会话通道；插件记录警告并忽略，不再整单失败。 | 需要采样控制时使用官方 agent 自身的会话配置。 |
 | 上下文去重 | 相同 producer 的未变化快照/目录/指令与已见召回材料不重复发送；新内容、变化和状态回滚仍发送。 | 不再整类跳过注入；未知来源保守发送。需要每轮全量重放可关闭 `reuseSessions`。 |
-| 取消后默认回收进程 | `session/cancel` 只是通知；默认安全优先，下一轮冷启动（热启动约 10 秒、冷启动可达 50 秒）。 | 开启 `keepProcessAfterCancel`，用 `cancelGraceMs` 等确认、`idleRecycleMs` 限制空闲保留。 |
-| `session/load` 会回放历史 | 官方通过 `session/update` 重放历史（含 `user_message_chunk`）；插件在加载期间全部丢弃，避免混入本轮输出。 | 无需操作。 |
+| 取消后的进程 | `session/cancel` 只是通知；插件等 `cancelGraceMs` 内的 `cancelled` 应答，确认后保留进程与会话（真机实测确认前发新 prompt 会被拒绝），超时未确认才回收。 | 一般无需操作；确认慢的账号可调大 `cancelGraceMs`。 |
 | 恢复缓存由其他 Host 占用 / 崩溃残留锁 | 排他租约不可取得时，仅禁用本实例的磁盘恢复，不影响普通聊天；不自动抢锁。 | 使用独立缓存目录，或确认相关 Host 全部退出后清理残留 `sessions.lock`。 |
-| 旧版本 load 回放异常 | 社区报告 agy_acp_server 1.2.1 上 `session/load` 可能回放零历史。本插件默认 1.4.0；恢复失败会自动重建。 | 遇到异常先升级 ACP server 版本。 |
 | 对端发来畸形 JSON-RPC 帧 | 既没有 `method`、也不是合法响应形状的帧此前会让整条链路判死（在途请求全部报 `AGY_LINK_CLOSED`）。现在只丢弃该帧并写一条告警。 | 看到「已丢弃无法路由的 JSON-RPC 帧」时核对官方 server 版本；单帧丢弃不影响本轮结果。 |
 
 ## 排障
@@ -210,7 +208,7 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 | 现象 / 错误码 | 可能原因 | 检查与处理 |
 |---|---|---|
 | `AGY_BINARY_LOW_INTEGRITY` | 二进制或运行目录带 Windows Low 标签 | 将 `binaryPath` / `AGY_ACP_HOME` 指向合适的用户级目录；不要自动改 ACL 或删除旧缓存。先停止相关进程，再人工检查遗留目录。 |
-| `AGY_BINARY_MISSING` | 无本地覆盖 / 有效缓存且关闭自动下载 | 开启 `autoDownload` 或指定可用 `binaryPath`。 |
+| `AGY_BINARY_MISSING` | `binaryPath` / `AGY_ACP_BIN` 都没配，缓存里也没有对应版本（插件不再自动下载） | 配置 `binaryPath` 或把官方二进制放进缓存目录。 |
 | 已有解压目录却缺少有效可执行文件，下载后仍重命名失败 | 同版本缓存损坏，当前不会自动删除并覆盖该目录 | 先确认相关进程已停止，再人工核对该版本缓存；也可使用明确指定的有效 `binaryPath`。不要在官方进程活跃时清理它。 |
 | `AGY_AUTH_TIMEOUT` | 需要浏览器授权但未在期限内完成，或上游认证失败 | 检查官方登录状态、浏览器和代理；日志不要附完整 OAuth URL。 |
 | 目录为空 | 握手不等于已建会话 | 检查账号登录态并刷新目录；检查具体错误而不是反复发送聊天。 |

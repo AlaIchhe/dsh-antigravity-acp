@@ -155,9 +155,7 @@ window.__ModuleLoader__.load({
         } catch (error) {
           if (current === version.current) {
             const message = error instanceof Error ? error.message : String(error)
-            setData((previous) => previous?.status === 'ok'
-              ? { ...previous, stale: true, staleReason: message }
-              : { status: 'error', groups: [], error: { message } })
+            setData({ status: 'error', groups: [], error: { message } })
           }
         } finally {
           if (current === version.current) { pending.current = false; setRefreshing(false) }
@@ -627,9 +625,7 @@ window.__ModuleLoader__.load({
         }).catch((error) => {
           if (current === version.current) {
             const message = error instanceof Error ? error.message : String(error)
-            setData((previous) => previous?.status === 'ok'
-              ? { ...previous, stale: true, staleReason: message }
-              : { status: 'error', groups: [], error: { message } })
+            setData({ status: 'error', groups: [], error: { message } })
           }
         }).finally(() => { if (current === version.current) setRefreshing(false) })
       }, [readQuota, enabled, update, source, model])

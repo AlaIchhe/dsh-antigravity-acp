@@ -73,25 +73,7 @@ describe('官方 AI Credits 契约', () => {
 })
 
 describe('套餐额度与余额独立状态/缓存', () => {
-  it('余额失败保留上次值和时间，下一次只重试余额，不重取正常额度', async () => {
-    let quotaCalls = 0, creditCalls = 0, failing = false
-    const api = await service(async ({ argv }) => {
-      if (argv.includes('/usage')) { quotaCalls++; return usage() }
-      creditCalls++
-      return failing ? { exitCode: 1, stdout: '', stderr: 'network down' } : success(envelope(42))
-    })
-    const first = await api.read()
-    failing = true
-    const second = await api.read({ force: true })
-    expect(second.stale).not.toBe(true)
-    expect(second.credits).toMatchObject({ status: 'ok', remainingCredits: 42, stale: true, updatedAt: first.credits!.updatedAt })
-    expect(second.credits!.staleReason).toContain('network down')
-    failing = false
-    expect((await api.read()).credits?.stale).toBeUndefined()
-    expect([quotaCalls, creditCalls]).toEqual([2, 3])
-    await api.read()
-    expect([quotaCalls, creditCalls]).toEqual([2, 3])
-  })
+  
 
   it('额度失败不掩盖有效零余额；重试额度复用余额缓存', async () => {
     let quotaCalls = 0, creditCalls = 0
