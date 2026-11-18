@@ -64,7 +64,7 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 - 目录里没有任何档位变体、agent 也没声明 `thought_level` 的家族 id **不声明**思考强度菜单（省略 `reasoning` 字段）：宿主把 `efforts: []` 判为非法元数据（`INVALID_MODEL_REASONING`）并使该模型不可用，空数组不等于「没有档位」。
 - 旧 `server-default` 路由仍兼容：默认沿用上游模型，配置了映射时才写入映射目标；不再新增占位选择项。
 - **用满 agent 声明的 ACP 能力**：`_meta.antigravity.systemPrompt.append` 为 true 时，system prompt 随 `session/new` 的 `_meta` 交给 agent 追加到它自己的系统提示（实测 1.5.10 生效），prompt 里不再重复包 `<dsh-system>` 文本块；`sessionCapabilities.resume` 为 true 时跨进程恢复用 `session/resume`（不重放历史），没有该能力就报错（不再退回 `session/load`）；配置了 `agentMode` 且该 mode 出现在会话的 `availableModes` 里时才发 `session/set_mode`。fs / terminal / `session/request_permission` 仍然一律拒绝——工具必须回 DSH 审批执行。
-- 上下文容量与占用不填猜测值。`usage_update.size` 才作为窗口、`usage_update.used`（Tokens currently in context）才作为占用上报给宿主并缓存；首次观测前未知。ACP 的 `PromptResponse.usage` 是**整段会话累计值**（`inputTokens` = Total input tokens across all turns、`cachedReadTokens` = Total cache read tokens），不能当某一轮的 prompt 用量，本插件不再转发它。
+- 上下文容量与占用不填猜测值。`usage_update.size` 才作为窗口、`usage_update.used`（Tokens currently in context）才作为占用上报给宿主并缓存；首次观测前未知。ACP 的 `PromptResponse.usage` 是**本回合内所有内部模型调用的求和**（`inputTokens` / `cachedReadTokens` / `outputTokens` 都是本回合各次调用之和，`totalTokens` 恰等于本轮各条 `usage_update.used` 之和），工具回合会把 prompt 侧统计放大成上下文窗口的数倍，所以不能当某一轮的上下文占用；本插件目前不转发它。
 - 模型、容量与图片能力在 worker 间同步；不因增加 worker 就虚构新模型权益。
 
 | 请求项 | 行为 |
@@ -81,21 +81,21 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 
 标题（`session-title`）不新建进程：没有空闲连接时直接放弃，宿主保留兜底标题；压缩（`compaction`）需要连接，会按需新建。
 
-同一会话、同一用途的重叠请求串行；保留的工具回合仍归原 worker。同会话同步压缩可回到该 worker 并受控重建，不等待自己的工具结果。原工具结果拥有优先回填路径，不会仅因无关队列已满而被拒绝。`session-title` 与 `compaction` 这类**一次性请求**的调用方不会回喂工具结果：这类回合收到工具调用时立即以错误结算该次调用（不 park），避免 worker 一直处于 busy、既不空闲回收也不释放池位。
+同一会话、同一用途的重叠请求串行；保留的工具回合仍归原 worker。同会话同步压缩可回到该 worker，不等待自己的工具结果。原工具结果拥有优先回填路径，不会仅因无关队列已满而被拒绝。`session-title` 与 `compaction` 这类**一次性请求**的调用方不会回喂工具结果：这类回合收到工具调用时立即以错误结算该次调用（不 park），避免 worker 一直处于 busy、既不空闲回收也不释放池位。
 
 工具链路：
 
 1. 插件通过宿主 `ctx.subprocess` 以 stdio 启动官方 ACP server。
 2. 会话使用厂商扩展 `_meta.antigravity.enabledTools: []` 关闭内置工具，使用 `eagerMcpServers: ["dsh-tools"]` 提供当前 DSH 工具 schema。此扩展的默认适配基准是官方 server 1.4.0，不保证任意版本同样实现。
-3. 私有 MCP 桥仅绑定 `127.0.0.1`，新建或重建带工具的 ACP 会话时轮换 token 与授权代次；同一会话复用时保留授权，目录/归属变化则重建。
+3. 私有 MCP 桥仅绑定 `127.0.0.1`，新建带工具的 ACP 会话时轮换 token 与授权代次；同一会话复用时保留授权，目录/归属变化则丢弃该会话（后续回合报 `AGY_SESSION_UNRECOVERABLE`，需新开）。
 4. ACP 权限提示只对已识别私有桥请求选择 `allow_once`，不会自身产生 DSH 调用；真正的 `tools/call` 到桥后才挂起，并以 `tool-call` 交给 DSH。
 5. DSH 负责校验、审批、执行；工具结果按调用 ID 匹配，携带 `isError` 回填同一 ACP prompt。支持乱序结果与后续批次。
 
 桥可按 schema 修正常见、无歧义的参数别名，如 `path` / `AbsolutePath` → `file_path`、`CommandLine` → `command`。不覆盖已有字段，不猜多目标映射，不换算超时单位，不编造缺失说明。缺必填键时返回 `AGY_BRIDGE_INVALID_ARGUMENTS` 与正确签名，不进入 DSH；字段类型与取值仍由 DSH 校验。
 
-续轮会校验模型、思考强度、system、工具 schema、历史前缀与上轮实际输出。变更后取消旧 prompt，按新历史重建。`finish(tool-calls)` 只封住当前 DSH 输出，不代表官方 prompt 已结束；封口后到达的内容留给续轮。
+续轮会校验模型、思考强度、system、工具 schema、历史前缀与上轮实际输出。变更后取消旧 prompt，并让这一轮报 `AGY_SESSION_UNRECOVERABLE`（不按新历史重放）。`finish(tool-calls)` 只封住当前 DSH 输出，不代表官方 prompt 已结束；封口后到达的内容留给续轮。
 
-普通用户回合默认复用 ACP session，校验输入前缀和上一步实际输出，只发增量；编辑回答、外部 provider 的额外输出或路由变化会触发全量重建。选模（`session/set_config_option`）只在**本会话自己**声明过 model 选择器、且当前值已经是目标值时短路：新会话省略 `configOptions` 时不会拿别的会话的 `currentValue` 短路，否则新会话会静默跑在 agent 默认模型上。`resumeSessions` 可选开启跨进程恢复（默认关闭），恢复后校正模型；文本历史信封不等同于模型 API 的原生角色消息。上游 `end_turn` 没有可见文本或工具调用时返回 `AGY_EMPTY_RESPONSE`，仅思考或进度通知不算成功。
+普通用户回合默认复用 ACP session，校验输入前缀和上一步实际输出，只发增量；编辑回答、外部 provider 的额外输出或路由变化会让这一轮报 `AGY_SESSION_UNRECOVERABLE`（不重放）。选模（`session/set_config_option`）只在**本会话自己**声明过 model 选择器、且当前值已经是目标值时短路：新会话省略 `configOptions` 时不会拿别的会话的 `currentValue` 短路，否则新会话会静默跑在 agent 默认模型上。`resumeSessions` 开启跨进程恢复（默认开启），恢复后校正模型；文本历史信封不等同于模型 API 的原生角色消息。上游 `end_turn` 没有可见文本或工具调用时返回 `AGY_EMPTY_RESPONSE`，仅思考或进度通知不算成功。
 
 ACP fs / terminal 与未知原生权限请求始终拒绝并记录，但不因拒绝次数终止整个对话，模型仍可改用 DSH 工具。已识别私有桥调用的 `kind` 仅用于展示；权限提示参数只供诊断，不因缺失或包装差异阻断，真正执行仍取自后续 `tools/call`。协议能力与权限拒绝**不是操作系统沙箱**，不证明官方二进制只能执行被协议观察到的操作。
 
@@ -200,7 +200,7 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 | 工具参数非流式 | ACP 桥在工具被调用后才拿到完整参数，界面里工具调用一次性出现。 | 协议没有增量参数通道，暂无。 |
 | 标题 / 压缩走当前 provider | DSH 用当前模型生成标题、做压缩，各自新建一次 ACP 会话（约 3–20 秒、消耗额度）。 | 标题超时已收紧到 90 秒、压缩 10 分钟；可在 DSH 侧关闭自动标题或改用更便宜的 provider。 |
 | `temperature` / `stop` 不生效 | ACP v1 没有对应会话通道；插件记录警告并忽略，不再整单失败。 | 需要采样控制时使用官方 agent 自身的会话配置。 |
-| 上下文去重 | 相同 producer 的未变化快照/目录/指令与已见召回材料不重复发送；新内容、变化和状态回滚仍发送。 | 不再整类跳过注入；未知来源保守发送。需要每轮全量重放可关闭 `reuseSessions`。 |
+| 上下文去重 | 相同 producer 的未变化快照/目录/指令与已见召回材料不重复发送；新内容、变化和状态回滚仍发送。 | 不再整类跳过注入；未知来源保守发送。 |
 | 取消后的进程 | `session/cancel` 只是通知；插件等 `cancelGraceMs` 内的 `cancelled` 应答，确认后保留进程与会话（真机实测确认前发新 prompt 会被拒绝），超时未确认才回收。 | 一般无需操作；确认慢的账号可调大 `cancelGraceMs`。 |
 | 恢复缓存由其他 Host 占用 / 崩溃残留锁 | 排他租约不可取得时，仅禁用本实例的磁盘恢复，不影响普通聊天；不自动抢锁。 | 使用独立缓存目录，或确认相关 Host 全部退出后清理残留 `sessions.lock`。 |
 | 对端发来畸形 JSON-RPC 帧 | 既没有 `method`、也不是合法响应形状的帧此前会让整条链路判死（在途请求全部报 `AGY_LINK_CLOSED`）。现在只丢弃该帧并写一条告警。 | 看到「已丢弃无法路由的 JSON-RPC 帧」时核对官方 server 版本；单帧丢弃不影响本轮结果。 |
@@ -225,4 +225,4 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 | 药丸完全消失 | 未选择本 provider，或 Client / remote 未装载 | 先确认选中 `antigravity-acp`、Host 与 Client 同版本；开发时核对 `$mount` 与依赖，避免让贡献型 remote 等待自身。 |
 | 运行目录积累 | 被强杀后残留 | 插件不再自动回收历史目录（不再做 pid 探测）；停止相关进程后人工删除。 |
 
-异常失败会撤销桥授权并回收受管进程；正常应答的 refusal / 空回复可保留自洽连接。取消默认回收；开启保留后必须等 agent 的正常停止应答，超时或通信错误仍回收，期间新轮不能绕过排空屏障。无法确认回收完成时拒绝使用旧连接。provider 不声明可安全重试错误码，避免宿主整步重放导致重复认证、生成或工具调用。定位后由用户决定是否重试，不将错误掩盖为成功。
+异常失败会撤销桥授权并回收受管进程；正常应答的 refusal / 空回复可保留自洽连接。取消后先等 agent 的正常停止应答（`cancelGraceMs`，默认 30 秒），确认了保留会话、超时或通信错误仍回收；期间新轮不能绕过排空屏障。无法确认回收完成时拒绝使用旧连接。provider 不声明可安全重试错误码，避免宿主整步重放导致重复认证、生成或工具调用。定位后由用户决定是否重试，不将错误掩盖为成功。

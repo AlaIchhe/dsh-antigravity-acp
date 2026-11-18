@@ -57,15 +57,25 @@ export const TOOL_POLICY_TEXT = [
 ].join('\n')
 
 /**
- * 历史重放说明。新轮会把整段 DSH 历史（含大量工具轨迹）编码进同一条 ACP
- * prompt；官方 agent 每轮新建会话、没有原生对话历史，只能靠这段文字判断
- * 「现在要做什么」。不声明边界时它会顺着历史里未完成的任务继续跑，表现为
- * 「用户后续的话没传过去」。
+ * 历史重放说明。只有压缩这类一次性请求会把整段 DSH 历史（含大量工具轨迹）
+ * 编码进同一条 ACP prompt；普通聊天轮要么复用会话只发增量，要么直接报错，
+ * 不会走到这里。官方 agent 没有原生对话历史时只能靠这段文字判断「现在要
+ * 做什么」，不声明边界它会顺着历史里未完成的任务继续跑。
  */
 export const HISTORY_NOTICE_TEXT = [
   '下面是本次请求之前已经发生的对话与工具轨迹，作为背景资料重放；它们不是新的任务请求。',
   '不要因为历史里还有未完成的步骤就继续它。',
 ].join('\n')
+
+/**
+ * 历史里是否真的有前序对话（assistant / tool 轨迹）。
+ *
+ * 首次聊天与标题请求只有用户消息和注入块，此时不该出现「重放」措辞；
+ * 只有压缩这类把整段对话交过来的请求才需要。
+ */
+export function hasPriorConversation(messages: readonly RequestMessage[]): boolean {
+  return messages.some((message) => message.role === 'assistant' || message.role === 'tool')
+}
 
 /** 当前请求说明：把最新一条真实用户消息从历史里单独强调出来。 */
 export const CURRENT_REQUEST_NOTICE_TEXT = [
@@ -97,7 +107,8 @@ export function encodeMessage(message: RequestMessage): string {
 
 /**
  * 构造一次 ACP prompt 的 content 块序列：system（若给出）在前，随后工具策略、
- * 历史重放说明、每条 DSH 消息一个信封块，最后是最新用户请求的强调块。
+ * 历史重放说明（仅当历史里真有 assistant/tool 轨迹）、每条 DSH 消息一个信封块，
+ * 最后是最新用户请求的强调块。
  * 空 system 文本不产生块（ACP 的 TextContent.text 为空串没有语义价值）。
  */
 export function buildPromptContent(
@@ -113,8 +124,9 @@ export function buildPromptContent(
   // prompt，让必填项与参数名在调用时就可见。
   const signatures = renderToolSignatures(tools)
   if (signatures !== undefined) blocks.push(textBlock(`${SIGNATURES_OPEN}${signatures}${SIGNATURES_CLOSE}`))
-  // 声明历史只是背景，避免模型把上一轮未完成的工具循环当成当前任务。
-  if (messages.length > 0) blocks.push(historyNoticeBlock())
+  // 声明历史只是背景，避免模型把上一轮未完成的工具循环当成当前任务；首次聊天
+  // 没有前序轨迹时不写这段，免得把当前请求误标成「重放」。
+  if (hasPriorConversation(messages)) blocks.push(historyNoticeBlock())
   for (const message of messages) blocks.push(textBlock(encodeMessage(message)))
   // 最新用户请求放到最后：它前面可能还跟着 time-context / hindsight 等注入块，
   // 不强调时模型会把注意力停在旧任务上。

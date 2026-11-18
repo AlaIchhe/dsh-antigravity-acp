@@ -127,28 +127,18 @@ export interface AntigravityAcpAdapterOptions {
    */
   log?: AdapterLog
   /**
-   * 复用同一个 ACP 会话（默认 true）：同一 DSH 对话的后续回合只发送新增消息，
-   * 不再每轮 `session/new` 并重放全部历史。历史被压缩/回退、路由或工具目录
-   * 变化时仍会受控重建。关闭后回到旧的「每轮新会话 + 全量重放」。
-   */
-  reuseSessions?: boolean
-  /**
-   * 跨进程恢复 ACP 会话（默认 false）：重启后若存在会话映射，尝试
-   * `session/load` 恢复而不是从零重建。需要提供 loadSessionMap / saveSessionMap。
+   * 跨进程恢复 ACP 会话（默认 true）：重启后若存在会话映射，用 `session/resume`
+   * 接回原会话而不是从零重建。映射由 loadSessionMap / saveSessionMap 提供。
    */
   resumeSessions?: boolean
-  /**
-   * 用户取消后是否保留官方进程（默认 false：立即回收，下一轮要冷启动）。
-   * 开启后先等 `cancelGraceMs` 让 agent 确认停止；确认了就只丢弃会话、保留进程。
-   */
-  /** 取消后的确认宽限（毫秒）；0 表示不等待、立即回收，绝不复用未确认连接。 */
+  /** 取消后等待 agent 确认停止的上限（毫秒）；0 表示不等待、立即回收，绝不复用未确认连接。 */
   cancelGraceMs?: number
   /** 保留进程的最长空闲时间（毫秒），超时回收；0 表示不设上限。 */
   idleRecycleMs?: number
   /** 所有 worker 共享的映射存储（含键所有权与串行提交）。 */
   sessionStore?: SessionMapStore
   /** Capture live preferences only between ACP turns, never during tool continuation. */
-  readSettings?: () => Pick<AntigravityAcpAdapterOptions, 'modelOverrides' | 'reuseSessions' | 'resumeSessions' | 'cancelGraceMs' | 'idleRecycleMs' | 'sessionStore'>
+  readSettings?: () => Pick<AntigravityAcpAdapterOptions, 'modelOverrides' | 'resumeSessions' | 'cancelGraceMs' | 'idleRecycleMs' | 'sessionStore'>
   /** 独立 adapter 的兼容读取回调；连接池必须改用共享 sessionStore。 */
   loadSessionMap?: () => Promise<Record<string, SessionMapEntry>>
   /** 保存 ACP 会话映射；失败由实现方吞掉。 */
@@ -247,16 +237,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   readonly #loadCliCatalog?: AntigravityAcpAdapterOptions['loadCliCatalog']
   readonly #log?: AdapterLog
   readonly #onMetadataChanged?: AntigravityAcpAdapterOptions['onMetadataChanged']
-  #reuseSessions: boolean
   #resumeSessions: boolean
   #sessionStore?: SessionMapStore
   readonly #sessionOwner = Symbol('acp-worker')
   /** 同一 DSH 对话（普通聊天轮）→ 可复用的 ACP 会话，最多 64 个。 */
   readonly #sessions = new Map<string, ReusedSession>()
-  /** >0 时丢弃入站 session/update：`session/load` 会把整段历史重放回来。 */
+  /** >0 时丢弃入站 session/update：恢复会话时可能有迟到的历史回放。 */
   #suppressUpdates = 0
-  /** 被用户取消过、允许「编辑后重建」的会话键（唯一允许重放历史的入口）。 */
-  readonly #cancelledKeys = new Set<string>()
   #cancelGraceMs: number
   #idleRecycleMs: number
   /** 取消后的确认定时器；agent 先确认停止就取消回收。 */
@@ -362,7 +349,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#loadCliCatalog = options.loadCliCatalog
     this.#log = options.log
     this.#onMetadataChanged = options.onMetadataChanged
-    this.#reuseSessions = options.reuseSessions ?? true
     this.#resumeSessions = options.resumeSessions ?? true
     this.#sessionStore = options.sessionStore ?? (options.loadSessionMap && options.saveSessionMap
       ? new SessionMapStore({ load: options.loadSessionMap, save: options.saveSessionMap,
@@ -392,7 +378,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     })
     this.#handlers = {
       onSessionUpdate: (notification) => {
-        // session/load 会把整段历史重放回来；那不是本轮输出，必须丢弃。
+        // 恢复/迟到回放不是本轮输出，必须丢弃。
         if (this.#disposed || this.#suppressUpdates > 0) return
         this.#observeUsageUpdate(notification)
         return this.#turn?.handleSessionUpdate(notification)
@@ -489,7 +475,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     const settings = this.#readSettings?.()
     if (!settings) return
     this.#modelSettings = normalizeModelSettings(settings.modelOverrides)
-    this.#reuseSessions = settings.reuseSessions ?? true
     this.#resumeSessions = settings.resumeSessions ?? true
     this.#cancelGraceMs = Math.max(0, settings.cancelGraceMs ?? 30_000)
     this.#idleRecycleMs = Math.max(0, settings.idleRecycleMs ?? 0)
@@ -876,7 +861,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         AGY_ADAPTER_ERROR.SESSION_UNRECOVERABLE,
       )
     }
-    if (!this.#reuseSessions) return fail('会话复用已关闭')
     if (!this.#resumeSessions) return fail('resumeSessions 未开启')
     if (!entry) return fail('没有可用的会话映射')
     if (entry.cwd !== this.#cwd) return fail('会话工作目录与当前不一致')
@@ -964,9 +948,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#sessionStore?.delete(key, this.#sessionOwner)
   }
 
-  /** 找到可复用的会话；记录失效时顺手丢弃（关闭对端会话，下一轮重建）。 */
+  /** 找到可复用的会话；记录失效时顺手丢弃（关闭对端会话，下一轮只能报错）。 */
   #findReusableSession(options: GenerateOptions, key: string): ReusedSession | undefined {
-    if (!this.#reuseSessions) return undefined
     const record = this.#sessions.get(key)
     if (!record) return undefined
     if (this.#resumeSessions && this.#sessionStore && !this.#sessionStore.owns(key, this.#sessionOwner)) {
@@ -1038,6 +1021,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     record.sentCount = options.messages.length
     record.sentHash = prefixHash(options.messages)
     record.outputHash = outputHash(blocks)
+    // 取消标记只豁免一轮输出指纹校验：本轮已完整交付后，后续回合重新按指纹验证。
+    if (settled) record.cancelled = false
     this.#sessions.delete(record.key)
     this.#sessions.set(record.key, record)
     if (settled) this.#sessionStore?.set(record.key, this.#sessionOwner, {
@@ -1114,8 +1099,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   }
 
   /**
-   * 卸载时关闭所有对端会话，但**保留**磁盘映射：那正是下次启动 `session/load`
-   * 恢复的依据。真正失效的会话在 #dropSession 里连同映射一起删掉。
+   * 卸载时关闭所有对端会话，但**保留**磁盘映射：那正是下次启动 `session/resume`
+   * 接回的依据（接不上就报错，不重放）。真正失效的会话在 #dropSession 里连同映射一起删掉。
    */
   #dropAllSessions(reason: string, link?: AgentLink): void {
     for (const record of [...this.#sessions.values()]) {
@@ -1267,9 +1252,9 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         yield* this.#runContinuation(turn, options, tail)
         return
       }
-      // 不匹配（或 agent 已经收尾）→ 按 brief 的兜底规则放弃旧回合、回到
-      // W4 的「重建新 prompt」路径；历史权威仍是 DSH 的完整 messages。
-      this.#abandonTurn('续轮条件不满足（工具结果、路由、上下文或工具定义已变化，或 ACP prompt 已应答），按新轮重建')
+      // 不匹配（或 agent 已经收尾）→ 放弃旧回合，按新轮重新校验。历史接不上
+      // 原 ACP 会话时 #runNewRound 直接报 AGY_SESSION_UNRECOVERABLE，绝不重放。
+      this.#abandonTurn('续轮条件不满足（工具结果、路由、上下文或工具定义已变化，或 ACP prompt 已应答），按新轮重新校验')
       turn = undefined
     }
     if (turn && !this.#isTurnClosed(turn)) {
@@ -1334,9 +1319,9 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       check()
       const tools = options.tools ?? []
       let mcpServers: AcpMcpServer[] = []
-      // 复用会话时无工具的一次性请求（标题、压缩）不接管桥：轮换 token 会让同一
-      // worker 上仍在复用的 ACP 会话失去工具连接。关闭复用时恢复旧的每轮清桥。
-      if (tools.length > 0 || !this.#reuseSessions) this.#bridge.beginRound(tools, owner)
+      // 无工具的一次性请求（标题、压缩）不接管桥：轮换 token 会让同一 worker 上
+      // 仍在复用的 ACP 会话失去工具连接。
+      if (tools.length > 0) this.#bridge.beginRound(tools, owner)
       if (tools.length > 0) {
         if (!this.#bridge.listening) await this.#bridge.start()
         check()
@@ -1401,20 +1386,16 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#routeModelId = options.model
     this.#lifecycle?.beginRound(options.model)
     const key = reusableSessionKey(options)
-    const hadMemoryRecord = key !== undefined && this.#sessions.has(key)
     // 必须先检查旧 owner，再 claim；反过来会把刚接回的陈旧内存记录误认为仍归自己。
     let reused = key === undefined ? undefined : this.#findReusableSession(options, key)
-    const entry = key !== undefined && this.#reuseSessions && this.#resumeSessions
+    const entry = key !== undefined && this.#resumeSessions
       ? await withAbort(this.#sessionStore?.claim(key, this.#sessionOwner) ?? Promise.resolve(undefined), options.signal) : undefined
     // 有历史的普通聊天轮必须接上原 ACP 会话；接不上就让这一轮失败。
-    // 这里不提供「把整段历史当文本重灌」的回退：那会重放几十万 token 并把模型
-    // 带回旧任务。一次性请求（标题/压缩）自带完整输入，不走这条路径。
+    // **没有重放路径**：任何形式的历史重灌都会消耗几十万 token、把模型带回旧任务，
+    // 还会被上游按体积截断。一次性请求（标题/压缩）自带完整输入，不走这条路径。
     const hasPriorHistory = options.purpose === undefined
       && options.messages.some((message) => message.role === 'assistant' || message.role === 'tool')
-    // 用户取消后编辑提示词：这是编辑的语义，必须把改过的历史交给 agent。
-    // 只对「刚被用户取消过」的会话开放，用一次就失效；其余历史接不上一律报错。
-    const rebuildAfterCancel = !reused && hasPriorHistory && key !== undefined && this.#cancelledKeys.delete(key)
-    if (!reused && hasPriorHistory && !rebuildAfterCancel) {
+    if (!reused && hasPriorHistory) {
       if (key === undefined) {
         throw new LlmError(
           '这段历史没有可接续的 ACP 会话（缺少会话键）。已禁用回退重放：请新开会话。',
@@ -1476,7 +1457,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         // 用户取消不是「回合异常」：它是想改提示词再发。会话、映射与进程都保留，
         // 下一轮优先按增量续上；只有非取消的异常终止才丢弃会话。
         const cancelled = info?.aborted === true && turn.promptStarted
-        if (cancelled && key !== undefined) this.#cancelledKeys.add(key)
         if (cancelled) {
           const own = [...this.#sessions.values()].find((item) => item.sessionId === turn.sessionId)
           if (own) own.cancelled = true
@@ -1521,7 +1501,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         ),
     })
     this.#turn = turn
-    if (key === undefined || !this.#reuseSessions) this.#ephemeral.set(turn, link)
+    if (key === undefined) this.#ephemeral.set(turn, link)
     this.#subscribeTurn(turn)
     // 回合生命周期打点：选具体型号后「没有反应」这类问题，只靠这条能分清是
     // 「prompt 没送出去」「送出去了但没有块回来」还是「块回来了但没被消费」。
@@ -1555,8 +1535,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       throw error
     }
     this.#lifecycle?.promptSent()
-    // 全量重建后先把「已发送」记到本轮完整历史，之后才有资格复用。
-    const record = reused ?? (key !== undefined && this.#reuseSessions
+    // 新会话先把「已发送」记到本轮完整历史，之后才有资格复用。
+    const record = reused ?? (key !== undefined
       ? this.#rememberSession(options, key, link, sessionId)
       : undefined)
     // 在新 prompt 在途期间，不把上一轮的旧游标继续当作可恢复状态。
@@ -1693,9 +1673,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       this.#ephemeral.delete(turn)
       this.#closeSession(link, turn.sessionId)
     }
-    // 复用会话时不再 invalidateRound：轮换 token 会让 agent 手里的 MCP 连接
-    // 立即失效。关闭复用时恢复旧行为（每轮结束清桥）。
-    if (!this.#reuseSessions && this.#turn === turn) this.#bridge.invalidateRound('ACP 回合已结束')
+    // 复用会话时不做 invalidateRound：轮换 token 会让 agent 手里的 MCP 连接立即失效。
   }
 
   /** 放弃当前回合：取消 ACP 会话、封口 chunk 队列、清空 bridge 的 park。 */
@@ -1711,7 +1689,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     // 用户取消（想改提示词再发）不是「会话不可信」：保留会话与映射，
     // 下一轮优先 session/resume 接回（真机验证：cancelled 的会话仍可 resume）。
     const record = [...this.#sessions.values()].find((item) => item.sessionId === turn.sessionId)
-    const keepForCancel = record !== undefined && this.#cancelledKeys.has(record.key)
+    const keepForCancel = record !== undefined && record.cancelled === true
     if (!keepForCancel) this.#dropSessionsForTurn(turn.sessionId, reason)
     else this.#log?.info(`antigravity-acp: 取消后保留 ACP 会话 session=${turn.sessionId}（${reason}）`)
     this.#releaseTurnSubscriptionIfClosed(turn)
@@ -1742,7 +1720,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     const turn = this.#turn
     if (!turn || turn.terminated || notification.sessionId !== turn.sessionId) return
     // 上下文已用量：这是宿主上下文占用**唯一**的样本来源（ACP 的
-    // `PromptResponse.usage` 是全会话累计值，当请求用量会算成数倍窗口）。
+    // `PromptResponse.usage` 是本回合内多次内部调用的求和，当占用会按调用次数
+    // 放大成数倍窗口）。
     // 超出窗口的值说明上游计数不可信，按窗口夹住，避免宿主直接显示 100%。
     const size = update.size
     const used = update.used
@@ -1784,7 +1763,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     const selector = findModelSelector(configOptions)
     const thought = findThoughtLevelSelector(configOptions)
     this.#catalogObserved = true
-    // session/new 与 session/load 允许省略 configOptions。一次不完整观测
+    // session/new 与 session/resume 允许省略 configOptions。一次不完整观测
     // 不能抹掉已知目录或选择器，否则后续会话会无故失去模型路由能力。
     let changed = false
     if (selector) {

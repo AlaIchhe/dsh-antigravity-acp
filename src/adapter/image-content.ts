@@ -3,7 +3,7 @@ import type { ContentBlock as DshContentBlock, ImageBlock, RequestMessage, ToolS
 import type { ImageAttachmentRef, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import type { ContentBlock } from '@agentclientprotocol/sdk'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import { buildPromptContent, currentRequestBlock, encodeMessage, historyNoticeBlock } from './prompt-transcript.js'
+import { buildPromptContent, currentRequestBlock, encodeMessage, hasPriorConversation, historyNoticeBlock } from './prompt-transcript.js'
 
 export type ImageReader = (ref: ImageAttachmentRef, signal?: AbortSignal) => Promise<StoredImageAttachment>
 export interface ImageContentOptions {
@@ -48,8 +48,8 @@ export async function buildPromptWithImages(
   system: string | undefined, messages: readonly RequestMessage[], tools: readonly ToolSchema[], options: ImageContentOptions,
 ): Promise<ContentBlock[]> {
   const content = buildPromptContent(system, [], tools)
-  // 历史说明块：与无图片路径保持同样的「历史只是背景」声明。
-  if (messages.length > 0) content.push(historyNoticeBlock())
+  // 历史说明块：与无图片路径保持同样的「有前序轨迹才声明」规则。
+  if (hasPriorConversation(messages)) content.push(historyNoticeBlock())
   await appendMessageContent(content, messages, options)
   // 最新用户请求放到最后强调；图片字节仍跟随各自消息的信封块。
   const current = currentRequestBlock(messages)

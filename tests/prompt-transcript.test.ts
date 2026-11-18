@@ -1,19 +1,19 @@
 /**
  * prompt 组装：历史重放说明 + 当前请求强调。
  *
- * 回归背景（2026-10-22，session-d7aa3ea4）：新用户回合仍然把整段 DSH 历史
- * （含上一轮大量工具轨迹）重放进同一条 ACP prompt，而用户消息之后还跟着
- * time-context / runtime-context / hindsight 等注入块。不声明边界时官方 agent
- * 会顺着历史里未完成的任务继续跑，表现为「用户后续的话没传过去」。
+ * 普通聊天轮要么复用会话只发增量，要么直接报错，不再重放历史；只有压缩这类
+ * 一次性请求会把整段对话交过来。此时「历史只是背景」的说明必须存在，而首次
+ * 聊天（只有用户消息与注入块）不该出现「重放」措辞。
  */
 import { describe, expect, it } from 'vitest'
-import { createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@agentclientprotocol/sdk'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import {
   buildPromptContent,
   currentRequestBlock,
+  hasPriorConversation,
   HISTORY_OPEN,
   latestUserRequest,
   parsePromptTranscript,
@@ -50,7 +50,11 @@ describe('当前请求强调', () => {
   })
 
   it('当前请求块位于最后，历史说明块位于所有消息信封之前', () => {
-    const blocks = buildPromptContent(undefined, [user('第一问'), injected('快照', 'time-context')])
+    const blocks = buildPromptContent(undefined, [
+      user('第一问'),
+      createToolResultMessage({ callId: ToolCallId('call-a'), content: [{ type: 'text', text: '结果' }], isError: false }),
+      injected('快照', 'time-context'),
+    ])
     const texts = textOf(blocks)
     const historyIndex = texts.findIndex((text) => text.startsWith(HISTORY_OPEN))
     const currentIndex = texts.findIndex((text) => text.startsWith('<dsh-current-request>'))
@@ -73,17 +77,37 @@ describe('当前请求强调', () => {
     expect(parsed.entries[0]?.content).toEqual([{ type: 'text', text: '第一问' }])
   })
 
-  it('注入块不会被误判成历史说明或策略块', () => {
+  it('首次聊天（只有用户消息与注入块）不写历史说明，注入块也不会被误判成它', () => {
     const blocks = buildPromptContent(undefined, [user('问'), injected('时间快照', 'time-context')])
     const texts = textOf(blocks)
     expect(texts.some((text) => text.includes(TOOL_POLICY_TEXT))).toBe(true)
-    expect(texts.filter((text) => text.startsWith(HISTORY_OPEN))).toHaveLength(1)
+    expect(texts.filter((text) => text.startsWith(HISTORY_OPEN))).toHaveLength(0)
     expect(texts.filter((text) => text.startsWith('<dsh-current-request>'))).toHaveLength(1)
+  })
+
+  it('历史里真有 assistant / tool 轨迹时才写历史说明', () => {
+    const blocks = buildPromptContent(undefined, [
+      user('问'),
+      createToolResultMessage({ callId: ToolCallId('call-a'), content: [{ type: 'text', text: '结果' }], isError: false }),
+    ])
+    const texts = textOf(blocks)
+    expect(texts.filter((text) => text.startsWith(HISTORY_OPEN))).toHaveLength(1)
+  })
+})
+
+describe('前序对话判定', () => {
+  it('用户消息与注入块都不算前序对话；assistant / tool 才算', () => {
+    expect(hasPriorConversation([user('问'), injected('快照', 'time-context')])).toBe(false)
+    expect(hasPriorConversation([
+      user('问'),
+      createToolResultMessage({ callId: ToolCallId('call-a'), content: [{ type: 'text', text: '结果' }], isError: false }),
+    ])).toBe(true)
+    expect(hasPriorConversation([createAssistantMessage({ content: [{ type: 'text', text: '答' }], source: { provider: 'test', model: 'test' } })])).toBe(true)
   })
 })
 
 describe('取不到用户请求的情形', () => {
-  it('只有工具结果时没有当前请求块，也没有历史说明', () => {
+  it('只有工具结果时没有当前请求块，但保留历史说明', () => {
     const messages: RequestMessage[] = [
       createToolResultMessage({ callId: ToolCallId('call-a'), content: [{ type: 'text', text: '结果' }], isError: false }),
     ]

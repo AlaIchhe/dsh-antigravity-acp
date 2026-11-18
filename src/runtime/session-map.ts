@@ -2,7 +2,7 @@
  * DSH 会话 → ACP 会话 的映射缓存（只存 id 与已发送历史的指纹，不存对话内容）。
  *
  * 用途：`resumeSessions` 打开时，插件/宿主重启后还能找回上一次的 ACP 会话并
- * 用 `session/load` 恢复，而不是从零重建。历史权威仍是 DSH：这里只记录
+ * 用 `session/resume` 接回，而不是从零重建。历史权威仍是 DSH：这里只记录
  * 「哪些消息已经发给了那个 ACP 会话」，用于校验当前历史是否仍是它的纯追加。
  *
  * 缓存语义（刻意保守）：
@@ -18,7 +18,7 @@ import { basename, dirname, join } from 'node:path'
 export interface SessionMapEntry {
   /** ACP 会话 id（官方 agent 分配）。 */
   sessionId: string
-  /** 建立会话时的 cwd（`session/load` 需要）。 */
+  /** 建立会话时的 cwd（恢复时校验一致）。 */
   cwd: string
   /** 已发送给该 ACP 会话的 DSH 消息条数。 */
   sentCount: number

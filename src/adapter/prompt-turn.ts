@@ -122,7 +122,8 @@ export class PromptTurn {
   readonly #onPermissionDiagnostic: PromptTurnOptions['onPermissionDiagnostic']
   /**
    * `usage_update.used`：当前上下文已用 token。回合结束作为 usage 样本上报，
-   * 是宿主上下文占用唯一的来源（ACP 的 PromptResponse.usage 是会话累计值，不能用）。
+   * 是宿主上下文占用唯一的来源（`PromptResponse.usage` 是回合内多次内部调用的
+   * 求和，会按调用次数放大成数倍窗口，不能当占用）。
    */
   #observedUsage: TokenUsage | undefined
   #nextIndex = 0
@@ -433,9 +434,10 @@ export class PromptTurn {
       return
     }
     // 只上报 `usage_update.used`（当前上下文占用）。ACP 的 `PromptResponse.usage`
-    // 字段是**整段会话的累计值**（inputTokens = Total input tokens across all
-    // turns、cachedReadTokens = Total cache read tokens），把它当本轮 prompt 用量
-    // 交给宿主会让上下文压力 = input + cacheRead 一路膨胀到窗口的数倍。
+    // 是**本回合内所有内部模型调用之和**（2026-11-18 探针：3 次调用的 totalTokens
+    // 恰等于三条 usage_update.used 之和 27150，而回合末上下文只有 9165）。把它当
+    // 本轮 prompt 用量交给宿主会让上下文压力 = input + cacheRead + cacheWrite
+    // 按内部调用次数膨胀到窗口的数倍（0.1.52 观测到 360%/411% 就是这个和）。
     this.finishRound(this.#observedUsage)
   }
 

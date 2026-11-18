@@ -31,7 +31,7 @@ npm 包名 `dsh-bundle-antigravity-acp`、provider ID `antigravity-acp`、内部
 - **映射优先于路由回调**：`target` 原样写入 `session/set_config_option`，由官方 agent 判定是否接受；未登记 ID 不被静默改写。
 - **旧 agent 兼容**：没有 `thought_level` 时，官方档位化目录折叠为家族并退回「档位后缀」路由（`claude-opus-5-5-high`）。这条路径是兼容，不是默认。
 - **整份 map 作为一个字段**：`modelOverrides` 参与草稿脏值与冲突判断，规范化后比较，避免键序或写回默认值被误判为未保存修改；提交时只发改动过的顶层字段。
-- **会话复用**：同一 DSH 对话的后续回合只发送新增消息；历史不是已发送前缀的追加、路由或工具目录变化、或跨进程映射缺失时，**整轮报 `AGY_SESSION_UNRECOVERABLE`**，不再重放历史。唯一例外是用户取消后编辑提示词（一次生效）。
+- **会话复用**：同一 DSH 对话的后续回合只发送新增消息；历史不是已发送前缀的追加、路由或工具目录变化、或跨进程映射缺失时，**整轮报 `AGY_SESSION_UNRECOVERABLE`**，没有任何重放路径（取消后也一样；想改历史只能新开会话）。
 - **目录与额度跟随账户**：手动刷新绕过缓存，失败只可复用同账户已观测目录；账户代际隔离目录及额度；登录、退出触发刷新，旧在途结果不能写回。
 - **登录取消覆盖 token 交换**：OAuth 回调被消费后仍保留当前流程的取消信号；账户保存与清除串行完成。退出使旧刷新失效，本次插件生命周期内保持退出状态，直到用户再次显式连接。
 - **连接成功包含只读项目检测**：CLI 导入先校验或刷新 access token，再通过 `loadCodeAssist` 解析已有 Cloud Code Assist 项目；缺项目时给出可读错误，流程与参考插件的只读探测一致。失效登录态可进入 OAuth；状态快照只返回脱敏阶段与账户代际，授权链接仅在显式登录结果中返回。
@@ -47,7 +47,7 @@ npm 包名 `dsh-bundle-antigravity-acp`、provider ID `antigravity-acp`、内部
 - `temperature` / `stop` 无 ACP v1 会话通道，记录警告并忽略；`maxTokens` 忽略；`reasoningEffort` 写入 `thought_level`（旧 agent 则是档位路由键）。
 - 额度与 AI Credits 仅为参考值，不是计费依据；ACP 登录与 CLI 登录是两条链路。
 - ACP 能力按声明使用：`_meta.antigravity.systemPrompt.append` 为 true 时 system 走 `session/new` 的 meta（不再包 `<dsh-system>` 文本块）；`sessionCapabilities.resume` 为 true 时用 `session/resume`，没有该能力就报错（不再退回 `session/load`）；`agentMode` 只在 `availableModes` 声明过时才 `session/set_mode`。fs / terminal / request_permission 一律拒绝（工具回 DSH 执行）。
-- 上下文容量与占用只在实测到 `usage_update.size` / `used` 后才声明，不填猜测值；ACP 的 `PromptResponse.usage` 是会话累计值，不得当成本轮 prompt 用量上报（否则宿主上下文压力会算成窗口的数倍）。
+- 上下文容量与占用只在实测到 `usage_update.size` / `used` 后才声明，不填猜测值；ACP 的 `PromptResponse.usage` 是**本回合内所有内部模型调用的求和**（`totalTokens` = Σ `usage_update.used`，实测 3 次调用 27150 vs 回合末上下文 9165），不得当成本轮上下文占用上报（否则宿主上下文压力会按内部调用次数算成窗口的数倍）。
 - 版本与测试范围见 [README 兼容性矩阵](README.md#兼容性与验证范围)；宽 peer 范围是安装条件，不是全部 Core / 平台实机兼容证明。
 
 ## 上游断言

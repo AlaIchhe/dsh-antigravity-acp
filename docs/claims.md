@@ -39,6 +39,7 @@
 | 22 | `agy -p /usage` / `/credits` 输出格式 | `runtime/agy-cli.ts` | ✅ | 本机实跑日志 |
 | 23 | 同一会话的后续 prompt 保留上下文（插件据此只发增量） | `adapter/session-reuse.ts` | ✅ | 集成用例「第二次 prompt 记得第一次的暗号 ZEBRA-731」 |
 | 24 | 同账号 5 路并发（含长回答）不触发 429 | 无（实验结论） | ✅ | 2026-11-18 两轮探针：5/5 成功、零 429 |
+| 25 | `PromptResponse.usage` 是**本回合**内各次内部模型调用之和（非会话累计）；`totalTokens` = 本轮 Σ `usage_update.used` | `adapter/prompt-turn.ts` | ✅ | 2026-11-18 探针（4 轮）：单调用轮 total=used=8700/8779；3 次调用轮 total=27150=8925+9060+9165，而回合末上下文只有 9165；第 4 轮 total=9244 < 上一轮 27150（若为累计不可能） |
 
 ## 优先验证顺序（按“错了会怎样”排序）
 

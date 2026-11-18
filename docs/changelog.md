@@ -4,6 +4,13 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 未发布
+
+- **删除全部历史重放路径**：会话接不上一律报 `AGY_SESSION_UNRECOVERABLE`（取消后也一样）——包括删除「用户取消后编辑提示词」的一次性重放例外与 `#cancelledKeys`。取消只保留 ACP 会话、下一轮按增量续上；接不上就请新开会话。原因：重放会把整段 DSH 历史（实测 287 个信封、单条工具结果 2MB）灌给上游，agy 按体积截断成 `<truncated N bytes>`，模型据此推断「会话中断/换了模型」，前几步都在重新对齐。ACP 的 `session/resume` 保持原样（不重放）。
+- **删除 `reuseSessions` 配置**：不再有「每轮新会话 + 全量重放」的开关。旧配置里若仍写着该键会被忽略（不再产生重放）。
+- **首次聊天不再写「历史重放」说明**：`<dsh-conversation-history>` 只在历史里真有 assistant / tool 轨迹时出现（压缩这类一次性请求），普通首轮只有用户消息与注入块，不再把当前请求误标成「重放」。
+- **修复取消标记未清除**：`cancelled` 只豁免一轮输出指纹校验，回合完整交付后清除；此前取消过一次的会话会永久跳过 `outputMatches` 校验。
+
 ## 0.2.0 · 2026-11-18
 
 - **进程与会话生命周期改用宿主原生能力**：删除插件自己的进程治理（owner 文件、`isProcessAlive` pid 探测、`cleanupStaleRuntimeDirectories`、`cleanupStalePyiTempDirs`）——启动/终止/退出确认全部交给 `ctx.subprocess` 的 `terminate()` / `waitForExit()`；运行目录只剩「给 PyInstaller 一个可写 TEMP」这一个职责。同时订阅宿主的 `session/disposed` 事件，在 DSH 删除会话时释放对应 ACP 会话与 `sessions.json` 映射，不再由插件猜清理时机。

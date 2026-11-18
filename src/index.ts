@@ -673,8 +673,6 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       parkSettleMs: config.bridgeParkSettleMs,
       modelOverrides: config.modelOverrides,
       readSettings: () => ({ ...config, sessionStore: config.resumeSessions ? sessionStore : undefined }),
-      // ACP 会话复用：同一条 DSH 对话的后续回合只发增量；重启恢复默认关闭。
-      reuseSessions: config.reuseSessions,
       resumeSessions: config.resumeSessions,
       cancelGraceMs: config.cancelGraceMs,
       idleRecycleMs: config.idleRecycleMs,
@@ -711,8 +709,8 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       dispose: () => disposeAcpRuntime(active),
     }
   }, {
-    // 复用会话时同一对话必须粘在同一个 worker；关闭复用时回到纯负载调度。
-    sessionAffinity: () => config.reuseSessions !== false,
+    // 同一 DSH 对话必须粘在同一个 worker：ACP 会话记录在 worker 内部，换 worker 即丢失。
+    sessionAffinity: true,
   })
   ctx.inject(['attachments'], (scope) => {
     const store = scope.attachments
