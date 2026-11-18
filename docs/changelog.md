@@ -4,7 +4,7 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
-## 未发布
+## 0.2.1 · 2026-11-18
 
 - **删除全部历史重放路径**：会话接不上一律报 `AGY_SESSION_UNRECOVERABLE`（取消后也一样）——包括删除「用户取消后编辑提示词」的一次性重放例外与 `#cancelledKeys`。取消只保留 ACP 会话、下一轮按增量续上；接不上就请新开会话。原因：重放会把整段 DSH 历史（实测 287 个信封、单条工具结果 2MB）灌给上游，agy 按体积截断成 `<truncated N bytes>`，模型据此推断「会话中断/换了模型」，前几步都在重新对齐。ACP 的 `session/resume` 保持原样（不重放）。
 - **删除 `reuseSessions` 配置**：不再有「每轮新会话 + 全量重放」的开关。旧配置里若仍写着该键会被忽略（不再产生重放）。
