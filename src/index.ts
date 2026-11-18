@@ -678,7 +678,6 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       // ACP 会话复用：同一条 DSH 对话的后续回合只发增量；重启恢复默认关闭。
       reuseSessions: config.reuseSessions,
       resumeSessions: config.resumeSessions,
-      keepProcessAfterCancel: config.keepProcessAfterCancel,
       cancelGraceMs: config.cancelGraceMs,
       idleRecycleMs: config.idleRecycleMs,
       sessionStore: config.resumeSessions ? sessionStore : undefined,

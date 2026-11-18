@@ -141,7 +141,6 @@ export interface AntigravityAcpAdapterOptions {
    * 用户取消后是否保留官方进程（默认 false：立即回收，下一轮要冷启动）。
    * 开启后先等 `cancelGraceMs` 让 agent 确认停止；确认了就只丢弃会话、保留进程。
    */
-  keepProcessAfterCancel?: boolean
   /** 取消后的确认宽限（毫秒）；0 表示不等待、立即回收，绝不复用未确认连接。 */
   cancelGraceMs?: number
   /** 保留进程的最长空闲时间（毫秒），超时回收；0 表示不设上限。 */
@@ -149,7 +148,7 @@ export interface AntigravityAcpAdapterOptions {
   /** 所有 worker 共享的映射存储（含键所有权与串行提交）。 */
   sessionStore?: SessionMapStore
   /** Capture live preferences only between ACP turns, never during tool continuation. */
-  readSettings?: () => Pick<AntigravityAcpAdapterOptions, 'modelOverrides' | 'reuseSessions' | 'resumeSessions' | 'keepProcessAfterCancel' | 'cancelGraceMs' | 'idleRecycleMs' | 'sessionStore'>
+  readSettings?: () => Pick<AntigravityAcpAdapterOptions, 'modelOverrides' | 'reuseSessions' | 'resumeSessions' | 'cancelGraceMs' | 'idleRecycleMs' | 'sessionStore'>
   /** 独立 adapter 的兼容读取回调；连接池必须改用共享 sessionStore。 */
   loadSessionMap?: () => Promise<Record<string, SessionMapEntry>>
   /** 保存 ACP 会话映射；失败由实现方吞掉。 */
@@ -254,7 +253,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   readonly #sessions = new Map<string, ReusedSession>()
   /** >0 时丢弃入站 session/update：`session/load` 会把整段历史重放回来。 */
   #suppressUpdates = 0
-  #keepProcessAfterCancel: boolean
+  /** 被用户取消过、允许「编辑后重建」的会话键（唯一允许重放历史的入口）。 */
+  readonly #cancelledKeys = new Set<string>()
   #cancelGraceMs: number
   #idleRecycleMs: number
   /** 取消后的确认定时器；agent 先确认停止就取消回收。 */
@@ -366,7 +366,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       ? new SessionMapStore({ load: options.loadSessionMap, save: options.saveSessionMap,
         onError: () => this.#log?.warn('antigravity-acp: 会话映射读写失败，跨进程恢复可能不可用') })
       : undefined)
-    this.#keepProcessAfterCancel = options.keepProcessAfterCancel ?? false
     this.#cancelGraceMs = Math.max(0, options.cancelGraceMs ?? 30_000)
     this.#idleRecycleMs = Math.max(0, options.idleRecycleMs ?? 0)
     this.#readImage = options.readImage
@@ -490,7 +489,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#modelSettings = normalizeModelSettings(settings.modelOverrides)
     this.#reuseSessions = settings.reuseSessions ?? true
     this.#resumeSessions = settings.resumeSessions ?? true
-    this.#keepProcessAfterCancel = settings.keepProcessAfterCancel ?? false
     this.#cancelGraceMs = Math.max(0, settings.cancelGraceMs ?? 30_000)
     this.#idleRecycleMs = Math.max(0, settings.idleRecycleMs ?? 0)
     if (this.#sessionStore !== settings.sessionStore) this.#sessionStore?.release(this.#sessionOwner)
@@ -956,9 +954,14 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       this.#dropSession(record, '会话已迁移到其他 worker')
       return undefined
     }
-    // 进程崩溃/被回收后链接已关闭：记录不可用，按新轮重建。
+    // 进程没了：只丢掉内存记录，**保留磁盘映射**，交给 resume 接回原会话。
     if (record.link.closed) {
-      this.#dropSession(record, 'ACP 链接已关闭')
+      this.#sessions.delete(record.key)
+      this.#sessionModelValues.delete(record.sessionId)
+      this.#sessionModelDeclared.delete(record.sessionId)
+      this.#sessionThoughtValues.delete(record.sessionId)
+      this.#systemViaMeta.delete(record.sessionId)
+      this.#log?.info('antigravity-acp: ACP 链接已关闭，保留恢复映射，下一轮按 session/resume 接回')
       return undefined
     }
     if (record.route !== this.#sessionRouteFingerprint(options)) {
@@ -1382,16 +1385,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     // 带回旧任务。一次性请求（标题/压缩）自带完整输入，不走这条路径。
     const hasPriorHistory = options.purpose === undefined
       && options.messages.some((message) => message.role === 'assistant' || message.role === 'tool')
-    if (!reused && hasPriorHistory) {
+    // 用户取消后编辑提示词：这是编辑的语义，必须把改过的历史交给 agent。
+    // 只对「刚被用户取消过」的会话开放，用一次就失效；其余历史接不上一律报错。
+    const rebuildAfterCancel = !reused && hasPriorHistory && key !== undefined && this.#cancelledKeys.delete(key)
+    if (!reused && hasPriorHistory && !rebuildAfterCancel) {
       if (key === undefined) {
         throw new LlmError(
           '这段历史没有可接续的 ACP 会话（缺少会话键）。已禁用回退重放：请新开会话。',
-          AGY_ADAPTER_ERROR.SESSION_UNRECOVERABLE,
-        )
-      }
-      if (hadMemoryRecord) {
-        throw new LlmError(
-          '原 ACP 会话的内存记录已失效（进程重建或桥被接管）。已禁用回退重放：请新开会话。',
           AGY_ADAPTER_ERROR.SESSION_UNRECOVERABLE,
         )
       }
@@ -1446,11 +1446,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         }
         this.#lifecycle?.failed(reason)
         this.#releaseTurnSubscription(turn)
-        // 干净失败（refusal / 空回复）不算异常：agent 已应答、状态自洽，桥与会话
-        // 都保留（含带工具的会话），下一次仍可复用。
+        // 用户取消不是「回合异常」：它是想改提示词再发。会话、映射与进程都保留，
+        // 下一轮优先按增量续上；只有非取消的异常终止才丢弃会话。
+        const cancelled = info?.aborted === true && turn.promptStarted
+        if (cancelled && key !== undefined) this.#cancelledKeys.add(key)
         if (info?.clean !== true) {
           this.#bridge.invalidateRound(reason)
-          this.#dropSessionsForLink(link, '回合异常终止')
+          if (!cancelled) this.#dropSessionsForLink(link, '回合异常终止')
         }
         if (info?.clean === true) {
           // prompt 已正常应答的干净失败（refusal / 空回复等）：agent 状态自洽，
@@ -1460,8 +1462,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
           this.#wakeAccessWaiters()
           return
         }
-        // 用户取消且开启保留进程：先等 agent 确认停止；确认了就只丢会话、不回收。
-        if (info?.aborted === true && this.#keepProcessAfterCancel && turn.promptStarted) {
+        // 用户取消：等 agent 确认停止后保留进程与会话（中断不是销毁）。
+        if (cancelled) {
           this.#scheduleCancelGrace(link, turn)
           this.#wakeAccessWaiters()
           return

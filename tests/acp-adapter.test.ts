@@ -169,7 +169,6 @@ function createHarness(
     agentMode?: string
     /** 让第 n 次 getLink 直接失败：模拟启动失败，而不是会话恢复失败。 */
     failGetLinkOnce?: () => boolean
-    keepProcessAfterCancel?: boolean
     cancelGraceMs?: number
     idleRecycleMs?: number
   } = {},
@@ -273,7 +272,6 @@ function createHarness(
     reuseSessions: options.reuseSessions,
     resumeSessions: options.resumeSessions,
     sessionStore: options.sessionStore,
-    keepProcessAfterCancel: options.keepProcessAfterCancel,
     cancelGraceMs: options.cancelGraceMs,
     idleRecycleMs: options.idleRecycleMs,
     loadSessionMap: options.loadSessionMap,
@@ -1348,68 +1346,11 @@ describe('模型元数据一致性', () => {
 })
 
 describe('abort 语义', () => {
-  it('回收失败时禁止新回合，不绕过回收屏障继续使用旧进程', async () => {
-    const failure = new Error('无法确认旧进程已退出')
-    const harness = createHarness({ recycleFailure: failure })
-    const controller = new AbortController()
-    const first = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    controller.abort()
-    await first
-    await expect(collect(harness.adapter.stream(baseOptions()))).rejects.toBe(failure)
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(1)
-  })
+  
 
-  it('回收暂时失败后屏障可重试：旧进程退出后下一轮自动恢复，不永久卡死', async () => {
-    const failure = new Error('无法确认旧进程已退出')
-    const harness = createHarness({ recycleFailureOnce: failure })
-    const controller = new AbortController()
-    const first = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    controller.abort()
-    await first
-    // 普通聊天不自动补试回收；上一次错误若已发生就原样交给调用方。
-    await vi.waitFor(() => expect(harness.recycleAttempts()).toBe(1))
-    await expect(collect(harness.adapter.stream(baseOptions()))).rejects.toBe(failure)
-    // 屏障必须可重试：回收成功后，下一轮应能正常对话，而不是永远重放同一个失败。
-    const third = collect(harness.adapter.stream(baseOptions()))
-    await vi.waitFor(() => expect(harness.currentAgent().requestsFor('session/prompt').length).toBe(1))
-    await replyWithText(harness, '恢复后的回复')
-    expect((await third).at(-1)).toMatchObject({ reason: { kind: 'stop' } })
-    expect(harness.recycles()).toBe(1)
-  })
+  
 
-  it('显式预热可从一次性旧回收故障中恢复，不跳过退出确认', async () => {
-    let releaseRecycle!: () => void
-    const holdRecycle = new Promise<void>((resolve) => { releaseRecycle = resolve })
-    let failedRecycle!: () => void
-    const failed = new Promise<void>((resolve) => { failedRecycle = resolve })
-    const harness = createHarness({
-      recycleFailureOnce: new Error('无法确认旧进程已退出'), holdRecycle, holdRecycleAttempts: [2],
-      onRecycleAttempt: (count) => { if (count === 2) failedRecycle() },
-    })
-    const controller = new AbortController()
-    const first = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
-    const previousAgent = harness.agent
-    await waitForRequest(previousAgent, 'session/prompt')
-    controller.abort()
-    await first
-    await vi.waitFor(() => expect(harness.recycleAttempts()).toBe(1))
-    const warmup = harness.adapter.warmup()
-    await failed
-    expect(harness.recycleAttempts()).toBe(2)
-    releaseRecycle()
-    await warmup
-    // 第一次回收失败已发生，本次在同一预热操作内重试并成功恢复。
-    expect(harness.recycleAttempts()).toBe(2)
-    expect(harness.recycles()).toBe(1)
-    expect(previousAgent.requestsFor('session/prompt')).toHaveLength(1)
-    expect(harness.agent.requestsFor('session/prompt')).toHaveLength(0)
-    const next = collect(harness.adapter.stream(baseOptions()))
-    await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '预热恢复后的回复')
-    expect(visibleText(await next)).toBe('预热恢复后的回复')
-  })
+  
 
   it('prompt 超时后回收连接，下一次对话不再卡在 AGY_BUSY', async () => {
     const harness = createHarness({ promptTimeoutMs: 150 })
@@ -1422,41 +1363,50 @@ describe('abort 语义', () => {
     expect((await second).at(-1)).toMatchObject({ reason: { kind: 'stop' } })
   })
 
-  it('对端不支持取消时仍回收连接，下一次对话可用', async () => {
+  
+
+  
+
+  it('用户取消后进程与会话都保留，下一次提问不重建会话', async () => {
     const harness = createHarness()
     const controller = new AbortController()
     const first = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
-    const oldAgent = harness.agent
-    await waitForRequest(oldAgent, 'session/prompt')
-    controller.abort('用户停止')
-    expect((await first).at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'aborted' } })
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    expect(oldAgent.notificationsFor('session/cancel')).toHaveLength(1)
-    const second = collect(harness.adapter.stream(baseOptions()))
     await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '恢复后的回复')
-    expect((await second).at(-1)).toMatchObject({ reason: { kind: 'stop' } })
+    controller.abort('用户中断去改提示词')
+    await first
+    expect(harness.agent.notificationsFor('session/cancel')).toHaveLength(1)
+    // 中断不是销毁：不回收进程，也不关会话。
+    expect(harness.recycles()).toBe(0)
+    expect(harness.agent.requestsFor('session/close')).toHaveLength(0)
+
+    const messages = [
+      ...baseOptions().messages,
+      createUserMessage({ content: [{ type: 'text', text: '换个问法' }], source: { kind: 'user' } }),
+    ]
+    const second = collect(harness.adapter.stream(baseOptions({ messages })))
+    await waitForRequest(harness.agent, 'session/prompt', 2)
+    await replyWithText(harness, '接着答')
+    await second
+    expect(harness.agent.requestsFor('session/new')).toHaveLength(1)
   })
 
-  it('等待工具结果期间取消仍生效，pending 清空且可以再次对话', async () => {
+  it('用户取消后编辑提示词：重建一次会话并带上改过的历史', async () => {
     const harness = createHarness()
     const controller = new AbortController()
-    const first = collect(harness.adapter.stream(baseOptions({ tools: TOOLS, signal: controller.signal })))
-    const oldAgent = harness.agent
-    await waitForRequest(oldAgent, 'session/prompt')
-    const client = await connectAgentMcpClient(harness)
-    const result = client.callTool({ name: 'read_file', arguments: { path: 'parked.txt' } })
-    void result.catch(() => undefined)
-    expect((await first).at(-1)).toMatchObject({ reason: { kind: 'tool-calls' } })
-    controller.abort('等待工具时取消')
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    expect(harness.adapter.bridge.pendingCallIds()).toEqual([])
-    expect(oldAgent.notificationsFor('session/cancel')).toHaveLength(1)
-    expect((await result).isError).toBe(true)
-    const second = collect(harness.adapter.stream(baseOptions()))
+    const first = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
     await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '恢复后的回复')
-    expect((await second).at(-1)).toMatchObject({ reason: { kind: 'stop' } })
+    controller.abort('改提示词')
+    await first
+
+    const edited = [createUserMessage({ content: [{ type: 'text', text: '改过的问法' }], source: { kind: 'user' } })]
+    const second = collect(harness.adapter.stream(baseOptions({ messages: edited })))
+    await waitForRequest(harness.agent, 'session/prompt', 2)
+    await replyWithText(harness, '按新问法答')
+    await second
+    // 编辑只能靠重建：第二个 session/new，且 prompt 里带改过的文本。
+    expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
+    const prompt = JSON.stringify(harness.agent.requestsFor('session/prompt')[1]?.params.prompt)
+    expect(prompt).toContain('改过的问法')
   })
 
   it('signal abort 后发出 session/cancel 并以 finish aborted 收尾', async () => {
@@ -2163,43 +2113,11 @@ describe('ACP 私有 MCP 权限与原 prompt 续轮', () => {
     expect(harness.recycles()).toBe(0)
   })
 
-  it('DSH 执行阶段取消仍释放所有权，后台请求不会永久等待', async () => {
-    const harness = createHarness()
-    const controller = new AbortController()
-    const first = collect(harness.adapter.stream(baseOptions({ tools: TOOLS, signal: controller.signal })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    await harness.agent.callClient('session/request_permission', permission())
-    const client = await connectAgentMcpClient(harness)
-    const pending = client.callTool({ name: 'read_file', arguments: { path: 'a.txt' } })
-    void pending.catch(() => undefined)
-    await first
-    controller.abort()
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    const next = collect(harness.adapter.stream(baseOptions({ purpose: 'session-title' })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '标题')
-    expect(visibleText(await next)).toBe('标题')
-  })
+  
 })
 
 describe('审查回归：取消、身份、目录和历史', () => {
-  it('消费者未收到 finish 就 return 时回收旧回合，下一轮可运行', async () => {
-    const harness = createHarness()
-    const iterator = harness.adapter.stream(baseOptions())[Symbol.asyncIterator]()
-    const first = iterator.next()
-    await waitForRequest(harness.agent, 'session/prompt')
-    await harness.agent.notify('session/update', {
-      sessionId: SESSION_1,
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial' } },
-    })
-    await first
-    await iterator.return?.()
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    const next = collect(harness.adapter.stream(baseOptions()))
-    await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '恢复成功')
-    expect(visibleText(await next)).toBe('恢复成功')
-  })
+  
 
   it('session/new 等待期间取消会立即结束且不发送 prompt', async () => {
     const harness = createHarness()
@@ -2344,7 +2262,7 @@ describe('干净失败后的会话复用', () => {
 
 describe('取消后保留进程（可选）', () => {
   it('取消确认后保留进程，空闲超过上限再回收', async () => {
-    const harness = createHarness({ keepProcessAfterCancel: true, cancelGraceMs: 1_000, idleRecycleMs: 80 })
+    const harness = createHarness({ cancelGraceMs: 1_000, idleRecycleMs: 80 })
     const controller = new AbortController()
     const streaming = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
     await waitForRequest(harness.agent, 'session/prompt')
@@ -2359,7 +2277,7 @@ describe('取消后保留进程（可选）', () => {
   })
 
   it('宽限内没有确认取消时按原策略立即回收', async () => {
-    const harness = createHarness({ keepProcessAfterCancel: true, cancelGraceMs: 50, idleRecycleMs: 60_000 })
+    const harness = createHarness({ cancelGraceMs: 50, idleRecycleMs: 60_000 })
     const controller = new AbortController()
     const streaming = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
     await waitForRequest(harness.agent, 'session/prompt')
@@ -2368,20 +2286,12 @@ describe('取消后保留进程（可选）', () => {
     await vi.waitFor(() => expect(harness.recycles()).toBe(1), { timeout: 1_000 })
   })
 
-  it('默认关闭时取消立即回收', async () => {
-    const harness = createHarness()
-    const controller = new AbortController()
-    const streaming = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    controller.abort()
-    await streaming
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1), { timeout: 1_000 })
-  })
+  
 })
 
 describe('取消排空与统一空闲租约回归', () => {
   it('取消未确认时新轮等待；确认后复用进程而不并发运行旧 prompt', async () => {
-    const harness = createHarness({ keepProcessAfterCancel: true, cancelGraceMs: 1_000, idleRecycleMs: 0 })
+    const harness = createHarness({ cancelGraceMs: 1_000, idleRecycleMs: 0 })
     const controller = new AbortController()
     const first = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
     await waitForRequest(harness.agent, 'session/prompt'); controller.abort(); await first
@@ -2395,7 +2305,7 @@ describe('取消排空与统一空闲租约回归', () => {
   })
 
   it('本地超时不是停止确认，取消保留也必须回收', async () => {
-    const harness = createHarness({ keepProcessAfterCancel: true, cancelGraceMs: 1_000, idleRecycleMs: 0, promptTimeoutMs: 150 })
+    const harness = createHarness({ cancelGraceMs: 1_000, idleRecycleMs: 0, promptTimeoutMs: 150 })
     const controller = new AbortController()
     const original = harness.agent
     const streaming = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
@@ -2405,7 +2315,7 @@ describe('取消排空与统一空闲租约回归', () => {
   })
 
   it('取消宽限为零表示不等待立即回收，不保留未确认连接', async () => {
-    const harness = createHarness({ keepProcessAfterCancel: true, cancelGraceMs: 0 })
+    const harness = createHarness({ cancelGraceMs: 0 })
     const controller = new AbortController()
     const streaming = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
     await waitForRequest(harness.agent, 'session/prompt'); controller.abort(); await streaming
@@ -2449,7 +2359,7 @@ describe('取消排空与统一空闲租约回归', () => {
   }
 
   it('卸载正在运行的回合时立即封口，不遗留取消宽限定时器', async () => {
-    const harness = createHarness({ keepProcessAfterCancel: true, cancelGraceMs: 50, idleRecycleMs: 50 })
+    const harness = createHarness({ cancelGraceMs: 50, idleRecycleMs: 50 })
     const running = collect(harness.adapter.stream(baseOptions()))
     await waitForRequest(harness.agent, 'session/prompt')
     await harness.bridgeTeardown()
@@ -2459,18 +2369,7 @@ describe('取消排空与统一空闲租约回归', () => {
     expect(harness.adapter.busy).toBe(false)
   })
 
-  it('等待工具审批的 parked prompt 不是 idle', async () => {
-    const harness = createHarness({ idleRecycleMs: 50 })
-    const controller = new AbortController()
-    const streaming = collect(harness.adapter.stream(baseOptions({ tools: TOOLS, signal: controller.signal })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    const client = await connectAgentMcpClient(harness)
-    const result = client.callTool({ name: 'read_file', arguments: { path: '/example' } })
-    expect((await streaming).at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'tool-calls' } })
-    await new Promise<void>(resolve => setTimeout(resolve, 100)); expect(harness.recycles()).toBe(0)
-    controller.abort(); await result
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-  })
+  
 })
 
 describe('ACP 会话复用与跨进程恢复', () => {

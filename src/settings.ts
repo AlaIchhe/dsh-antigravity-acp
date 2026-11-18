@@ -79,7 +79,6 @@ export interface AntigravityHostConfig {
    * 用户取消（停止按钮）后是否保留官方进程：默认关闭（立即回收，下一轮冷启动）。
    * 开启后先等 `cancelGraceMs` 让 agent 确认停止；确认了就只丢弃会话、保留进程。
    */
-  keepProcessAfterCancel?: boolean
   /** 取消后的确认宽限（毫秒）；0 表示不等待、立即回收。 */
   cancelGraceMs?: number
   /** 保留进程的最长空闲时间（毫秒），超时回收；0 表示不设上限。 */
@@ -96,7 +95,7 @@ export interface AntigravityHostConfig {
 
 // Only fields owned by the custom settings card are live. Ordinary launch/pool
 // configuration remains ordinary, so editing it still follows the host lifecycle.
-export const LIVE_SETTING_KEYS = ['agentMode', 'reuseSessions', 'modelOverrides', 'proxyUrl', 'proxyBypass', 'agyCliPath', 'resumeSessions', 'keepProcessAfterCancel', 'cancelGraceMs', 'idleRecycleMs', 'cliQuotaEnabled'] as const
+export const LIVE_SETTING_KEYS = ['agentMode', 'reuseSessions', 'modelOverrides', 'proxyUrl', 'proxyBypass', 'agyCliPath', 'resumeSessions', 'cancelGraceMs', 'idleRecycleMs', 'cliQuotaEnabled'] as const
 export type LiveSettingKey = typeof LIVE_SETTING_KEYS[number]
 export type AntigravityPluginConfig = Omit<AntigravityHostConfig, LiveSettingKey> & {
   [K in LiveSettingKey]?: AntigravityHostConfig[K] | Volatile<AntigravityHostConfig[K]>
@@ -121,7 +120,6 @@ export function liveHostConfig(config: AntigravityPluginConfig): AntigravityHost
     get agentMode() { return readSetting(config.agentMode) },
     get agyCliPath() { return readSetting(config.agyCliPath) },
     get resumeSessions() { return readSetting(config.resumeSessions) },
-    get keepProcessAfterCancel() { return readSetting(config.keepProcessAfterCancel) },
     get cancelGraceMs() { return readSetting(config.cancelGraceMs) },
     get idleRecycleMs() { return readSetting(config.idleRecycleMs) },
     get cliQuotaEnabled() { return readSetting(config.cliQuotaEnabled) },
@@ -165,7 +163,6 @@ export const Config = Schema.object({
   proxyBypass: Schema.string().volatile().description('代理排除列表，逗号分隔，如 example.internal,*.internal；不支持 CIDR。localhost/127.0.0.1/::1 始终自动排除'),
   reuseSessions: Schema.boolean().default(true).volatile().description('复用同一个 ACP 会话，后续回合只发送新增消息；历史被压缩/回退或模型、工具目录变化时自动重建。关闭则每轮新会话并重放全部历史'),
   resumeSessions: Schema.boolean().default(true).volatile().description('重启后用 session/resume 接上原 ACP 会话（唯一延续路径）；关掉它等于禁止历史会话跨进程继续'),
-  keepProcessAfterCancel: Schema.boolean().default(false).volatile().description('用户取消后保留官方进程：宽限内确认 agent 已停止就只丢弃会话，下一轮不必冷启动；默认关闭'),
   cancelGraceMs: Schema.natural().max(60_000).default(30_000).volatile().description('取消后等待 agent 确认停止的上限（毫秒）；0 表示不等待、立即回收'),
   idleRecycleMs: Schema.natural().max(3_600_000).default(0).volatile().description('保留进程的最长空闲时间（毫秒），超时回收；默认 0 表示不回收。池上限就是 maxConcurrentSessions，常驻内存有界；回收的代价是下一轮冷启动并重放整段历史'),
   cliQuotaEnabled: Schema.boolean().default(false).volatile().description('允许额度取数调用本机 agy CLI（默认关闭）。关闭时不启动 agy，套餐额度走内置直连，AI Credits 不查询。开启后运行 agy -p /usage 与 agy -p /credits；未找到 CLI 时套餐额度回落直连'),
