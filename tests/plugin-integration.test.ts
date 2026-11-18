@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { AntigravityAcpAdapterOptions } from '../src/adapter/antigravity-adapter.js'
 import type { SettingsControl } from '../src/quota/control.js'
-import { PooledAcpAdapter } from '../src/pool/pooled-adapter.js'
+import { ConversationWorkers } from '../src/pool/conversation-workers.js'
 import { apply } from '../src/index.js'
 import { isVolatile, updateVolatile } from '@deepseek-ai/cosmokit'
 import { Config } from '../src/settings.js'
@@ -100,7 +100,7 @@ function harness(initialAttachment?: AttachmentStub) {
   const services = new Map<string, unknown>()
   let attachmentCleanup: Cleanup[] = []
   let injectAttachment: ((scope: unknown) => void) | undefined
-  let registered: PooledAcpAdapter | undefined
+  let registered: ConversationWorkers | undefined
   let control: SettingsControl | undefined
   const unregister = vi.fn(() => { external.events.push('unregister') })
   const attach = (store: AttachmentStub) => {
@@ -113,7 +113,7 @@ function harness(initialAttachment?: AttachmentStub) {
   const ctx = {
     subprocess: { spawn: vi.fn(() => { throw new Error('Unexpected subprocess') }) },
     llm: {
-      registerAdapter: vi.fn((_providers: string[], adapter: PooledAcpAdapter) => {
+      registerAdapter: vi.fn((_providers: string[], adapter: ConversationWorkers) => {
         registered = adapter
         return Object.assign(unregister, { replace: vi.fn() })
       }),
@@ -196,7 +196,7 @@ describe('apply wiring with real pool and SettingsControl', () => {
   it('handles synchronously available attachments without initialization-order errors', async () => {
     const instance = harness({ readImage: vi.fn() })
     expect(() => apply(instance.ctx, {})).not.toThrow()
-    expect(instance.registered()).toBeInstanceOf(PooledAcpAdapter)
+    expect(instance.registered()).toBeInstanceOf(ConversationWorkers)
     const prepared = await instance.registered().prepareCall('antigravity-acp', 'example')
     expect(prepared.model.inputModalities).toEqual(['text', 'image'])
     expect(instance.control().account().runtime?.modelCatalogRevision).toBeGreaterThan(0)
@@ -229,11 +229,11 @@ describe('apply wiring with real pool and SettingsControl', () => {
     expect(control.account().state).toBe('connected')
   })
 
-  it('registers the pool and releases all worker resources and the shared fetch on unload', async () => {
+  it('registers the conversation workers and releases all worker resources and the shared fetch on unload', async () => {
     const instance = harness()
-    apply(instance.ctx, { maxConcurrentSessions: 2 })
+    apply(instance.ctx, {})
     const pool = instance.registered()
-    expect(pool).toBeInstanceOf(PooledAcpAdapter)
+    expect(pool).toBeInstanceOf(ConversationWorkers)
     const a = pool.stream(request('a'))
     const b = pool.stream(request('b'))
     const first = a.next()
@@ -255,7 +255,7 @@ describe('apply wiring with real pool and SettingsControl', () => {
     // 非法代理不能让 apply 抛穿：一旦装载失败，本插件贡献的设置卡片也跟着消失，
     // 用户只剩手改宿主配置文件这一条路。
     expect(() => apply(instance.ctx, { proxyUrl: 'ftp://127.0.0.1:21' })).not.toThrow()
-    expect(instance.registered()).toBeInstanceOf(PooledAcpAdapter)
+    expect(instance.registered()).toBeInstanceOf(ConversationWorkers)
     expect(instance.control().account().state).toBe('idle')
     const warned = (instance.ctx.logger as unknown as { warn: Mock }).warn.mock.calls.map(([message]) => String(message))
     expect(warned.some((message) => message.includes('代理配置无效'))).toBe(true)

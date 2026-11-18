@@ -18,9 +18,7 @@ export interface ModelOverride {
 
 export interface AntigravityHostConfig {
   /** Maximum independent ACP workers, started on demand. */
-  maxConcurrentSessions?: number
   /** Maximum wait for an available worker. */
-  queueTimeoutMs?: number
   /** 会话模式：agent 声明的 mode id（官方 1.5.10：default / accept-edits / auto / plan）。空串沿用默认。 */
   agentMode?: string
   /** Explicit official CLI path, re-detected for manual reads. */
@@ -142,8 +140,6 @@ const ModelOverrideSchema = Schema.object({
 })
 
 export const Config = Schema.object({
-  maxConcurrentSessions: Schema.natural().min(1).max(4).default(2).description('最大并发 ACP 连接数（1–4），按需启动；不同对话互不占用工具审批回合'),
-  queueTimeoutMs: Schema.natural().min(1000).default(120000).description('等待空闲 ACP 连接的最长时间（毫秒），排队期间可取消'),
   agentMode: Schema.string().volatile().description('会话模式（agent 声明的 mode id，如 plan）；留空沿用 agent 默认，只影响新建或恢复的会话'),
   agyCliPath: Schema.string().volatile().description('官方 agy CLI 路径；留空依次查 AGY_CLI_BIN、PATH 和默认安装目录'),
   binaryPath: Schema.string().description('官方 agy-acp-server 可执行文件路径；留空则按 AGY_ACP_BIN → 缓存 → 自动下载解析'),
@@ -164,6 +160,6 @@ export const Config = Schema.object({
   reuseSessions: Schema.boolean().default(true).volatile().description('复用同一个 ACP 会话，后续回合只发送新增消息；历史被压缩/回退或模型、工具目录变化时自动重建。关闭则每轮新会话并重放全部历史'),
   resumeSessions: Schema.boolean().default(true).volatile().description('重启后用 session/resume 接上原 ACP 会话（唯一延续路径）；关掉它等于禁止历史会话跨进程继续'),
   cancelGraceMs: Schema.natural().max(60_000).default(30_000).volatile().description('取消后等待 agent 确认停止的上限（毫秒）；0 表示不等待、立即回收'),
-  idleRecycleMs: Schema.natural().max(3_600_000).default(0).volatile().description('保留进程的最长空闲时间（毫秒），超时回收；默认 0 表示不回收。池上限就是 maxConcurrentSessions，常驻内存有界；回收的代价是下一轮冷启动并重放整段历史'),
+  idleRecycleMs: Schema.natural().max(3_600_000).default(900_000).volatile().description('空闲 worker 保留多久（毫秒）；默认 15 分钟后回收进程，下次进入该对话用 session/resume 接回（已验证不重放历史）。0 表示不回收'),
   cliQuotaEnabled: Schema.boolean().default(false).volatile().description('允许额度取数调用本机 agy CLI（默认关闭）。关闭时不启动 agy，套餐额度走内置直连，AI Credits 不查询。开启后运行 agy -p /usage 与 agy -p /credits；未找到 CLI 时套餐额度回落直连'),
 })

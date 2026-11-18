@@ -19,7 +19,7 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { AntigravityAcpAdapter, AGY_PROVIDER_ID } from './adapter/antigravity-adapter.js'
 import { mergeModelRows } from './adapter/model-rows.js'
 import type { AdapterMetadata } from './adapter/antigravity-adapter.js'
-import { PooledAcpAdapter } from './pool/pooled-adapter.js'
+import { ConversationWorkers } from './pool/conversation-workers.js'
 import { AgentLink, agentStreamFromSubprocess, AGY_CLIENT_INFO, AGY_LINK_ERROR, launchAcpAgent } from './protocol/agent-link.js'
 import type { AgentLinkHandlers } from './protocol/agent-link.js'
 import {
@@ -643,7 +643,7 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
   let metadata: AdapterMetadata | undefined
   // Serialize startup/credential preparation, not inference. This avoids competing OAuth imports.
   let startupBarrier: Promise<unknown> = Promise.resolve()
-  const adapter = new PooledAcpAdapter(() => {
+  const adapter = new ConversationWorkers(() => {
     const lifecycle = new AcpLifecycle()
     const active: ActiveAcpRuntime = { lifecycle }
     const workerIndex = workers.length
@@ -713,8 +713,6 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       dispose: () => disposeAcpRuntime(active),
     }
   }, {
-    capacity: config.maxConcurrentSessions,
-    queueTimeoutMs: config.queueTimeoutMs,
     // 复用会话时同一对话必须粘在同一个 worker；关闭复用时回到纯负载调度。
     sessionAffinity: () => config.reuseSessions !== false,
   })

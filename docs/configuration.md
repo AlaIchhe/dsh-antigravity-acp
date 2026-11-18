@@ -8,8 +8,6 @@
 
 | 字段 | 默认值 | 作用与限制 |
 |---|---|---|
-| `maxConcurrentSessions` | `2` | 最大独立 worker 数，整数 1–4，按需启动。只对前台请求生效：标题 / 压缩等辅助请求只复用空闲的连接，不会为它们扩容。不是单个官方进程的多 session 开关，也不增加账户额度。 |
-| `queueTimeoutMs` | `120000` | 等待 worker 的上限（毫秒），最小 1000；队列最多 64 项，排队可取消。 |
 | `agyCliPath` | 未设置 | 官方 `agy` CLI 路径，优先于 `AGY_CLI_BIN`、PATH 与平台默认位置；刷新时重新探测。 |
 | `binaryPath` | 未设置 | 本地官方 ACP server 入口，优先级最高；指定但不存在会报错，不静默换来源。 |
 | `extraArgs` | `[]` | 额外启动参数；不要传入会改变协议、工具隔离或认证边界的参数并假定仍兼容。 |
@@ -25,14 +23,12 @@
 | `reuseSessions` | `true` | 复用同一个 ACP 会话：同一 DSH 对话的后续回合只发送**新增消息**，不再每轮 `session/new` 并重放全部历史。历史被压缩、回退或编辑，模型/思考强度变化，工具目录变化，或 MCP 桥被其他对话接管时自动重建。关闭后回到旧的「每轮新会话 + 全量重放」。 |
 | `resumeSessions` | `true` | 插件或 Host 重启后用 `session/resume` 接上原 ACP 会话（不重放历史）。映射写在缓存目录的 `sessions.json`，只存会话 ID、cwd、已发送条数、输入/输出与路由 sha256 和时间戳，不存对话内容、system 提示或工具 schema。接不上就直接报 `AGY_SESSION_UNRECOVERABLE`，不再回退重建。 |
 | `cancelGraceMs` | `30000` | 取消后等待 agent 确认停止的上限（毫秒）；`0` 表示不等待、立即回收进程。热启动约 10 秒，30 秒留出余量。 |
-| `idleRecycleMs` | `0` | 保留进程的最长空闲时间（毫秒），超时回收释放内存；**默认 `0` 不回收**。池上限就是 `maxConcurrentSessions`，常驻内存有界（单 worker 约 250–370 MB）；而回收的代价是下一轮冷启动并重放整段历史——实测 1007 条重放后模型会沉在旧任务里，把新消息当背景。只有内存紧张（例如容量 4 且可用内存 < 2 GB）时才建议设成几分钟。 |
+| `idleRecycleMs` | `900000` | 空闲 worker 保留时长（毫秒）。插件按「一对话一进程」运行、不设并发上限；空闲 15 分钟后回收进程，下次进入该对话用 `session/resume` 接回（真机验证：不重放历史）。`0` 表示不回收。 |
 
 示例（不包含代理密码或账号材料）：
 
 ```json
 {
-  "maxConcurrentSessions": 2,
-  "queueTimeoutMs": 120000,
   "acpVersion": "1.4.0",
   "reuseSessions": true,
   "resumeSessions": false,

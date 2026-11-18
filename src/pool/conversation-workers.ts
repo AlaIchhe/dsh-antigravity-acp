@@ -4,36 +4,35 @@ import type { AcpLifecycleSnapshot } from '../runtime/lifecycle.js'
 import type { AntigravityAcpAdapter } from '../adapter/antigravity-adapter.js'
 import { AGY_TURN_ERROR } from '../adapter/prompt-turn.js'
 
-/** Workers own independent transports, bridges and prompt state. No tool execution lives here. */
+/**
+ * 每个对话一个官方 ACP 进程，按需启动、不设并发上限。
+ *
+ * 这里**不是并发池**：没有容量、没有等待队列、没有排队超时。真机探针确认
+ * 官方 agent 单进程本身就能并发多个会话，但插件侧仍按「一对话一链接」分配，
+ * 原因是每条链接各自持有 MCP 桥、工具授权代次与 prompt 生命周期——共享一个
+ * 进程会让一次卡死/崩溃带走所有对话。会话数量不设限，靠空闲回收 + `session/resume`
+ * 把进程数收敛到「活跃对话数」。
+ */
 export interface AcpWorker {
   adapter: Pick<AntigravityAcpAdapter, 'busy' | 'stream' | 'listModels' | 'resolveModel' | 'warmup' | 'discoverModels'> & Partial<Pick<AntigravityAcpAdapter, 'prepareCall'>>
   ensureImages?: (signal?: AbortSignal) => Promise<void>
   read(): AcpLifecycleSnapshot
   dispose(): Promise<void>
 }
+
 interface Slot {
   worker: AcpWorker
   leased: boolean
   owner?: Pick<GenerateOptions, 'sessionId' | 'purpose'>
-  /** 最近一次服务过的 DSH 对话：新对话优先用别的 worker，避免抢走别人的复用会话。 */
+  /** 最近一次服务过的 DSH 对话：新对话优先用没服务过任何对话的 worker。 */
   lastOwner?: string
 }
-interface Waiter {
-  options?: GenerateOptions
-  resolve(slot: Slot): void
-  reject(error: unknown): void
-  cleanup(): void
-}
 
-export class PooledAcpAdapter extends LlmAdapter {
+export class ConversationWorkers extends LlmAdapter {
   private readonly slots: Slot[] = []
-  private readonly waiters: Waiter[] = []
   /** DSH 对话 → 承载它的 worker 下标：会话复用记录在 worker 内部，换 worker 即丢失。 */
   private readonly affinity = new Map<string, number>()
   private closed = false
-  private poll?: ReturnType<typeof setInterval>
-  private readonly capacity: number
-  private readonly queueTimeoutMs: number
   private readonly readSessionAffinity: () => boolean
   private get sessionAffinity(): boolean { return this.readSessionAffinity() }
   private preparation?: Promise<void>
@@ -43,21 +42,23 @@ export class PooledAcpAdapter extends LlmAdapter {
   private preparationGeneration = 0
   private disposal?: Promise<void>
 
-  constructor(private readonly create: () => AcpWorker, options: { capacity?: number; queueTimeoutMs?: number; sessionAffinity?: boolean | (() => boolean) } = {}) {
+  constructor(private readonly create: () => AcpWorker, options: { sessionAffinity?: boolean | (() => boolean) } = {}) {
     super()
-    this.capacity = Math.max(1, Math.min(4, Math.floor(options.capacity ?? 2)))
-    this.queueTimeoutMs = Math.max(1_000, options.queueTimeoutMs ?? 120_000)
     const affinity = options.sessionAffinity ?? true
     this.readSessionAffinity = typeof affinity === 'function' ? affinity : () => affinity
+    // 预先造一个 worker 对象（不 spawn 进程）：首个对话不必等惰性创建，也保证
+    // 生命周期快照与设置热更新始终有可读取的 worker。
     this.addSlot()
   }
 
   get busy(): boolean { return this.slots.some(s => s.leased || s.worker.adapter.busy) }
   override providerInfo(provider: string) { return { id: provider, name: 'Antigravity (ACP)' } }
+
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const lists = await Promise.all(this.slots.map(s => s.worker.adapter.listModels(provider)))
     return [...new Map(lists.flat().map(m => [m.id, m])).values()]
   }
+
   override async resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
     const models = await Promise.all(this.slots.map(s => s.worker.adapter.resolveModel(provider, model, signal)))
     const first = models[0]
@@ -86,7 +87,6 @@ export class PooledAcpAdapter extends LlmAdapter {
   override async prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
     if (this.closed) throw new LlmError('ACP 插件已卸载', 'AGY_LINK_CLOSED')
     if (signal?.aborted) throw new LlmError('ACP 请求已取消', AGY_TURN_ERROR.ABORTED)
-    // Discover input capabilities before DSH projects attachments into a text-only request.
     while (!this.prepared) {
       if (this.closed) throw new LlmError('ACP 插件已卸载', 'AGY_LINK_CLOSED')
       if (signal?.aborted) throw new LlmError('ACP 请求已取消', AGY_TURN_ERROR.ABORTED)
@@ -95,11 +95,11 @@ export class PooledAcpAdapter extends LlmAdapter {
         const generation = this.preparationGeneration
         this.preparationAbort = controller
         const preparation = (async () => {
-          const slot = await this.acquire(undefined, controller.signal)
+          const slot = this.takeWorker(undefined)
           try {
             await slot.worker.adapter.prepareCall?.(provider, model, controller.signal)
             if (!controller.signal.aborted && !this.closed && generation === this.preparationGeneration) this.prepared = true
-          } finally { slot.leased = false; this.dispatch() }
+          } finally { slot.leased = false }
         })().finally(() => {
           if (this.preparation === preparation) { this.preparation = undefined; this.preparationAbort = undefined }
         })
@@ -115,13 +115,15 @@ export class PooledAcpAdapter extends LlmAdapter {
     if (this.closed) throw new LlmError('ACP 插件已卸载', 'AGY_LINK_CLOSED')
     return { model: await this.resolveModel(provider, model, signal), stream: options => this.stream(options) }
   }
+
   override async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
-    const slot = await this.acquire(options, options.signal)
+    if (this.closed) throw new LlmError('ACP 插件已卸载', 'AGY_LINK_CLOSED')
+    if (options.signal?.aborted) throw new LlmError('ACP 请求在发起前已取消', AGY_TURN_ERROR.ABORTED)
+    const slot = this.takeWorker(options)
     try {
-      // 握手失败或取消也必须归还槽位，不能让池被一次图片准备错误耗尽。
+      // 握手失败或取消也必须归还连接，不能把某条链接永久占住。
       if (slot.worker.ensureImages && hasImageInput(options)) await slot.worker.ensureImages(options.signal)
       slot.owner = { sessionId: options.sessionId, purpose: options.purpose }
-      // 粘住承载该对话的 worker：ACP 会话复用记录在 worker 内部。
       const affinityKey = this.affinityKey(options)
       if (affinityKey !== undefined) this.rememberAffinity(affinityKey, this.slots.indexOf(slot))
       yield* slot.worker.adapter.stream(options)
@@ -129,38 +131,39 @@ export class PooledAcpAdapter extends LlmAdapter {
       slot.leased = false
       if (!slot.worker.adapter.busy) slot.owner = undefined
       if (this.sessionAffinity && options.sessionId !== undefined && options.purpose === undefined) slot.lastOwner = options.sessionId
-      this.dispatch()
     }
   }
 
   async warmup(signal?: AbortSignal): Promise<void> {
-    // An active worker already has a connection; warming a second worker is unnecessary.
     if (this.busy) return
-    const slot = await this.acquire(undefined, signal)
+    const slot = this.takeWorker(undefined)
     try { await slot.worker.adapter.warmup(signal) }
-    finally { slot.leased = false; this.dispatch() }
+    finally { slot.leased = false }
   }
 
   async discoverModels(signal?: AbortSignal, interactive = true): Promise<readonly LlmModelInfo[]> {
-    const slot = await this.acquire(undefined, signal)
+    const slot = this.takeWorker(undefined)
     try { return await slot.worker.adapter.discoverModels(signal, interactive) }
-    finally { slot.leased = false; this.dispatch() }
+    finally { slot.leased = false }
   }
 
   read(): AcpLifecycleSnapshot {
     const rows = this.slots.map(s => s.worker.read())
     const index = this.slots.findIndex(s => s.leased || s.worker.adapter.busy)
-    const current = rows[index >= 0 ? index : rows.findIndex(r => r.processRunning)] ?? rows[0]!
+    const current = rows[index >= 0 ? index : rows.findIndex(r => r.processRunning)] ?? rows[0]
+    const base: AcpLifecycleSnapshot = current ?? {
+      phase: 'idle', phaseElapsedMs: 0, processRunning: false, starts: 0, reuses: 0, recycles: 0,
+    }
     return {
-      ...current,
+      ...base,
       starts: rows.reduce((n, r) => n + r.starts, 0),
       reuses: rows.reduce((n, r) => n + r.reuses, 0),
       recycles: rows.reduce((n, r) => n + r.recycles, 0),
       processRunning: rows.some(r => r.processRunning),
       queue: {
         active: this.slots.filter(s => s.leased).length,
-        waiting: this.waiters.length,
-        capacity: this.capacity,
+        waiting: 0,
+        capacity: this.slots.length,
         workers: rows.filter(r => r.processRunning).length,
         parked: this.slots.filter(s => !s.leased && s.worker.adapter.busy).length,
       },
@@ -175,21 +178,26 @@ export class PooledAcpAdapter extends LlmAdapter {
   private async disposeWorkers(): Promise<void> {
     this.closed = true
     this.preparationAbort?.abort()
-    if (this.poll) clearInterval(this.poll)
-    this.poll = undefined
-    for (const waiter of this.waiters.splice(0)) {
-      waiter.cleanup()
-      waiter.reject(new LlmError('ACP 插件已卸载', 'AGY_LINK_CLOSED'))
-    }
     const results = await Promise.allSettled(this.slots.map(s => s.worker.dispose()))
     const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
     if (failed) throw failed.reason
   }
 
   private addSlot(): Slot {
-    const slot = { worker: this.create(), leased: false }
+    const slot: Slot = { worker: this.create(), leased: false }
     this.slots.push(slot)
     return slot
+  }
+
+  /**
+   * 取一个 worker 并立即租用：优先同一对话的驻留链接，其次空闲链接，最后按需新建。
+   * 标题这类一次性请求**不新建进程**，没有空闲链接时直接报错，让宿主保留兜底标题。
+   */
+  private takeWorker(options?: GenerateOptions): Slot {
+    if (this.closed) throw new LlmError('ACP 插件已卸载', 'AGY_LINK_CLOSED')
+    const slot = this.select(options)
+    if (slot) { slot.leased = true; return slot }
+    throw new LlmError('没有空闲的 ACP 连接，标题请求已跳过', 'AGY_NO_IDLE_WORKER')
   }
 
   /** 只有普通聊天轮参与粘性；标题/压缩等一次性请求不占用会话绑定。 */
@@ -198,27 +206,11 @@ export class PooledAcpAdapter extends LlmAdapter {
     return options.sessionId
   }
 
-  /**
-   * 只有前台请求（`purpose` 为空）才允许扩容出新的 worker。
-   *
-   * 标题（`session-title`）、压缩（`compaction`）这类一次性请求只复用已开的连接。
-   * 依据是「少一条不必要的连接」本身，不是「并发必然触发 429」——后者没有证据：
-   * 2026-11-18 00:59 的链路是主回合连吃 8 次 429 而标题 Low 正常返回，但同一天
-   * 11:24–11:28 两个 worker 同账号并发流式生成、零 429，且失败的那条在另一条
-   * 流结束后仍被拒 2 分 40 秒，所以并发不是充分条件，触发条件至今未查明。
-   * 仍需这条策略的原因：自动标题是纯装饰请求，没有理由为它额外起进程（实测
-   * 300+ MB）、额外发一次请求、额外占用账号的并发与速率预算。辅助请求因此排队
-   * 等空闲连接，等不到就按 `queueTimeoutMs` 超时（标题保留兜底名）。
-   */
-  private mayExpand(options?: GenerateOptions): boolean {
-    return options?.purpose === undefined
-  }
-
   private rememberAffinity(key: string, index: number): void {
     if (index < 0) return
     this.affinity.delete(key)
     this.affinity.set(key, index)
-    while (this.affinity.size > 64) {
+    while (this.affinity.size > 512) {
       const oldest = this.affinity.keys().next().value
       if (oldest === undefined) break
       this.affinity.delete(oldest)
@@ -226,90 +218,29 @@ export class PooledAcpAdapter extends LlmAdapter {
   }
 
   private select(options?: GenerateOptions): Slot | undefined {
-    // Preserve ownership across tool-result calls, including synchronous compaction.
     const owner = options && this.slots.find(s => s.owner
       && (s.leased || s.worker.adapter.busy)
       && s.owner.sessionId === options.sessionId
       && (s.owner.purpose === options.purpose || options.purpose === 'compaction'))
     if (owner) return owner.leased ? undefined : owner
-    // 已有归属的 DSH 对话只等它自己的 worker：换一个 worker 会丢掉 ACP 会话
-    // 复用记录，退化成每轮重建。没有归属（或记录已被淘汰）时照常调度。
+
     const affinityKey = this.affinityKey(options)
     if (affinityKey !== undefined) {
       const pinned = this.slots[this.affinity.get(affinityKey) ?? -1]
-      // 空闲就用自己的 worker（保住 ACP 会话复用）；被别的对话占用时不硬等——
-      // 宁可这一轮换 worker 重建会话，也不让用户看着「没反应」。同一对话自己的
-      // 并发请求由上面的 owner 分支负责排队，不会走到这里。
       if (pinned && !pinned.leased && !pinned.worker.adapter.busy) return pinned
     }
+
     const free = this.slots.filter(s => !s.leased && !s.worker.adapter.busy)
     if (free.length > 0) {
-      // 开启会话粘性时，新对话优先用没服务过任何对话的 worker；都在服务过时，
-      // 容量允许就先扩容——避免已有对话的复用会话被顺手接管。关闭粘性时保持
-      // 旧的纯负载调度（不额外 spawn）。
       if (affinityKey !== undefined) {
         const unbound = free.find(s => s.lastOwner === undefined)
         if (unbound) return unbound
-        if (this.slots.length < this.capacity) return this.addSlot()
       }
       return free[0]
     }
-    // 辅助请求到这里只可能排队：没有空闲连接，也不为它扩容。
-    if (this.slots.length < this.capacity && this.mayExpand(options)) return this.addSlot()
-    return undefined
-  }
-
-  private acquire(options: GenerateOptions | undefined, signal?: AbortSignal): Promise<Slot> {
-    if (this.closed) return Promise.reject(new LlmError('ACP 插件已卸载', 'AGY_LINK_CLOSED'))
-    if (signal?.aborted) return Promise.reject(new LlmError('ACP 请求在排队前已取消', AGY_TURN_ERROR.ABORTED))
-    // Tool results release parked work and must never be refused by an unrelated full queue.
-    const owner = options && this.slots.find(s => !s.leased && s.worker.adapter.busy && s.owner
-      && s.owner.sessionId === options.sessionId
-      && (s.owner.purpose === options.purpose || options.purpose === 'compaction'))
-    if (owner) { owner.leased = true; return Promise.resolve(owner) }
-    if (this.waiters.length >= 64) return Promise.reject(new LlmError('ACP 等待队列已满，请稍后重试', 'AGY_QUEUE_FULL'))
-    return new Promise((resolve, reject) => {
-      const remove = (error: LlmError): void => {
-        const index = this.waiters.indexOf(waiter)
-        if (index < 0) return
-        this.waiters.splice(index, 1)
-        waiter.cleanup()
-        reject(error)
-        this.dispatch()
-      }
-      const abort = (): void => remove(new LlmError('ACP 请求在等待连接时已取消', AGY_TURN_ERROR.ABORTED))
-      const timer = setTimeout(() => remove(new LlmError('ACP 连接繁忙，等待超时；请完成其他对话的工具审批或稍后重试', 'AGY_QUEUE_TIMEOUT')), this.queueTimeoutMs)
-      const waiter: Waiter = { options, resolve, reject, cleanup: () => { clearTimeout(timer); signal?.removeEventListener('abort', abort) } }
-      signal?.addEventListener('abort', abort, { once: true })
-      this.waiters.push(waiter)
-      if (signal?.aborted) abort()
-      this.dispatch()
-    })
-  }
-
-  private dispatch(): void {
-    if (this.closed) return
-    // Stable sort keeps FIFO within a priority. A blocked owner does not block other sessions.
-    this.waiters.sort((a, b) => Number(a.options?.purpose === 'session-title') - Number(b.options?.purpose === 'session-title'))
-    for (const waiter of [...this.waiters]) {
-      let slot: Slot | undefined
-      try { slot = this.select(waiter.options) }
-      catch (error) {
-        this.waiters.splice(this.waiters.indexOf(waiter), 1)
-        waiter.cleanup(); waiter.reject(error)
-        continue
-      }
-      if (!slot) continue
-      slot.leased = true
-      // Set the owner synchronously, before a second request can acquire another worker.
-      if (waiter.options) slot.owner = { sessionId: waiter.options.sessionId, purpose: waiter.options.purpose }
-      else slot.owner = undefined
-      this.waiters.splice(this.waiters.indexOf(waiter), 1)
-      waiter.cleanup(); waiter.resolve(slot)
-    }
-    // Parked prompts can be aborted by their existing signal while no stream is running.
-    if (this.waiters.length && !this.poll) { this.poll = setInterval(() => this.dispatch(), 100); this.poll.unref() }
-    if (!this.waiters.length && this.poll) { clearInterval(this.poll); this.poll = undefined }
+    // 标题是纯装饰请求：不新建进程，直接放弃。
+    if (options?.purpose === 'session-title') return undefined
+    return this.addSlot()
   }
 }
 
