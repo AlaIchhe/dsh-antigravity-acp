@@ -1372,8 +1372,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   }
 
   async *#runNewRound(options: GenerateOptions): AsyncGenerator<StreamChunk> {
-    // 用户已经在发下一条消息：上一轮取消宽限的 pending 不该再挡住新回合。
-    this.#clearCancelGrace()
     this.#clearIdleRecycle()
     await withAbort(this.#settleRecycle(), options.signal)
     if (this.#disposed) throw new LlmError('Antigravity ACP adapter 已卸载', 'AGY_LINK_CLOSED')
