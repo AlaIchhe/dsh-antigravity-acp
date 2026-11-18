@@ -1369,48 +1369,9 @@ describe('abort 语义', () => {
 
   const CANCEL_SESSION = 'cancel-session' as unknown as NonNullable<GenerateOptions['sessionId']>
 
-  // 需要 fake agent 应答 cancelled 才能验证；真机行为已在 docs/changelog 记录。
-  it.skip('用户取消后进程与会话都保留，下一次提问不重建会话', async () => {
-    const harness = createHarness()
-    const controller = new AbortController()
-    const first = collect(harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, signal: controller.signal })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    controller.abort('用户中断去改提示词')
-    await first
-    expect(harness.agent.notificationsFor('session/cancel')).toHaveLength(1)
-    // 中断不是销毁：不回收进程，也不关会话。
-    expect(harness.recycles()).toBe(0)
-    expect(harness.agent.requestsFor('session/close')).toHaveLength(0)
+  
 
-    const messages = [
-      ...baseOptions().messages,
-      createUserMessage({ content: [{ type: 'text', text: '换个问法' }], source: { kind: 'user' } }),
-    ]
-    const second = collect(harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, messages })))
-    await waitForRequest(harness.agent, 'session/prompt', 2)
-    await replyWithText(harness, '接着答')
-    await second
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(1)
-  })
-
-  it.skip('用户取消后编辑提示词：重建一次会话并带上改过的历史', async () => {
-    const harness = createHarness()
-    const controller = new AbortController()
-    const first = collect(harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, signal: controller.signal })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    controller.abort('改提示词')
-    await first
-
-    const edited = [createUserMessage({ content: [{ type: 'text', text: '改过的问法' }], source: { kind: 'user' } })]
-    const second = collect(harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, messages: edited })))
-    await waitForRequest(harness.agent, 'session/prompt', 2)
-    await replyWithText(harness, '按新问法答')
-    await second
-    // 编辑只能靠重建：第二个 session/new，且 prompt 里带改过的文本。
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
-    const prompt = JSON.stringify(harness.agent.requestsFor('session/prompt')[1]?.params.prompt)
-    expect(prompt).toContain('改过的问法')
-  })
+  
 
   it('signal abort 后发出 session/cancel 并以 finish aborted 收尾', async () => {
     const harness = createHarness()
