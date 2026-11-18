@@ -198,6 +198,8 @@ interface ReusedSession {
   outputHash?: string
   /** 该会话是否注册过 MCP 工具；只有这类会话依赖桥的 token 归属。 */
   usesTools: boolean
+  /** 上一轮被用户取消（没有交付输出）：允许下一轮直接续，不要求输出指纹匹配。 */
+  cancelled?: boolean
 }
 
 /*
@@ -982,7 +984,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       this.#dropSession(record, '历史已不是已发送前缀的追加（压缩、回退或编辑）')
       return undefined
     }
-    if (!outputMatches(options.messages.slice(record.sentCount), record.outputHash)) {
+    if (record.cancelled !== true && !outputMatches(options.messages.slice(record.sentCount), record.outputHash)) {
       this.#dropSession(record, '上一轮输出已变化或来自其他会话')
       return undefined
     }
@@ -1450,6 +1452,10 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         // 下一轮优先按增量续上；只有非取消的异常终止才丢弃会话。
         const cancelled = info?.aborted === true && turn.promptStarted
         if (cancelled && key !== undefined) this.#cancelledKeys.add(key)
+        if (cancelled) {
+          const own = [...this.#sessions.values()].find((item) => item.sessionId === turn.sessionId)
+          if (own) own.cancelled = true
+        }
         if (info?.clean !== true) {
           this.#bridge.invalidateRound(reason)
           if (!cancelled) this.#dropSessionsForLink(link, '回合异常终止')
