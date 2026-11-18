@@ -39,8 +39,8 @@ interface SessionMapFile {
 
 /** 映射文件格式版本。 */
 const SESSION_MAP_FORMAT = 2
-/** 默认保留的会话映射条数。 */
-const MAX_ENTRIES = 64
+/** 会话映射条数上限：不设上限（条目只存 id 与哈希，不存对话内容）。 */
+const MAX_ENTRIES = Number.POSITIVE_INFINITY
 /** 默认文件名。 */
 const FILE_NAME = 'sessions.json'
 

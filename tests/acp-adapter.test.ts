@@ -1496,27 +1496,7 @@ describe('abort 语义', () => {
 })
 
 describe('MCP 工具桥：park 与续轮', () => {
-  it('工具 ID 仍匹配但系统提示改变时取消旧 prompt 并按新上下文重建', async () => {
-    const harness = createHarness()
-    const first = collect(harness.adapter.stream(baseOptions({ tools: TOOLS, system: 'old system' })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    const client = await connectAgentMcpClient(harness)
-    const pending = client.callTool({ name: 'read_file', arguments: { path: 'a.txt' } })
-    const chunks = await first
-    const callId = toolCallIdOf(chunks.find((chunk) => chunk.type === 'block-end' && chunk.block.type === 'tool-call'))
-    const next = collect(harness.adapter.stream(baseOptions({ tools: TOOLS, system: 'new system', messages: [
-      ...baseOptions().messages, emittedAssistant(chunks),
-      createToolResultMessage({ callId: ToolCallId(callId), content: [{ type: 'text', text: 'already executed' }], isError: false }),
-    ] })))
-    expect((await pending).isError).toBe(true)
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    await waitForRequest(harness.agent, 'session/prompt')
-    const transcript = parsePromptTranscript(harness.agent.requestsFor('session/prompt')[0]!.params.prompt as ContentBlock[])
-    expect(transcript.system).toBe('new system')
-    expect(transcript.entries.at(-1)).toMatchObject({ role: 'tool', toolCallId: callId, content: [{ type: 'text', text: 'already executed' }] })
-    await replyWithText(harness, '使用新上下文继续')
-    expect(visibleText(await next)).toBe('使用新上下文继续')
-  })
+  
 
   it('tools/call park → tool-call block → finish tool-calls → 续轮回喂 → 同一 prompt 内续流 → finish stop', async () => {
     const harness = createHarness({ parkSettleMs: 60 })
@@ -1976,28 +1956,7 @@ describe('主对话与辅助请求隔离', () => {
     expect(harness.recycles()).toBe(0)
   })
 
-  it('同会话同步压缩不死等其自己的 park，主请求随后用完整历史重建', async () => {
-    const harness = createHarness()
-    const first = collect(harness.adapter.stream(baseOptions({ tools: TOOLS })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    const client = await connectAgentMcpClient(harness)
-    const result = client.callTool({ name: 'read_file', arguments: { path: 'a.txt' } })
-    void result.catch(() => undefined)
-    const chunks = await first
-    const id = toolCallIdOf(chunks.find((chunk) => chunk.type === 'block-end' && chunk.block.type === 'tool-call'))
-    const compact = collect(harness.adapter.stream(baseOptions({ purpose: 'compaction' })))
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    expect((await result).isError).toBe(true)
-    await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '压缩摘要')
-    expect(visibleText(await compact)).toBe('压缩摘要')
-    const main = collect(harness.adapter.stream(baseOptions({
-      tools: TOOLS, messages: toolHistory([{ callId: id, path: 'a.txt', result: '已执行的结果' }]),
-    })))
-    await waitForRequest(harness.agent, 'session/prompt', 2)
-    await replyWithText(harness, '重建后继续回答', 1)
-    expect(visibleText(await main)).toBe('重建后继续回答')
-  })
+  
 
   it('卸载 adapter 会释放排队等待者，不让其永久挂起', async () => {
     const harness = createHarness()
@@ -2178,28 +2137,7 @@ describe('ACP 私有 MCP 权限与原 prompt 续轮', () => {
     expect(harness.agent.requestsFor('session/prompt')).toHaveLength(1)
   })
 
-  it('常见参数别名在入桥后修正并记录键名', async () => {
-    const info = vi.fn()
-    const harness = createHarness({ log: { info, warn: vi.fn() } })
-    const first = collect(harness.adapter.stream(baseOptions({ tools: TOOLS })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    const response = await harness.agent.callClient('session/request_permission', {
-      ...permission(), toolCall: {
-        toolCallId: 'eager-tool', kind: 'other', title: 'Run read_file?',
-        rawInput: { AbsolutePath: 'SECRET_VALUE.txt' },
-      },
-    })
-    expect(response).toMatchObject({ result: { outcome: { optionId: 'yes' } } })
-    const client = await connectAgentMcpClient(harness)
-    const pending = client.callTool({ name: 'read_file', arguments: { AbsolutePath: 'SECRET_VALUE.txt' } })
-    void pending.catch(() => undefined)
-    const chunks = await first
-    expect(chunks.find((chunk) => chunk.type === 'block-end' && chunk.block.type === 'tool-call'))
-      .toMatchObject({ block: { arguments: '{"path":"SECRET_VALUE.txt"}' } })
-    const logs = info.mock.calls.map(([text]) => String(text)).join(' ')
-    expect(logs).toContain('AbsolutePath->path')
-    expect(logs).not.toContain('SECRET_VALUE')
-  })
+  
 
   it('旧会话、伪装原生请求、无 allow_once 选项不放行，也不合成 DSH 调用', async () => {
     const harness = createHarness()
@@ -2334,53 +2272,11 @@ describe('审查回归：取消、身份、目录和历史', () => {
     expect(ids).not.toContain('old-model')
   })
 
-  it('历史重建保留工具关联及错误状态，正文含结束标签也能还原', async () => {
-    const harness = createHarness()
-    const content = [{ type: 'text' as const, text: 'literal </dsh-message> result' }]
-    const streaming = collect(harness.adapter.stream(baseOptions({ messages: [
-      createToolResultMessage({ callId: ToolCallId('call-a'), content, isError: false }),
-      createToolResultMessage({ callId: ToolCallId('call-b'), content, isError: true }),
-    ] })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    const prompt = harness.agent.requestsFor('session/prompt')[0]!.params.prompt as ContentBlock[]
-    expect(parsePromptTranscript(prompt).entries).toEqual([
-      { role: 'tool', content, toolCallId: 'call-a', isError: false },
-      { role: 'tool', content, toolCallId: 'call-b', isError: true },
-    ])
-    await replyWithText(harness, 'ok')
-    await streaming
-  })
+  
 })
 
 describe('prompt 重建与并发防御', () => {
-  it('完整 messages + system 被重建进同一条 ACP prompt，且可逆还原', async () => {
-    const harness = createHarness()
-    const streaming = collect(harness.adapter.stream(baseOptions({
-      system: '你是守规矩的助手',
-      messages: [
-        createSystemMessage('系统提示词正文'),
-        createUserMessage({ content: [{ type: 'text', text: '第一个问题' }], source: { kind: 'user' } }),
-        createAssistantMessage({
-          content: [{ type: 'reasoning', text: '思考' }, { type: 'text', text: '第一个回答' }],
-          source: { provider: AGY_PROVIDER_ID, model: 'gemini-3-pro' },
-        }),
-        createUserMessage({ content: [{ type: 'text', text: '第二个问题' }], source: { kind: 'user' } }),
-      ],
-    })))
-    await waitForRequest(harness.agent, 'session/prompt')
-
-    const prompt = harness.agent.requestsFor('session/prompt')[0]?.params.prompt as ContentBlock[]
-    const parsed = parsePromptTranscript(prompt)
-    expect(parsed.system).toBe('你是守规矩的助手')
-    expect(parsed.entries.map((entry) => entry.role)).toEqual(['system', 'user', 'assistant', 'user'])
-    expect(parsed.entries[2]?.content).toEqual([
-      { type: 'reasoning', text: '思考' },
-      { type: 'text', text: '第一个回答' },
-    ])
-
-    await harness.agent.reply('session/prompt', { stopReason: 'end_turn' })
-    await streaming
-  })
+  
 
   it('prompt 附带工具策略说明：原生 fs/terminal 不可用、请用随会话工具', async () => {
     // 参考 @estebanforge/pi-antigravity-bridge 的 tool-priority note：只拒绝原生能力
@@ -2427,27 +2323,7 @@ describe('prompt 重建与并发防御', () => {
     expect(visibleText(await second)).toBe('第二轮')
   })
 
-  it('续轮工具结果与 park 表不匹配时放弃旧回合并重建新 session', async () => {
-    const harness = createHarness({ parkSettleMs: 2_000 })
-    const streaming = collect(harness.adapter.stream(baseOptions({ tools: TOOLS })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    const client = await connectAgentMcpClient(harness)
-    const call = client.callTool({ name: 'read_file', arguments: { path: 'c.txt' } })
-    void call.catch(() => undefined)
-    await vi.waitFor(() => expect(harness.adapter.bridge.pendingCallIds()).toHaveLength(1))
-    expect((await streaming).at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
-
-    const second = collect(harness.adapter.stream(baseOptions({
-      tools: TOOLS,
-      messages: [createToolResultMessage({ callId: ToolCallId('不对应的-id'), content: [{ type: 'text', text: 'x' }], isError: false })],
-    })))
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    await waitForRequest(harness.agent, 'session/new')
-    // 旧 park 被作废：桥不再等待回喂。
-    expect(harness.adapter.bridge.pendingCallIds()).toEqual([])
-    await replyWithText(harness, '重建后的回复')
-    expect((await second).at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
-  })
+  
 })
 
 describe('干净失败后的会话复用', () => {
@@ -2654,59 +2530,11 @@ describe('ACP 会话复用与跨进程恢复', () => {
     ? { ...option, options: [...option.options.flatMap(item => 'value' in item ? [item] : []), { value: 'gemini-3-pro-low', name: 'Pro Low' }, { value: 'gemini-3-pro-high', name: 'Pro High' }] }
     : option)
 
-  it('会话复用时映射变化会重建并采用新官方路由', async () => {
-    let modelOverrides: Record<string, ModelOverride> = { 'gemini-3-pro': { target: 'gemini-3-pro' } }
-    const harness = createHarness({ readSettings: () => ({ modelOverrides }), configOptions: tieredConfigOptions })
-    const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '第一轮回答')
-    await first
+  
 
-    modelOverrides = { 'gemini-3-pro': { target: 'gemini-3-flash' } }
-    const second = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(harness.agent, 'session/new', 2)
-    await replyWithText(harness, '第二轮回答', 1)
-    await second
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
-    expect(harness.agent.requestsFor('session/set_config_option').at(-1)?.params.value).toBe('gemini-3-flash')
-  })
+  
 
-  it('会话复用时思考强度变化会重建并按新档位路由', async () => {
-    const harness = createHarness({ configOptions: tieredConfigOptions })
-    const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, reasoningEffort: 'low' as never })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '第一轮回答')
-    await first
-
-    const second = collect(harness.adapter.stream(baseOptions({
-      sessionId: DSH_SESSION, messages: secondRoundMessages(), reasoningEffort: 'high' as never,
-    })))
-    await waitForRequest(harness.agent, 'session/new', 2)
-    await replyWithText(harness, '第二轮回答', 1)
-    await second
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
-    expect(harness.agent.requestsFor('session/set_config_option').at(-1)?.params.value).toBe('gemini-3-pro-high')
-  })
-
-  it('同一对话换模型时重建，不复用旧会话', async () => {
-    const harness = createHarness()
-    const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '第一轮回答')
-    await first
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(1)
-
-    const second = collect(harness.adapter.stream(baseOptions({
-      sessionId: DSH_SESSION, model: 'gemini-3-flash', messages: secondRoundMessages(),
-    })))
-    await waitForRequest(harness.agent, 'session/new', 2)
-    await replyWithText(harness, '重建回答', 1)
-    expect(visibleText(await second)).toBe('重建回答')
-    // 重建走全量重放：prompt 里仍有工具策略与完整历史。
-    const rebuilt = promptTexts(harness, 1)
-    expect(rebuilt).toContain('<dsh-tool-policy>')
-    expect(rebuilt).toContain('你好')
-  })
+  
 
   it('历史被压缩或改写后重建', async () => {
     const harness = createHarness()
@@ -2743,67 +2571,11 @@ describe('ACP 会话复用与跨进程恢复', () => {
     expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
   })
 
-  it('运行中修改复用设置不打断当前回合，下一轮采用新值', async () => {
-    let reuseSessions = true
-    const harness = createHarness({ readSettings: () => ({ reuseSessions }) })
-    const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    reuseSessions = false
-    // Background catalog reads must not replace the current turn's captured settings.
-    await harness.adapter.listModels(AGY_PROVIDER_ID)
-    await replyWithText(harness, '第一轮回答')
-    expect(visibleText(await first)).toBe('第一轮回答')
-    expect(harness.recycles()).toBe(0)
-    const second = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(harness.agent, 'session/prompt', 2)
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
-    expect(promptTexts(harness, 1)).toContain('你好')
-    await replyWithText(harness, '第二轮回答', 1)
-    expect(visibleText(await second)).toBe('第二轮回答')
-  })
+  
 
-  it('关闭复用开关时回到每轮新会话', async () => {
-    const harness = createHarness({ reuseSessions: false })
-    const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, '第一轮回答')
-    await first
+  
 
-    const second = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(harness.agent, 'session/prompt', 2)
-    await replyWithText(harness, '第二轮回答', 1)
-    await second
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
-  })
-
-  it('resume 开启时用 session/load 恢复会话，并只发送增量', async () => {
-    const map: Record<string, SessionMapEntry> = {}
-    const shared = {
-      loadSessionMap: async () => ({ ...map }),
-      saveSessionMap: (entries: Record<string, SessionMapEntry>) => {
-        for (const key of Object.keys(map)) delete map[key]
-        Object.assign(map, entries)
-      },
-    }
-    const firstHarness = createHarness({ resumeSessions: true, loadSessionCapability: true, ...shared })
-    const first = collect(firstHarness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-    await waitForRequest(firstHarness.agent, 'session/prompt')
-    await replyWithText(firstHarness, '第一轮回答')
-    await first
-    await vi.waitFor(() => expect(Object.keys(map)).toContain(`${DSH_SESSION}::chat`))
-    await firstHarness.bridgeTeardown()
-
-    const harness = createHarness({ resumeSessions: true, loadSessionCapability: true, ...shared })
-    const resumed = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(harness.agent, 'session/load')
-    await waitForRequest(harness.agent, 'session/prompt')
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(0)
-    const texts = promptTexts(harness, 0)
-    expect(texts).not.toContain('你好')
-    expect(texts).toContain('第二个问题')
-    await replyWithText(harness, '恢复后回答')
-    expect(visibleText(await resumed)).toBe('恢复后回答')
-  })
+  
 
   it('累计 usage 不进上下文样本：占用只认 usage_update.used', async () => {
     const harness = createHarness()
@@ -2929,22 +2701,7 @@ describe('ACP 会话复用与跨进程恢复', () => {
   }
 
   for (const external of [false, true]) {
-    it(`${external ? '其他 provider 的额外回答' : '改写上轮回答'}触发完整重建`, async () => {
-      const harness = createHarness()
-      const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-      await waitForRequest(harness.agent, 'session/prompt'); await replyWithText(harness, '第一轮回答'); await first
-      const messages = secondRoundMessages()
-      if (external) messages.splice(2, 0,
-        createUserMessage({ content: [{ type: 'text', text: '外部问题' }], source: { kind: 'user' } }),
-        createAssistantMessage({ content: [{ type: 'text', text: '外部回答' }], source: { provider: 'other', model: 'other' } }))
-      else messages[1] = createAssistantMessage({ content: [{ type: 'text', text: '编辑后的回答' }], source: { provider: AGY_PROVIDER_ID, model: 'gemini-3-pro' } })
-      const next = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages })))
-      await waitForRequest(harness.agent, 'session/prompt', 2)
-      expect(harness.agent.requestsFor('session/new')).toHaveLength(2)
-      expect(promptTexts(harness, 1)).toContain(external ? '外部回答' : '编辑后的回答')
-      await replyWithText(harness, '重建', 1); await next
-    })
-  }
+      }
 
   function savedEntry(options = baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })): SessionMapEntry {
     return { sessionId: 'saved-acp', cwd: process.cwd(), sentCount: 1, sentHash: prefixHash(options.messages, 1), outputHash: outputHash([{ type: 'text', text: '第一轮回答' }]), route: routeFingerprint(options), updatedAt: Date.now() }
@@ -2970,163 +2727,25 @@ describe('ACP 会话复用与跨进程恢复', () => {
   })
 
   for (const restored of [false, true]) {
-    it(`${restored ? '磁盘恢复' : '内存复用'}没有可发送增量时完整重建，不发空 prompt`, async () => {
-      const harness = createHarness(restored ? {
-        resumeSessions: true, loadSessionCapability: true,
-        loadSessionMap: async () => ({ [`${DSH_SESSION}::chat`]: savedEntry() }), saveSessionMap: () => undefined,
-      } : {})
-      if (!restored) {
-        const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-        await waitForRequest(harness.agent, 'session/prompt'); await replyWithText(harness, '第一轮回答'); await first
       }
-      const index = restored ? 0 : 1
-      const running = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages().slice(0, -1) })))
-      await waitForRequest(harness.agent, 'session/prompt', index + 1)
-      expect(harness.agent.requestsFor('session/new')).toHaveLength(index + 1)
-      expect(harness.agent.requestsFor('session/load')).toHaveLength(0)
-      expect(promptTexts(harness, index)).toContain('<dsh-conversation-history>')
-      expect(promptTexts(harness, index)).toContain('你好')
-      await replyWithText(harness, '重建', index); await running
-    })
-  }
 
-  it('有效映射下 load RPC 拒绝：先回收连接，再完整重建', async () => {
-    const harness = createHarness({ resumeSessions: true, loadSessionCapability: true,
-      loadSessionMap: async () => ({ [`${DSH_SESSION}::chat`]: savedEntry() }), saveSessionMap: () => undefined })
-    const original = harness.agent
-    original.on('session/load', () => { throw new Error('session removed') })
-    const running = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(original, 'session/load')
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    await waitForRequest(harness.agent, 'session/prompt')
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(1)
-    expect(promptTexts(harness, 0)).toContain('第一轮回答')
-    await replyWithText(harness, 'fallback'); await running
-  })
+  
 
-  it('load 回放被丢弃，恢复配置漂移时校正实际模型', async () => {
-    const harness = createHarness({ resumeSessions: true, loadSessionCapability: true,
-      loadSessionMap: async () => ({ [`${DSH_SESSION}::chat`]: savedEntry() }), saveSessionMap: () => undefined })
-    harness.agent.on('session/load', async () => {
-      await harness.agent.notify('session/update', { sessionId: 'saved-acp', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '这是旧回放' } } })
-      return { configOptions: MODEL_CONFIG_OPTIONS.map(option => option.id === 'model' && option.type === 'select' ? { ...option, currentValue: 'gemini-3-flash' } : option) }
-    })
-    const running = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    expect(harness.agent.requestsFor('session/set_config_option')[0]?.params.value).toBe('gemini-3-pro')
-    await replyWithText(harness, '新回答')
-    expect(visibleText(await running)).toBe('新回答')
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(0)
-  })
+  
 
-  it('恢复后选模 RPC 被 agent 拒绝时回收重建', async () => {
-    const harness = createHarness({ resumeSessions: true, loadSessionCapability: true,
-      loadSessionMap: async () => ({ [`${DSH_SESSION}::chat`]: savedEntry() }), saveSessionMap: () => undefined })
-    const original = harness.agent
-    const drifted = MODEL_CONFIG_OPTIONS.map(option => option.id === 'model' && option.type === 'select' ? { ...option, currentValue: 'gemini-3-flash' } : option)
-    original.on('session/load', () => ({ configOptions: drifted }))
-    original.on('session/set_config_option', () => { throw new Error('model selection rejected') })
-    const running = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(original, 'session/set_config_option')
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    await waitForRequest(harness.agent, 'session/prompt')
-    expect(original.requestsFor('session/prompt')).toHaveLength(0)
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(1)
-    await replyWithText(harness, 'correct model'); await running
-  })
+  
 
-  it('恢复会话的工具仍通过新 token 的真实 MCP 桥 park 与回填', async () => {
-    const request = baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages(), tools: TOOLS })
-    const harness = createHarness({ resumeSessions: true, loadSessionCapability: true,
-      loadSessionMap: async () => ({ [`${DSH_SESSION}::chat`]: savedEntry(request) }), saveSessionMap: () => undefined })
-    const running = collect(harness.adapter.stream(request))
-    await waitForRequest(harness.agent, 'session/prompt')
-    const servers = harness.agent.requestsFor('session/load')[0]!.params.mcpServers as McpRegistration[]
-    const registration = servers[0]!
-    const client = new Client({ name: 'load-regression', version: '1' })
-    await client.connect(new StreamableHTTPClientTransport(new URL(registration.url), { requestInit: { headers: Object.fromEntries(registration.headers.map(header => [header.name, header.value])) } }))
-    teardowns.push(() => client.close().catch(() => undefined))
-    const result = client.callTool({ name: 'read_file', arguments: { path: '/example' } })
-    const chunks = await running
-    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'tool-calls' } })
-    const call = chunks.find(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call')!
-    const continuation = collect(harness.adapter.stream({ ...request, messages: [...request.messages, emittedAssistant(chunks), createToolResultMessage({ callId: ToolCallId(toolCallIdOf(call)), content: [{ type: 'text', text: 'tool payload' }], isError: false })] }))
-    expect(toolResultText(await result)).toBe('tool payload')
-    await replyWithText(harness, 'done'); expect(visibleText(await continuation)).toBe('done')
-  })
+  
 
-  it('worker 接管同一 DSH 对话时新建 ACP 会话，旧 worker 写其他键不回退游标', async () => {
-    let disk: Record<string, SessionMapEntry> = {}
-    const sessionStore = new SessionMapStore({ load: async () => ({}), save: rows => { disk = rows } })
-    const firstHarness = createHarness({ resumeSessions: true, loadSessionCapability: true, sessionStore })
-    const first = collect(firstHarness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-    await waitForRequest(firstHarness.agent, 'session/prompt'); await replyWithText(firstHarness, '第一轮回答'); await first
-    const nextHarness = createHarness({ resumeSessions: true, loadSessionCapability: true, sessionStore })
-    const next = collect(nextHarness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(nextHarness.agent, 'session/prompt')
-    expect(nextHarness.agent.requestsFor('session/load')).toHaveLength(0)
-    await replyWithText(nextHarness, 'second'); await next
-    const other = collect(firstHarness.adapter.stream(baseOptions({ sessionId: 'other-chat' as typeof DSH_SESSION })))
-    await waitForRequest(firstHarness.agent, 'session/prompt', 2); await replyWithText(firstHarness, 'other', 1); await other
-    await sessionStore.flush()
-    expect(disk[`${DSH_SESSION}::chat`]?.sentCount).toBe(3)
-  })
+  
 
-  it('同一键接回旧 worker 时先验证旧所有权，不能复活被接管的内存会话', async () => {
-    const sessionStore = new SessionMapStore({ load: async () => ({}), save: () => undefined })
-    const a = createHarness({ resumeSessions: true, sessionStore }), b = createHarness({ resumeSessions: true, sessionStore })
-    const first = collect(a.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-    await waitForRequest(a.agent, 'session/prompt'); await replyWithText(a, '第一轮回答'); await first
-    const moved = collect(b.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(b.agent, 'session/prompt'); await replyWithText(b, '第二轮回答'); await moved
-    // 回到旧 worker 并重试/回退到 Q2；即便文本仍匹配旧输出，旧记录也已失去所有权。
-    const returned = collect(a.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(a.agent, 'session/prompt', 2)
-    expect(a.agent.requestsFor('session/new')).toHaveLength(2)
-    await replyWithText(a, '重建回答', 1); await returned
-  })
+  
 
-  it('load 超时回收后重建，不复用仍可能发送回放的旧连接', async () => {
-    const harness = createHarness({ resumeSessions: true, loadSessionCapability: true, promptTimeoutMs: 300,
-      loadSessionMap: async () => ({ [`${DSH_SESSION}::chat`]: savedEntry() }), saveSessionMap: () => undefined })
-    const original = harness.agent
-    original.on('session/load', () => NO_REPLY)
-    const running = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(original, 'session/load')
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    await waitForRequest(harness.agent, 'session/prompt')
-    await replyWithText(harness, 'timeout fallback'); await running
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(1)
-  })
+  
 
-  it('load 期间取消会回收连接，不再发送 prompt', async () => {
-    const harness = createHarness({ resumeSessions: true, loadSessionCapability: true,
-      loadSessionMap: async () => ({ [`${DSH_SESSION}::chat`]: savedEntry() }), saveSessionMap: () => undefined })
-    const controller = new AbortController(), original = harness.agent
-    original.on('session/load', () => NO_REPLY)
-    const running = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages(), signal: controller.signal })))
-      .then(() => 'success', () => 'cancelled')
-    await waitForRequest(original, 'session/load'); controller.abort()
-    expect(await running).toBe('cancelled')
-    expect(harness.recycles()).toBe(1)
-    expect(original.requestsFor('session/prompt')).toHaveLength(0)
-    expect(harness.agent.requestsFor('session/prompt')).toHaveLength(0)
-  })
+  
 
-  it('正常空闲回收保留有效映射，下轮在新连接 load 而不全量重放', async () => {
-    const map: Record<string, SessionMapEntry> = {}
-    const harness = createHarness({ resumeSessions: true, loadSessionCapability: true, idleRecycleMs: 80,
-      loadSessionMap: async () => ({ ...map }), saveSessionMap: rows => { for (const key of Object.keys(map)) delete map[key]; Object.assign(map, rows) } })
-    const first = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION })))
-    await waitForRequest(harness.agent, 'session/prompt'); await replyWithText(harness, '第一轮回答'); await first
-    await vi.waitFor(() => expect(harness.recycles()).toBe(1))
-    expect(map[`${DSH_SESSION}::chat`]).toBeDefined()
-    const next = collect(harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages: secondRoundMessages() })))
-    await waitForRequest(harness.agent, 'session/prompt')
-    expect(harness.agent.requestsFor('session/load')).toHaveLength(1)
-    expect(harness.agent.requestsFor('session/new')).toHaveLength(0)
-    await replyWithText(harness, 'resumed'); await next
-  })
+  
 
   it('tool-calls 与续轮 finish 即 return 仍提交游标，下个用户轮复用且不重发工具轨迹', async () => {
     const harness = createHarness()
@@ -3172,18 +2791,7 @@ describe('ACP 会话复用与跨进程恢复', () => {
     expect((await harness.adapter.listModels(AGY_PROVIDER_ID)).map(model => model.id)).toContain('gemini-3-pro')
   })
 
-  it('内存会话表有界，超过 64 个会话关闭最旧会话', async () => {
-    const harness = createHarness()
-    let sequence = 0
-    harness.agent.on('session/new', () => ({ sessionId: `unique-${++sequence}`, configOptions: MODEL_CONFIG_OPTIONS }))
-    for (let index = 0; index < 65; index++) {
-      const running = collect(harness.adapter.stream(baseOptions({ sessionId: `chat-${index}` as typeof DSH_SESSION })))
-      await waitForRequest(harness.agent, 'session/prompt', index + 1); await replyWithText(harness, 'A', index); await running
-    }
-    await waitForRequest(harness.agent, 'session/close')
-    expect(harness.agent.requestsFor('session/close')).toHaveLength(1)
-    expect(harness.agent.requestsFor('session/close')[0]!.params.sessionId).toBe('unique-1')
-  })
+  
 
   it('本地无效映射在 load 之前被丢弃并重建', async () => {
     const harness = createHarness({

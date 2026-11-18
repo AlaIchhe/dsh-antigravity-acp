@@ -3,7 +3,7 @@
  *
  * 背景：官方 agy 只把 MCP 工具 schema 写成磁盘文件，模型调用时常常没读，凭原生
  * 工具的习惯猜参数名（`path` 而非 `file_path`）或漏掉看起来只给 UI 用的必填项
- * （`description`）。这里提供签名、保守别名修正和桥内预检：
+ * （`description`）。这里提供签名渲染与桥内预检：
  * 1. `renderToolSignatures`：把当前目录渲染成紧凑的类 TypeScript 签名，进入 prompt；
  * 2. `inspectToolArguments`：只对照 schema 的 `properties` / `required` 做**保守**
  *    检查（不校验类型），供桥提前给模型可操作的错误、供日志诊断。
@@ -95,39 +95,6 @@ export function inspectToolArguments(tool: Pick<ToolSchema, 'parameters'>, args:
     ? Object.keys(input).filter((key) => !Object.hasOwn(properties, key))
     : []
   return { missing: [...new Set(missing)], unknown }
-}
-
-// 不换算单位、不猜测字段内容；例如 timeout 和 timeoutMs 绝不能按别名处理。
-const ARGUMENT_ALIASES = [
-  ['file_path', 'path', 'absolute_path', 'AbsolutePath', 'target_file', 'TargetFile'],
-  ['command', 'command_line', 'CommandLine'],
-  ['cwd', 'working_directory', 'working_dir', 'Cwd'],
-  ['description', 'Description'],
-] as const
-
-/** 仅当 schema 中目标唯一、输入中来源唯一且目标缺失时，修正常见的字符串参数名。 */
-export function normalizeToolArguments(
-  tool: Pick<ToolSchema, 'parameters'>,
-  args: unknown,
-): { arguments: Record<string, unknown>; renamed: Array<{ from: string; to: string }> } {
-  const input = { ...record(args) }
-  const properties = record(record(tool.parameters)?.properties) ?? {}
-  const renamed: Array<{ from: string; to: string }> = []
-  for (const group of ARGUMENT_ALIASES) {
-    const targets = group.filter((key) => Object.hasOwn(properties, key))
-    if (targets.length !== 1) continue
-    const target = targets[0]!
-    if (Object.hasOwn(input, target)) continue
-    const sources = group.filter((key) => !Object.hasOwn(properties, key) && Object.hasOwn(input, key))
-    if (sources.length !== 1) continue
-    const source = sources[0]!
-    // 这些别名只对字符串字段有确定含义，其他 schema 形状交给原校验路径。
-    if (record(properties[target])?.type !== 'string' || typeof input[source] !== 'string') continue
-    input[target] = input[source]
-    delete input[source]
-    renamed.push({ from: source, to: target })
-  }
-  return { arguments: input, renamed }
 }
 
 /** 键名只有形如标识符且不过长时才可进日志/错误文案（模型可控字符串不原样回显）。 */

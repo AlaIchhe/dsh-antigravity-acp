@@ -70,6 +70,8 @@ export const AGY_ADAPTER_ERROR = {
   NO_MODEL_SELECTOR: 'AGY_NO_MODEL_SELECTOR',
   /** agent 应答选模却没有确认请求的型号，不能静默使用其他模型。 */
   MODEL_SELECTION_MISMATCH: 'AGY_MODEL_SELECTION_MISMATCH',
+  /** 历史无法接上（会话映射失效 / agent 不支持 resume）：按约定不回退重放。 */
+  SESSION_UNRECOVERABLE: 'AGY_SESSION_UNRECOVERABLE',
 } as const
 
 /** MCP 桥与回合的可调参数（由 index.ts 从插件配置注入）。 */
@@ -368,9 +370,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#readImage = options.readImage
     this.#canReadImages = options.canReadImages
     this.#bridge = new McpToolBridge({
-      onArgumentsNormalized: (tool, renamed) => this.#log?.info(
-        `antigravity-acp: 工具参数别名已修正 tool=${tool} ${renamed.map(({ from, to }) => `${from}->${to}`).join(',')}（仅键名）`,
-      ),
     })
     this.#registerBridgeTeardown(async () => {
       this.#disposed = true
@@ -861,23 +860,30 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   }
 
   /**
-   * 跨进程恢复：重启后若磁盘上还留着该对话的 ACP 会话映射，尝试 `session/load`。
-   * 只信任「路由一致 + 历史仍以已发送前缀开头」；其余情况回退重建，不猜测。
+   * 跨进程恢复：用磁盘上的会话映射接上原 ACP 会话（只走 `session/resume`）。
+   *
+   * 这里**没有回退**：任何一条校验不通过都直接让这一轮失败，而不是悄悄把整段
+   * 历史当文本重灌（那会消耗几十万 token 并把模型带回旧任务）。没有 `session/load`
+   * 退路——旧 agent 不支持 resume 时同样报错。
    */
-  async #resumeSession(options: GenerateOptions, key: string, entry?: SessionMapEntry): Promise<ReusedSession | undefined> {
-    if (!this.#reuseSessions || !this.#resumeSessions || !entry) return undefined
-    const discard = (reason: string): undefined => {
-      this.#log?.info(`antigravity-acp: 放弃恢复 ACP 会话（${reason}）`)
+  async #resumeSession(options: GenerateOptions, key: string, entry?: SessionMapEntry): Promise<ReusedSession> {
+    const fail = (reason: string): never => {
       this.#sessionStore?.delete(key, this.#sessionOwner)
-      return undefined
+      throw new LlmError(
+        `无法接上原 ACP 会话（${reason}）。已禁用回退重放：请新开一个会话，或恢复该映射后再试。`,
+        AGY_ADAPTER_ERROR.SESSION_UNRECOVERABLE,
+      )
     }
-    if (entry.cwd !== this.#cwd) return discard('会话工作目录与当前不一致')
-    if (entry.route !== this.#sessionRouteFingerprint(options)) return discard('模型、系统提示或工具目录已变化')
-    if (options.messages.length <= entry.sentCount) return discard('没有新增消息')
-    if (!prefixMatches(options.messages, entry.sentCount, entry.sentHash)) return discard('历史不是已发送前缀的追加')
-    if (!outputMatches(options.messages.slice(entry.sentCount), entry.outputHash)) return discard('上一轮输出已变化或来自其他会话')
-    if (options.messages.slice(entry.sentCount).some((message) => message.role === 'tool')) return discard('新增消息包含工具结果')
-    if (incrementalMessages(options.messages, entry.sentCount).length === 0) return discard('没有可发送的增量，按完整历史重建')
+    if (!this.#reuseSessions) return fail('会话复用已关闭')
+    if (!this.#resumeSessions) return fail('resumeSessions 未开启')
+    if (!entry) return fail('没有可用的会话映射')
+    if (entry.cwd !== this.#cwd) return fail('会话工作目录与当前不一致')
+    if (entry.route !== this.#sessionRouteFingerprint(options)) return fail('模型、系统提示或工具目录已变化')
+    if (options.messages.length <= entry.sentCount) return fail('没有新增消息')
+    if (!prefixMatches(options.messages, entry.sentCount, entry.sentHash)) return fail('历史不是已发送前缀的追加')
+    if (!outputMatches(options.messages.slice(entry.sentCount), entry.outputHash)) return fail('上一轮输出已变化或来自其他会话')
+    if (options.messages.slice(entry.sentCount).some((message) => message.role === 'tool')) return fail('新增消息包含工具结果')
+    if (incrementalMessages(options.messages, entry.sentCount).length === 0) return fail('没有可发送的增量')
     // 启动失败/取消时不能把 claim 留在本 worker 名下：条目内容本身没被否定
     // （只是这次没能起进程），下一个 worker 仍可以尝试接管它。
     let link: AgentLink
@@ -895,9 +901,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       if (!this.#bridge.listening) await this.#bridge.start()
       mcpServers = this.#bridge.acpRegistration()
     }
-    // 优先 `session/resume`：它不重放历史，比 `session/load` 干净也更快；
-    // 旧 agent 只声明 loadSession 时仍走 load（期间屏蔽入站回放）。
-    const resume = link.supportsResumeSession()
+    if (!link.supportsResumeSession()) return fail('agent 未声明 session/resume')
     this.#suppressUpdates += 1
     try {
       const timeoutMs = Math.min(this.#promptTimeoutMs, 120_000)
@@ -907,9 +911,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         mcpServers,
         _meta: { antigravity: { enabledTools: [], eagerMcpServers: tools.length > 0 ? [BRIDGE_MCP_SERVER_NAME] : [] } },
       }
-      const response = resume
-        ? await link.resumeSession(request, { signal: options.signal, timeoutMs })
-        : await link.loadSession(request, { signal: options.signal, timeoutMs })
+      const response = await link.resumeSession(request, { signal: options.signal, timeoutMs })
       // load 恢复的是既有会话：它的 system prompt 已在创建时确定，这里既不重发
       // meta（会重复追加）也不塞文本块（会重复指令）。
       this.observeSessionConfigOptions(response.configOptions)
@@ -918,13 +920,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       await this.#applyAgentMode(link, entry.sessionId, response.modes, options.signal)
       throwIfAborted(options.signal)
     } catch (error) {
-      this.#log?.warn(`antigravity-acp: 会话恢复失败（${resume ? 'session/resume' : 'session/load'}），按新轮重建 session=${entry.sessionId}`, error)
-      // 恢复失败可能仍有迟到回放；重建前回收连接。
+      this.#log?.warn(`antigravity-acp: 会话恢复失败（session/resume）session=${entry.sessionId}`, error)
+      // 恢复失败可能仍有迟到回放：回收连接，然后把失败明确抛给宿主。
       this.#bridge.invalidateRound('恢复失败')
       this.#scheduleRecycle(link)
       await this.#settleRecycle()
       throwIfAborted(options.signal)
-      return discard(resume ? 'session/resume 失败' : 'session/load 失败')
+      return fail(`session/resume 失败：${(error as { message?: string }).message ?? String(error)}`)
     } finally {
       this.#suppressUpdates -= 1
     }
@@ -1003,11 +1005,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       usesTools: (options.tools?.length ?? 0) > 0,
     }
     this.#sessions.set(key, record)
-    while (this.#sessions.size > 64) {
-      const oldest = this.#sessions.values().next().value
-      if (!oldest) break
-      this.#dropSession(oldest, '内存会话 LRU 淘汰')
-    }
     return record
   }
 
@@ -1378,8 +1375,26 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     let reused = key === undefined ? undefined : this.#findReusableSession(options, key)
     const entry = key !== undefined && this.#reuseSessions && this.#resumeSessions
       ? await withAbort(this.#sessionStore?.claim(key, this.#sessionOwner) ?? Promise.resolve(undefined), options.signal) : undefined
-    // 内存里没有记录时（插件刚重启），只有 resume 开启才尝试从磁盘映射恢复。
-    if (!reused && key !== undefined && !hadMemoryRecord) reused = await this.#resumeSession(options, key, entry)
+    // 有历史的普通聊天轮必须接上原 ACP 会话；接不上就让这一轮失败。
+    // 这里不提供「把整段历史当文本重灌」的回退：那会重放几十万 token 并把模型
+    // 带回旧任务。一次性请求（标题/压缩）自带完整输入，不走这条路径。
+    const hasPriorHistory = options.purpose === undefined
+      && options.messages.some((message) => message.role === 'assistant' || message.role === 'tool')
+    if (!reused && hasPriorHistory) {
+      if (key === undefined) {
+        throw new LlmError(
+          '这段历史没有可接续的 ACP 会话（缺少会话键）。已禁用回退重放：请新开会话。',
+          AGY_ADAPTER_ERROR.SESSION_UNRECOVERABLE,
+        )
+      }
+      if (hadMemoryRecord) {
+        throw new LlmError(
+          '原 ACP 会话的内存记录已失效（进程重建或桥被接管）。已禁用回退重放：请新开会话。',
+          AGY_ADAPTER_ERROR.SESSION_UNRECOVERABLE,
+        )
+      }
+      reused = await this.#resumeSession(options, key, entry)
+    }
     const tools = options.tools ?? []
     let link: AgentLink
     let sessionId: string

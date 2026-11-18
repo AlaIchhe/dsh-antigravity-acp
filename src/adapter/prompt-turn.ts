@@ -31,7 +31,7 @@ import { BRIDGE_MCP_SERVER_NAME } from '../bridge/mcp-bridge.js'
 import { describePermissionRequest } from './permission-diagnostic.js'
 import { parsePermissionHandoff } from './permission-handoff.js'
 import type { PermissionDiagnostic } from './permission-diagnostic.js'
-import { inspectToolArguments, normalizeToolArguments, safeKeyNames } from './tool-args.js'
+import { inspectToolArguments, safeKeyNames } from './tool-args.js'
 
 /** 本文件使用的原创错误码（AGY_* 体系，与 agent-link / mcp-bridge 同族）。 */
 export const AGY_TURN_ERROR = {
@@ -258,7 +258,7 @@ export class PromptTurn {
     } catch {
       return
     }
-    const { missing, unknown } = inspectToolArguments(tool, normalizeToolArguments(tool, args).arguments)
+    const { missing, unknown } = inspectToolArguments(tool, args)
     if (missing.length === 0 && unknown.length === 0) return
     this.#onArgumentIssues({
       tool: tool.name,

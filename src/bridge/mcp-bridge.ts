@@ -32,7 +32,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
 import type { McpServer as AcpMcpServer } from '@agentclientprotocol/sdk'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
-import { inspectToolArguments, normalizeToolArguments, renderToolSignature, safeKeyNames } from '../adapter/tool-args.js'
+import { inspectToolArguments, renderToolSignature, safeKeyNames } from '../adapter/tool-args.js'
 
 /** 本模块原创错误码（AGY_BRIDGE_*）。 */
 export const AGY_BRIDGE_ERROR = {
@@ -130,7 +130,6 @@ export interface McpToolBridgeOptions {
   /** 固定 token（仅测试用）；缺省随机 32 字节 hex。 */
   token?: string
   /** 只包含目录工具名与固定别名，不记录参数值。 */
-  onArgumentsNormalized?(tool: string, renamed: Array<{ from: string; to: string }>): void
 }
 
 /**
@@ -158,12 +157,10 @@ export class McpToolBridge {
   #callSeq = 0
   /** HTTP 监听器的最近一次运行期错误（诊断用；listen 阶段的错误走 spawn 的 reject）。 */
   #httpError: Error | undefined
-  readonly #onArgumentsNormalized: McpToolBridgeOptions['onArgumentsNormalized']
 
   constructor(options: McpToolBridgeOptions = {}) {
     this.#token = options.token ?? randomBytes(32).toString('hex')
     this.#requestedPort = options.port ?? 0
-    this.#onArgumentsNormalized = options.onArgumentsNormalized
   }
 
   /** 本桥的随机访问 token（注册进 ACP mcpServers 的 header 值即 `Bearer ${token}`）。 */
@@ -475,13 +472,11 @@ export class McpToolBridge {
         isError: true,
       })
     }
-    // 修正无歧义的常见别名后再预检。缺必填参数的调用不进 DSH 队列，
+    // 缺必填参数的调用不进 DSH 队列，
     // 这里只检查 required 键是否存在（不比 DSH 更严格），并把期望签名一并
     // 返回，模型可在同一个 ACP prompt 内立即改正重试。
     const tool = this.#tools.find((item) => item.name === name)
-    const normalized = tool ? normalizeToolArguments(tool, args) : { arguments: args ?? {}, renamed: [] }
-    if (normalized.renamed.length > 0) this.#onArgumentsNormalized?.(name, normalized.renamed)
-    const { missing } = tool ? inspectToolArguments(tool, normalized.arguments) : { missing: [] }
+    const { missing } = tool ? inspectToolArguments(tool, args ?? {}) : { missing: [] }
     if (tool && missing.length > 0) {
       return Promise.resolve({
         content: [{
@@ -492,7 +487,7 @@ export class McpToolBridge {
       })
     }
     const callId = `${BRIDGE_MCP_SERVER_NAME}-${++this.#callSeq}`
-    const call: BridgeParkedCall = { callId, name, arguments: JSON.stringify(normalized.arguments) }
+    const call: BridgeParkedCall = { callId, name, arguments: JSON.stringify(args ?? {}) }
     return new Promise<CallToolResult>((resolve) => {
       this.#pending.set(callId, { call, settle: resolve })
       for (const listener of this.#listeners) listener(call)

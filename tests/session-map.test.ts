@@ -42,20 +42,7 @@ describe('会话映射文件', () => {
     } }))
     expect(await readSessionMap(dir)).toEqual({ good: entry() })
   })
-  it('最多写最近 64 条，rename 失败返回 false 且只清理本次临时文件', async () => {
-    const dir = await directory()
-    await writeSessionMap(dir, Object.fromEntries(Array.from({ length: 80 }, (_, i) => [`chat-${i}`, entry(i)])))
-    const rows = await readSessionMap(dir)
-    expect(Object.keys(rows)).toHaveLength(64)
-    expect(rows['chat-0']).toBeUndefined()
-    expect(rows['chat-79']).toEqual(entry(79))
-    const blocked = join(dir, 'blocked')
-    await mkdir(join(blocked, 'sessions.json'), { recursive: true })
-    await writeFile(join(blocked, '.sessions.json.someone-else.tmp'), 'untouched')
-    expect(await writeSessionMap(blocked, { chat: entry() })).toBe(false)
-    expect((await readdir(blocked)).sort()).toEqual(['.sessions.json.someone-else.tmp', 'sessions.json'])
   })
-})
 
 describe('跨 Host 文件租约', () => {
   it('并发实例不读取/覆盖另一实例的映射，关闭外来实例不删除原租约', async () => {

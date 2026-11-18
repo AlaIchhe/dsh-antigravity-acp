@@ -36,7 +36,6 @@ import {
 } from './runtime/binary.js'
 import type { RuntimeDirectoryLease } from './runtime/binary.js'
 import { ProxyConfigError, resolveProxy } from './runtime/proxy-env.js'
-import { detectSystemProxy } from './runtime/system-proxy.js'
 import { createLiveProxiedFetch, createProxiedFetch } from './runtime/proxied-fetch.js'
 import type { ResolvedProxy } from './runtime/proxy-env.js'
 import { ensureAcpCredentials, writeAcpCredentialFiles } from './runtime/credentials.js'
@@ -274,7 +273,7 @@ async function startAcpRuntime(
   // 命中宿主的默认可重试词表（整步重放会重复 spawn 与 OAuth）。
   const downloadProxy = (() => {
     try {
-      return resolveProxy({ url: config.proxyUrl?.trim() || detectSystemProxy(), bypass: config.proxyBypass })
+      return resolveProxy({ url: config.proxyUrl?.trim(), bypass: config.proxyBypass })
     } catch (error) {
       if (!(error instanceof ProxyConfigError)) throw error
       throw new LlmError(`代理配置无效，无法启动 ACP：${error.message}`, 'AGY_INVALID_PROXY')
@@ -543,7 +542,7 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
   // 保持可编辑。已经带 userinfo 的地址不回显，只报可行动原因。
   const validateInitialProxy = (): void => {
     try {
-      resolveProxy({ url: config.proxyUrl?.trim() || detectSystemProxy(), bypass: config.proxyBypass })
+      resolveProxy({ url: config.proxyUrl?.trim(), bypass: config.proxyBypass })
     } catch (error) {
       if (!(error instanceof ProxyConfigError)) throw error
       ctx.logger?.warn?.(
@@ -552,7 +551,7 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
     }
   }
   validateInitialProxy()
-  const readProxy = () => resolveProxy({ url: config.proxyUrl?.trim() || detectSystemProxy(), bypass: config.proxyBypass })
+  const readProxy = () => resolveProxy({ url: config.proxyUrl?.trim(), bypass: config.proxyBypass })
   const pluginFetch = createLiveProxiedFetch(readProxy)
   // 账号列表 / 当前账号：默认系统账号（真实 HOME，只读导入官方 CLI 登录态）；
   // 面板登录的新账号各自使用隔离 HOME，ACP server 与只读 CLI 都按该 HOME 启动。

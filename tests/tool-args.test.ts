@@ -6,7 +6,6 @@ import { AGY_BRIDGE_ERROR, McpToolBridge } from '../src/bridge/mcp-bridge.js'
 import { buildPromptContent } from '../src/adapter/prompt-transcript.js'
 import {
   inspectToolArguments,
-  normalizeToolArguments,
   renderToolSignature,
   renderToolSignatures,
   safeKeyNames,
@@ -76,34 +75,6 @@ describe('参数预检', () => {
 
   it('模型可控的键名只有形如标识符时才允许回显', () => {
     expect(safeKeyNames(['path', 'a b', 'x'.repeat(80), 'SECRET=token\nnext', 'ok.key-1'])).toEqual(['path', 'ok.key-1'])
-  })
-})
-
-describe('保守参数别名修正', () => {
-  it.each(['path', 'AbsolutePath', 'absolute_path', 'TargetFile'])('唯一别名 %s 改为 schema 中的 file_path，不修改原对象', (key) => {
-    const input = { [key]: 'a.txt', limit: 3 }
-    expect(normalizeToolArguments(READ, input)).toEqual({
-      arguments: { file_path: 'a.txt', limit: 3 }, renamed: [{ from: key, to: 'file_path' }],
-    })
-    expect(input).toEqual({ [key]: 'a.txt', limit: 3 })
-  })
-
-  it('不覆盖已有目标，不处理多来源、非字符串或未声明字段', () => {
-    for (const input of [
-      { file_path: 'a', path: 'b' }, { file_path: null, path: 'b' },
-      { path: 'a', AbsolutePath: 'b' }, { path: 123 }, { unknown: 'a' },
-    ]) expect(normalizeToolArguments(READ, input)).toEqual({ arguments: input, renamed: [] })
-  })
-
-  it('schema 同时声明两个相近字段时不猜目标', () => {
-    const tool = { parameters: { properties: { path: { type: 'string' }, file_path: { type: 'string' } } } }
-    expect(normalizeToolArguments(tool, { AbsolutePath: 'a' }).renamed).toEqual([])
-  })
-
-  it('修正 CommandLine，但不猜缺失说明、不换算 timeout 单位', () => {
-    expect(normalizeToolArguments(BASH, { CommandLine: 'pwd', timeout: 1 })).toEqual({
-      arguments: { command: 'pwd', timeout: 1 }, renamed: [{ from: 'CommandLine', to: 'command' }],
-    })
   })
 })
 
