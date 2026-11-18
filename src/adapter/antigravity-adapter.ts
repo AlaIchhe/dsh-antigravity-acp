@@ -361,7 +361,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#log = options.log
     this.#onMetadataChanged = options.onMetadataChanged
     this.#reuseSessions = options.reuseSessions ?? true
-    this.#resumeSessions = options.resumeSessions ?? false
+    this.#resumeSessions = options.resumeSessions ?? true
     this.#sessionStore = options.sessionStore ?? (options.loadSessionMap && options.saveSessionMap
       ? new SessionMapStore({ load: options.loadSessionMap, save: options.saveSessionMap,
         onError: () => this.#log?.warn('antigravity-acp: 会话映射读写失败，跨进程恢复可能不可用') })
@@ -489,7 +489,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     if (!settings) return
     this.#modelSettings = normalizeModelSettings(settings.modelOverrides)
     this.#reuseSessions = settings.reuseSessions ?? true
-    this.#resumeSessions = settings.resumeSessions ?? false
+    this.#resumeSessions = settings.resumeSessions ?? true
     this.#keepProcessAfterCancel = settings.keepProcessAfterCancel ?? false
     this.#cancelGraceMs = Math.max(0, settings.cancelGraceMs ?? 30_000)
     this.#idleRecycleMs = Math.max(0, settings.idleRecycleMs ?? 0)

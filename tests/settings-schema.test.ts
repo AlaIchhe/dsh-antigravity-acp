@@ -27,7 +27,7 @@ describe('live settings schema and runtime references', () => {
   it('启动、并发等普通配置仍保持普通类型，默认开关和零值正确', () => {
     const config = liveHostConfig(Config({ cancelGraceMs: 0, idleRecycleMs: 0 }))
     expect(config.reuseSessions).toBe(true)
-    expect(config.resumeSessions).toBe(false)
+    expect(config.resumeSessions).toBe(true)
     expect(config.keepProcessAfterCancel).toBe(false)
     expect(config.cliQuotaEnabled).toBe(false)
     expect(config.cancelGraceMs).toBe(0)
