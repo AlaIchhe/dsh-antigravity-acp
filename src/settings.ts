@@ -169,6 +169,6 @@ export const Config = Schema.object({
   resumeSessions: Schema.boolean().default(false).volatile().description('重启后尝试用 session/load 恢复上次的 ACP 会话；依赖 agent 的 loadSession 能力，恢复失败会自动重建'),
   keepProcessAfterCancel: Schema.boolean().default(false).volatile().description('用户取消后保留官方进程：宽限内确认 agent 已停止就只丢弃会话，下一轮不必冷启动；默认关闭'),
   cancelGraceMs: Schema.natural().max(60_000).default(30_000).volatile().description('取消后等待 agent 确认停止的上限（毫秒）；0 表示不等待、立即回收'),
-  idleRecycleMs: Schema.natural().max(3_600_000).default(300_000).volatile().description('保留进程的最长空闲时间（毫秒），超时回收；0 表示不设上限。默认 5 分钟是本插件的资源回收策略，不代表上游缓存 TTL'),
+  idleRecycleMs: Schema.natural().max(3_600_000).default(0).volatile().description('保留进程的最长空闲时间（毫秒），超时回收；默认 0 表示不回收。池上限就是 maxConcurrentSessions，常驻内存有界；回收的代价是下一轮冷启动并重放整段历史'),
   cliQuotaEnabled: Schema.boolean().default(false).volatile().description('允许额度取数调用本机 agy CLI（默认关闭）。关闭时不启动 agy，套餐额度走内置直连，AI Credits 不查询。开启后运行 agy -p /usage 与 agy -p /credits；未找到 CLI 时套餐额度回落直连'),
 })

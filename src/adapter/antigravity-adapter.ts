@@ -364,7 +364,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       : undefined)
     this.#keepProcessAfterCancel = options.keepProcessAfterCancel ?? false
     this.#cancelGraceMs = Math.max(0, options.cancelGraceMs ?? 30_000)
-    this.#idleRecycleMs = Math.max(0, options.idleRecycleMs ?? 300_000)
+    this.#idleRecycleMs = Math.max(0, options.idleRecycleMs ?? 0)
     this.#readImage = options.readImage
     this.#canReadImages = options.canReadImages
     this.#bridge = new McpToolBridge({
@@ -491,7 +491,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#resumeSessions = settings.resumeSessions ?? false
     this.#keepProcessAfterCancel = settings.keepProcessAfterCancel ?? false
     this.#cancelGraceMs = Math.max(0, settings.cancelGraceMs ?? 30_000)
-    this.#idleRecycleMs = Math.max(0, settings.idleRecycleMs ?? 300_000)
+    this.#idleRecycleMs = Math.max(0, settings.idleRecycleMs ?? 0)
     if (this.#sessionStore !== settings.sessionStore) this.#sessionStore?.release(this.#sessionOwner)
     this.#sessionStore = settings.sessionStore
   }
