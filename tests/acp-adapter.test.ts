@@ -2569,7 +2569,7 @@ describe('ACP 会话复用与跨进程恢复', () => {
       const history = [...baseOptions().messages]
       const readUntilFinish = async (messages: RequestMessage[]) => {
         const chunks: StreamChunk[] = []
-        for await (const chunk of harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, messages }))) {
+        for await (const chunk of harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages }))) {
           chunks.push(chunk)
           if (chunk.type === 'finish') break
         }
