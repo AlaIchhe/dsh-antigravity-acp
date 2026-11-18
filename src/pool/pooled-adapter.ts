@@ -198,6 +198,19 @@ export class PooledAcpAdapter extends LlmAdapter {
     return options.sessionId
   }
 
+  /**
+   * 只有前台请求（`purpose` 为空）才允许扩容出新的 worker。
+   *
+   * 标题（`session-title`）、压缩（`compaction`）这类一次性请求只复用已开的连接：
+   * 一条会话消息进来时顺手为标题再开一条 ACP server，等于把「一次对话」变成
+   * 打同一个账号的两条并发——上游按账号做准入时被拒的往往是主回合，而标题反而
+   * 可能成功（实测 2026-11-18 00:59：主回合 8 次 429、标题正常返回）。所以辅助
+   * 请求宁可排队等空闲连接，等不到就按 `queueTimeoutMs` 超时（标题保留兜底名）。
+   */
+  private mayExpand(options?: GenerateOptions): boolean {
+    return options?.purpose === undefined
+  }
+
   private rememberAffinity(key: string, index: number): void {
     if (index < 0) return
     this.affinity.delete(key)
@@ -238,7 +251,8 @@ export class PooledAcpAdapter extends LlmAdapter {
       }
       return free[0]
     }
-    if (this.slots.length < this.capacity) return this.addSlot()
+    // 辅助请求到这里只可能排队：没有空闲连接，也不为它扩容。
+    if (this.slots.length < this.capacity && this.mayExpand(options)) return this.addSlot()
     return undefined
   }
 

@@ -258,6 +258,62 @@ describe('PooledAcpAdapter scheduling with independent fake workers', () => {
     await title
   })
 
+  it('queues a title instead of opening a second connection for the same account', async () => {
+    const { pool, workers } = setup({ capacity: 2 })
+    const main = run(pool, request('s1'))
+    await flush()
+    expect(workers).toHaveLength(1)
+
+    // 一条会话消息进来时，标题是自动请求：此时只剩「扩容」这一条路能拿到连接。
+    // 真去扩容就等于同一个账号两条并发，上游按账号拒绝时倒霉的是主回合。
+    const title = run(pool, request('title', { purpose: 'session-title' }))
+    await flush()
+    expect(workers).toHaveLength(1)
+    expect(pool.read().queue).toMatchObject({ active: 1, waiting: 1, capacity: 2, workers: 1 })
+
+    workers[0]!.calls[0]!.complete('finish')
+    await main
+    await flush()
+    expect(workers[0]!.calls[1]!.options.purpose).toBe('session-title')
+    workers[0]!.calls[1]!.complete('finish')
+    await title
+    expect(workers).toHaveLength(1)
+  })
+
+  it('reuses an already idle connection for a title without expanding further', async () => {
+    const { pool, workers } = setup({ capacity: 2 })
+    const a = run(pool, request('a'))
+    const b = run(pool, request('b'))
+    await flush()
+    expect(workers).toHaveLength(2)
+    workers[0]!.calls[0]!.complete('finish')
+    workers[1]!.calls[0]!.complete('finish')
+    await Promise.all([a, b])
+
+    // 复用空闲连接不算扩容：标题照常拿槽位，连接数不变。
+    const title = run(pool, request('title', { purpose: 'session-title' }))
+    await flush()
+    expect(workers).toHaveLength(2)
+    const carrier = workers.find(worker => worker.calls.some(call => call.options.sessionId === 'title'))!
+    carrier.calls.find(call => call.options.sessionId === 'title')!.complete('finish')
+    await title
+    expect(workers).toHaveLength(2)
+  })
+
+  it('drops a title that outlives the queue without opening a connection', async () => {
+    vi.useFakeTimers()
+    const { pool, workers } = setup({ capacity: 2, queueTimeoutMs: 1_000 })
+    const main = run(pool, request('s1'))
+    const title = outcome(run(pool, request('title', { purpose: 'session-title' })))
+    await flush()
+    await vi.advanceTimersByTimeAsync(1_001)
+    expect(await title).toMatchObject({ ok: false, error: { code: 'AGY_QUEUE_TIMEOUT' } })
+    expect(workers).toHaveLength(1)
+    expect(pool.read().queue).toMatchObject({ waiting: 0, workers: 1 })
+    workers[0]!.calls[0]!.complete('finish')
+    await main
+  })
+
   it('rejects a full queue but still accepts the parked owner needed to release it', async () => {
     const { pool, workers } = setup({ capacity: 1 })
     const first = run(pool, request('owner'))

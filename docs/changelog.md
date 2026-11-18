@@ -4,6 +4,10 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 未发布 · 2026-11-18
+
+- **辅助请求不再扩容新连接**：标题（`session-title`）与压缩（`compaction`）这类一次性请求只复用已经打开的 worker，不再为了它们 `addSlot()`。之前一条新会话的第一条消息会同时触发主回合与自动标题，标题请求比主回合晚零点几秒到达时占掉第二个槽位，等于同一个 Antigravity 账号被打两条并发；上游按账号做准入时被拒的往往是主回合（实测 2026-11-18 00:59：主回合 XHigh 连吃 8 次 429、耗时 2 分 40 秒失败，标题 Low 正常返回，而当时 Gemini 组周额度 89%、5 小时窗口 96% 都还在）。现在辅助请求排队等空闲连接，`dispatch()` 里仍排在所有前台请求之后；等不到就按 `queueTimeoutMs` 超时（标题保留兜底名，不失败整条会话）。前台请求的扩容、会话粘性与工具续轮不变。新增 3 项回归测试（不扩容、复用空闲连接、排队超时丢弃）。
+
 ## 0.1.52 · 2026-11-17
 
 - **用上 agent 声明的更多 ACP 能力**：`systemPrompt.append` 时 system prompt 走 `session/new` 的 `_meta`（真机实测 1.5.10 生效，prompt 里不再重复包 `<dsh-system>`）；跨进程恢复优先 `session/resume`（不重放历史），没有该能力才退回 `session/load`；新增配置 `agentMode`，只在会话的 `availableModes` 里声明过时才 `session/set_mode`（可设 `plan`）。

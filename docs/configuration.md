@@ -8,7 +8,7 @@
 
 | 字段 | 默认值 | 作用与限制 |
 |---|---|---|
-| `maxConcurrentSessions` | `2` | 最大独立 worker 数，整数 1–4，按需启动。不是单个官方进程的多 session 开关，也不增加账户额度。 |
+| `maxConcurrentSessions` | `2` | 最大独立 worker 数，整数 1–4，按需启动。只对前台请求生效：标题 / 压缩等辅助请求只复用空闲的连接，不会为它们扩容。不是单个官方进程的多 session 开关，也不增加账户额度。 |
 | `queueTimeoutMs` | `120000` | 等待 worker 的上限（毫秒），最小 1000；队列最多 64 项，排队可取消。 |
 | `agyCliPath` | 未设置 | 官方 `agy` CLI 路径，优先于 `AGY_CLI_BIN`、PATH 与平台默认位置；刷新时重新探测。 |
 | `binaryPath` | 未设置 | 本地官方 ACP server 入口，优先级最高；指定但不存在会报错，不静默换来源。 |
