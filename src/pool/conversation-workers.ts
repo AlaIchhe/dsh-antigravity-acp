@@ -14,7 +14,7 @@ import { AGY_TURN_ERROR } from '../adapter/prompt-turn.js'
  * 把进程数收敛到「活跃对话数」。
  */
 export interface AcpWorker {
-  adapter: Pick<AntigravityAcpAdapter, 'busy' | 'stream' | 'listModels' | 'resolveModel' | 'warmup' | 'discoverModels'> & Partial<Pick<AntigravityAcpAdapter, 'prepareCall'>>
+  adapter: Pick<AntigravityAcpAdapter, 'busy' | 'stream' | 'listModels' | 'resolveModel' | 'warmup' | 'discoverModels'> & Partial<Pick<AntigravityAcpAdapter, 'prepareCall' | 'releaseConversation'>>
   ensureImages?: (signal?: AbortSignal) => Promise<void>
   read(): AcpLifecycleSnapshot
   dispose(): Promise<void>
@@ -145,6 +145,14 @@ export class ConversationWorkers extends LlmAdapter {
     const slot = this.takeWorker(undefined)
     try { return await slot.worker.adapter.discoverModels(signal, interactive) }
     finally { slot.leased = false }
+  }
+
+  /** DSH 会话被销毁：通知承载它的 worker 释放 ACP 会话与映射。 */
+  releaseConversation(dshSessionId: string): void {
+    const index = this.affinity.get(dshSessionId)
+    const slot = index === undefined ? undefined : this.slots[index]
+    slot?.worker.adapter.releaseConversation?.(dshSessionId)
+    this.affinity.delete(dshSessionId)
   }
 
   read(): AcpLifecycleSnapshot {

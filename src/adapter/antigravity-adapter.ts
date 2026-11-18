@@ -947,6 +947,23 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     return record
   }
 
+  /**
+   * DSH 会话已被宿主销毁：关闭对应 ACP 会话并删除恢复映射。
+   *
+   * 由插件在 `session/disposed` 事件里调用，避免宿主删了会话、这里还留着
+   * ACP 会话与 `sessions.json` 条目。
+   */
+  releaseConversation(dshSessionId: string): void {
+    const key = `${dshSessionId}::chat`
+    const record = this.#sessions.get(key)
+    if (record) {
+      this.#dropSession(record, 'DSH 会话已销毁')
+      return
+    }
+    // 内存里没有记录（进程重启过）也要删掉磁盘映射，否则下次 resume 会接回一个已删会话。
+    this.#sessionStore?.delete(key, this.#sessionOwner)
+  }
+
   /** 找到可复用的会话；记录失效时顺手丢弃（关闭对端会话，下一轮重建）。 */
   #findReusableSession(options: GenerateOptions, key: string): ReusedSession | undefined {
     if (!this.#reuseSessions) return undefined

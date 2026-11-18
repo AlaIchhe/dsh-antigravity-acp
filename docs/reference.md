@@ -167,7 +167,7 @@ HTTP 额度回退只读 CLI 登录材料，换发 access token 仅留内存，�
 
 Windows 的 Low 完整性目录可能导致官方进程不能保存用户级凭据，也可能降低运行代码目录的信任级别。插件启动前只读探测二进制与运行目录，识别到 Low 标签返回 `AGY_BINARY_LOW_INTEGRITY`；探测失败本身不等于安全校验成功，也不会自动修 ACL。
 
-onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，不使用 DSH Low 临时目录。每个目录带插件所有权记录；只清理自身拥有且可确认进程退出的运行目录，不按 mtime 删除活跃 DLL。历史 `_MEI*` 与未知所有权目录保留，由用户停止相关进程后人工检查。宿主被强杀或崩溃、未留下明确子进程退出记录的 `active` 目录也不会自动清理；这可能持续占用磁盘，当前不提供崩溃残留的自动回收保证。
+onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，不使用 DSH Low 临时目录。**进程生命周期交给宿主的 `ctx.subprocess`**：启动用 `spawn`，终止用 `terminate()` + `waitForExit()`（provider 证明整个进程范围静默），确认退出后删除该临时目录。插件不再写 owner 文件、不再做 pid 存活探测、也不扫描清理历史目录——残留目录由用户停止相关进程后人工清理。
 
 自动平台映射参考[官方 registry](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json)：Windows `.exe`、POSIX `.par`、macOS 目录 `macos`、ARM64 发布后缀 `arm64`、Linux 默认参数 `--uid=`。这些是发行布局与测试契约，不代表所有平台实机验证；手动本地二进制覆盖先于自动平台映射。
 
@@ -223,6 +223,6 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 | `AGY_ARCHIVE_TOO_LARGE` | 下载的 zip 条目数或解压后大小超过上限 | 官方包远低于上限；出现此码说明下载源异常，先核对 `AGY_ACP_URL` 未被改指他处，再重新下载，不要放宽上限。 |
 | 额度 / Credits 不完整 | CLI 未登录、旧版本缺字段、HTTP 产品授权不足或网络失败 | 分别查看额度与 Credits 状态，检查 `agyCliPath`；ACP 登录不等于 CLI 登录。 |
 | 药丸完全消失 | 未选择本 provider，或 Client / remote 未装载 | 先确认选中 `antigravity-acp`、Host 与 Client 同版本；开发时核对 `$mount` 与依赖，避免让贡献型 remote 等待自身。 |
-| 运行目录积累 | 被强杀后残留或所有权 / 退出状态未知 | 未知目录不会按时间自动删除；停止相关进程后人工核对，不在进程仍活跃时批量清理。 |
+| 运行目录积累 | 被强杀后残留 | 插件不再自动回收历史目录（不再做 pid 探测）；停止相关进程后人工删除。 |
 
 异常失败会撤销桥授权并回收受管进程；正常应答的 refusal / 空回复可保留自洽连接。取消默认回收；开启保留后必须等 agent 的正常停止应答，超时或通信错误仍回收，期间新轮不能绕过排空屏障。无法确认回收完成时拒绝使用旧连接。provider 不声明可安全重试错误码，避免宿主整步重放导致重复认证、生成或工具调用。定位后由用户决定是否重试，不将错误掩盖为成功。

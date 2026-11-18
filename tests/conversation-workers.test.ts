@@ -30,6 +30,7 @@ class FakeWorker implements AcpWorker {
     warmup: vi.fn(async () => { this.running = true }),
     discoverModels: vi.fn(async () => { this.running = true; return this.catalog }),
     prepareCall: vi.fn(async () => ({ model: this.resolved, stream: (options: GenerateOptions) => this.stream(options) })),
+    releaseConversation: vi.fn(),
   }
 
   private async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
@@ -183,6 +184,18 @@ describe('一对话一进程（没有容量与队列）', () => {
     workers[0]!.calls[0]!.complete('finish')
     workers[1]!.calls[0]!.complete('finish')
     await Promise.all([a, b])
+  })
+
+  it('会话销毁事件会通知承载它的 worker 释放 ACP 会话', async () => {
+    const { adapter, workers } = setup()
+    const first = run(adapter, request('gone'))
+    await flush()
+    workers[0]!.calls[0]!.complete('finish')
+    await first
+
+    adapter.releaseConversation('gone')
+    expect(workers[0]!.adapter.releaseConversation).toHaveBeenCalledWith('gone')
+    expect(adapter.read().queue?.active).toBe(0)
   })
 
   it('dispose 关闭所有 worker 并拒绝后续请求', async () => {

@@ -249,117 +249,27 @@ export function resolveRuntimeRoot(
   return join(resolveInstallRoot(env, platform, homedir), 'runtime')
 }
 
-const OWNER_FILE = 'dsh-owner.json'
-const PROCESS_STARTED_AT = new Date(Date.now() - process.uptime() * 1000).toISOString()
-interface DirectoryOwner { version: 1; pid: number; id: string; startedAt: string; state: 'active' | 'exited' }
-export interface RuntimeDirectory { path: string; root: string; ownerId: string }
-export type RuntimeDirectoryLease = RuntimeDirectory
-export type ProcessLiveness = (pid: number) => boolean | undefined | Promise<boolean | undefined>
+/** 一次启动独占的临时目录：只用于给官方进程一个可写 TEMP。 */
+export interface RuntimeDirectory { path: string }
 
-/** 只把 ESRCH 视为死亡；权限不足、PID 复用或任何未知状态均保留文件。 */
-export function isProcessAlive(pid: number): boolean | undefined {
-  try { process.kill(pid, 0); return true } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : undefined
-  }
-}
-
-async function writeDirectoryOwner(path: string, pid = process.pid): Promise<DirectoryOwner> {
-  const owner: DirectoryOwner = { version: 1, pid, id: randomUUID(), startedAt: PROCESS_STARTED_AT, state: 'active' }
-  await writeFile(join(path, OWNER_FILE), JSON.stringify(owner), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-  return owner
-}
-
-async function readDirectoryOwner(path: string): Promise<DirectoryOwner | undefined> {
-  try {
-    const file = join(path, OWNER_FILE)
-    const info = await lstat(file)
-    if (!info.isFile() || info.isSymbolicLink() || info.size > 4096) return undefined
-    const value = JSON.parse(await readFile(file, 'utf8')) as DirectoryOwner
-    return value.version === 1 && Number.isSafeInteger(value.pid) && value.pid > 0
-      && typeof value.id === 'string' && value.id.length > 0 && typeof value.startedAt === 'string'
-      ? value : undefined
-  } catch { return undefined }
-}
-
-/** 创建一次启动独占的目录。调用方需在 spawn 前检查 Windows 完整性标签。 */
-export async function createRuntimeDirectory(options: { root?: string; ownerPid?: number } = {}): Promise<RuntimeDirectory> {
+/**
+ * 创建一次启动独占的临时目录。
+ *
+ * 不再写 owner 文件、不再做 pid 存活探测：进程生命周期交给 `ctx.subprocess`
+ * 的 `terminate()` / `waitForExit()`（provider 证明整个进程范围静默），这里
+ * 只负责给 PyInstaller 一个可写 TEMP，退出后由调用方删除。
+ */
+export async function createRuntimeDirectory(options: { root?: string } = {}): Promise<RuntimeDirectory> {
   const requestedRoot = resolve(options.root ?? resolveRuntimeRoot())
   await mkdir(requestedRoot, { recursive: true, mode: 0o700 })
-  const root = await realpath(requestedRoot)
-  const path = await mkdtemp(join(root, 'instance-'))
-  try {
-    const owner = await writeDirectoryOwner(path, options.ownerPid)
-    return { path, root, ownerId: owner.id }
-  } catch (error) {
-    await rm(path, { recursive: true, force: true }).catch(() => undefined)
-    throw error
-  }
+  return { path: await mkdtemp(join(requestedRoot, 'instance-')) }
 }
 
-async function isOwnedDirectChild(path: string, root: string, prefix: string): Promise<boolean> {
-  const target = resolve(path)
-  if (dirname(target) !== resolve(root) || !target.slice(dirname(target).length + 1).startsWith(prefix)) return false
-  try {
-    const info = await lstat(target)
-    return info.isDirectory() && !info.isSymbolicLink() && await realpath(target) === target
-  } catch { return false }
+/** 删除本次启动的临时目录；调用方应已通过 waitForExit 确认进程退出。 */
+export async function releaseRuntimeDirectory(directory: RuntimeDirectory): Promise<void> {
+  await rm(directory.path, { recursive: true, force: true, maxRetries: 2 })
 }
 
-/** 仅在关联子进程已确认退出后调用；ownerId 防止清除后来替换的目录。 */
-export async function releaseRuntimeDirectory(lease: RuntimeDirectory): Promise<void> {
-  if (!(await isOwnedDirectChild(lease.path, lease.root, 'instance-'))) return
-  const owner = await readDirectoryOwner(lease.path)
-  if (owner?.id !== lease.ownerId) return
-  // 先记下由 waitForExit 证实的退出事实，删除受文件锁阻塞时可在后续启动重试。
-  await writeFile(join(lease.path, OWNER_FILE), JSON.stringify({ ...owner, state: 'exited' }), { encoding: 'utf8', mode: 0o600 })
-  await rm(lease.path, { recursive: true, force: true, maxRetries: 2 })
-}
-
-/** 仅重试已经明确记录子进程退出的目录。宿主死亡不代表其所有后代已停止。 */
-export async function cleanupStaleRuntimeDirectories(
-  root: string = resolveRuntimeRoot(),
-): Promise<number> {
-  let canonicalRoot: string
-  try { canonicalRoot = await realpath(root) } catch { return 0 }
-  const entries = await readdir(canonicalRoot, { withFileTypes: true }).catch(() => [])
-  let removed = 0
-  for (const entry of entries) {
-    const path = join(canonicalRoot, entry.name)
-    if (!(await isOwnedDirectChild(path, canonicalRoot, 'instance-'))) continue
-    const owner = await readDirectoryOwner(path)
-    if (!owner || owner.state !== 'exited') continue
-    await releaseRuntimeDirectory({ path, root: canonicalRoot, ownerId: owner.id }).then(() => { removed += 1 }, () => undefined)
-  }
-  return removed
-}
-
-/** PyInstaller onefile 的解压目录前缀。 */
-export const PYI_TEMP_PREFIX = '_MEI'
-/** 旧 API 保留的常量；不再用年龄判断运行目录能否安全删除。 */
-export const PYI_TEMP_MAX_AGE_MS = 3_600_000
-
-/**
- * @deprecated 旧版共享 _MEI 无所有权记录，不能安全自动清理。
- * 新运行目录通过 cleanupStaleRuntimeDirectories 清理。
- */
-export async function cleanupStalePyiTempDirs(
-  _dir: string,
-  _options: { maxAgeMs?: number; now?: () => number } = {},
-): Promise<number> {
-  // 旧版共享 _MEI 目录没有进程所有权记录；年龄无法证明进程已死，禁止自动删除。
-  return 0
-}
-
-/** 下载解压暂存目录前缀。 */
-/** 判定暂存目录「陈旧」的默认阈值（1 小时）。 */
-export const STAGING_MAX_AGE_MS = 3_600_000
-
-
-/**
- * Node 的 process.platform / process.arch → 下载坐标映射。
- * 未映射组合抛 AGY_PLATFORM_UNSUPPORTED（用户可用 binaryPath/AGY_ACP_BIN
- * 或 AGY_ACP_URL 覆盖，而不是让我们猜测 URL）。
- */
 export function mapNodePlatform(platform: NodeJS.Platform, arch: string): { platform: AcpPlatform; arch: AcpArch } {
   const mappedPlatform: AcpPlatform | undefined =
     platform === 'win32' ? 'windows' : platform === 'darwin' ? 'darwin' : platform === 'linux' ? 'linux' : undefined

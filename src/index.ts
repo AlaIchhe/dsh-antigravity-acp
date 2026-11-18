@@ -24,7 +24,6 @@ import { AgentLink, agentStreamFromSubprocess, AGY_CLIENT_INFO, AGY_LINK_ERROR, 
 import type { AgentLinkHandlers } from './protocol/agent-link.js'
 import {
   AGY_BINARY_ERROR,
-  cleanupStaleRuntimeDirectories,
   DEFAULT_ACP_SERVER_VERSION,
   ensureAgentBinary,
   resolveCacheDir,
@@ -33,7 +32,7 @@ import {
   releaseRuntimeDirectory,
   defaultAgentArgs,
 } from './runtime/binary.js'
-import type { RuntimeDirectoryLease } from './runtime/binary.js'
+import type { RuntimeDirectory } from './runtime/binary.js'
 import { ProxyConfigError, resolveProxy } from './runtime/proxy-env.js'
 import { createLiveProxiedFetch, createProxiedFetch } from './runtime/proxied-fetch.js'
 import type { ResolvedProxy } from './runtime/proxy-env.js'
@@ -85,7 +84,7 @@ export const AGY_CLIENT_CAPABILITIES: ClientCapabilities = {
 
 /** 本插件持有并需在 dispose 时清理的活动 ACP 资源。 */
 export interface ActiveAcpRuntime {
-  directory?: RuntimeDirectoryLease
+  directory?: RuntimeDirectory
   lifecycle?: AcpLifecycle
   link?: AgentLink
   handle?: SubprocessHandle
@@ -522,7 +521,6 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
   const acpVersion = config.acpVersion ?? DEFAULT_ACP_SERVER_VERSION
 
   // 只回收带本插件所有权且已确认退出的运行目录；未知 / 活跃目录不按年龄删除。
-  void cleanupStaleRuntimeDirectories().catch(() => 0)
 
   // 官方 agy CLI 的只读取数通道（额度 /usage 与模型清单 models）。2026-10-16
   // 用户授权「不 wrap agy CLI」**仅限只读取数用途**：只跑这两个只读命令，
@@ -749,6 +747,16 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
       // CLI 清单是档位化原始行：先折叠成家族再合并，模型页才不会按思考档位分行。
       return mergeModelRows(AGY_PROVIDER_ID, acp, cli)
     },
+  })
+
+  // 宿主销毁会话时，释放对应的 ACP 会话与恢复映射——不再由插件自己猜清理时机。
+  // 事件由 @deepseek-ai/dsh-session 声明；本包不依赖它的类型包，这里用最小形状绑定。
+  const onSessionDisposed = ctx as unknown as {
+    on(event: 'session/disposed', listener: (session: { id: string }) => void): void
+  }
+  onSessionDisposed.on('session/disposed', (session) => {
+    try { adapter.releaseConversation(String(session.id)) }
+    catch (error) { ctx.logger?.warn?.(`antigravity-acp: 释放已销毁会话失败 ${String(error)}`) }
   })
 
   const registration = ctx.llm.registerAdapter([AGY_PROVIDER_ID], adapter)

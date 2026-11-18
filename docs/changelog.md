@@ -6,6 +6,10 @@
 
 ## 未发布 · 2026-11-18
 
+- **进程与会话生命周期改用宿主原生能力**：删除插件自己的进程治理（owner 文件、`isProcessAlive` pid 探测、`cleanupStaleRuntimeDirectories`、`cleanupStalePyiTempDirs`）——启动/终止/退出确认全部交给 `ctx.subprocess` 的 `terminate()` / `waitForExit()`；运行目录只剩「给 PyInstaller 一个可写 TEMP」这一个职责。同时订阅宿主的 `session/disposed` 事件，在 DSH 删除会话时释放对应 ACP 会话与 `sessions.json` 映射，不再由插件猜清理时机。
+
+## 未发布 · 2026-11-18
+
 - **并发模型改为「一对话一进程」，删除容量与队列**：真机探针证明官方 agent 单进程能并发多个会话（5 路并发，含每路 3–4k 输出的长回答），但插件仍按对话分配独立链接——每条链接各自持有 MCP 桥、工具授权代次与 prompt 生命周期，合并成一个进程会让一次卡死带走所有对话。因此删除 `maxConcurrentSessions` / `queueTimeoutMs` 与整个等待队列：不再有「第 3 个对话排队 120 秒后失败」，进程数改为跟随活跃对话数。
 - **空闲回收恢复为默认 15 分钟**：早先关闭它是因为回收后要重放整段历史；现在 `session/resume` 已在真机验证（含 `session/close` 之后仍可恢复），回收后不再重放，代价只是一次 resume。会话数量因此不设上限：196 个会话都能接着聊，常驻进程只剩活跃对话。
 

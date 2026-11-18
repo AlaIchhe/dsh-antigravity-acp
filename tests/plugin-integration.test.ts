@@ -27,8 +27,6 @@ const external = vi.hoisted(() => ({
 
 vi.mock('../src/runtime/binary.js', async (original) => ({
   ...await original<typeof import('../src/runtime/binary.js')>(),
-  cleanupStaleRuntimeDirectories: vi.fn(async () => 0),
-  cleanupStaleStagingDirs: vi.fn(async () => 0),
   resolveCacheDir: () => '/fake/cache',
   resolveInstallRoot: () => '/fake/install',
   ensureAgentBinary: external.download,
