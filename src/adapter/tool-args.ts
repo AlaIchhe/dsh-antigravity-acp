@@ -75,7 +75,9 @@ export function renderToolSignature(tool: ToolSchema): string {
 export function renderToolSignatures(tools: readonly ToolSchema[]): string | undefined {
   if (tools.length === 0) return undefined
   return [
-    '随会话工具的参数签名（调用时参数名必须与此逐字一致）：',
+    '随会话工具的参数签名（参数名必须与此逐字一致）：',
+    '- 工具在 agent 侧的名字是 `mcp_dsh-tools_<会话后缀>_<短名>`（以 agent 声明的工具列表为准）；下面按短名列出，参数形状相同。',
+    '- 若 agent 的工具声明还包含额外参数（例如 toolSummary），按声明一并提供；那类参数属于 agent 自己的元数据，不会转交给 DSH。',
     '- 不带 ? 的参数是必填项，不得省略；带 ? 的是可选项。',
     '- 不要沿用 agy 原生工具的参数名（如 path / AbsolutePath / CommandLine），也不要自造别名。',
     '- 调用前先对照签名补齐全部必填参数；说明类必填参数（如 description）也必须提供。',
