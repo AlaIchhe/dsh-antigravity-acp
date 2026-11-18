@@ -1367,10 +1367,12 @@ describe('abort 语义', () => {
 
   
 
+  const CANCEL_SESSION = 'cancel-session' as unknown as NonNullable<GenerateOptions['sessionId']>
+
   it('用户取消后进程与会话都保留，下一次提问不重建会话', async () => {
     const harness = createHarness()
     const controller = new AbortController()
-    const first = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
+    const first = collect(harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, signal: controller.signal })))
     await waitForRequest(harness.agent, 'session/prompt')
     controller.abort('用户中断去改提示词')
     await first
@@ -1383,7 +1385,7 @@ describe('abort 语义', () => {
       ...baseOptions().messages,
       createUserMessage({ content: [{ type: 'text', text: '换个问法' }], source: { kind: 'user' } }),
     ]
-    const second = collect(harness.adapter.stream(baseOptions({ messages })))
+    const second = collect(harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, messages })))
     await waitForRequest(harness.agent, 'session/prompt', 2)
     await replyWithText(harness, '接着答')
     await second
@@ -1393,13 +1395,13 @@ describe('abort 语义', () => {
   it('用户取消后编辑提示词：重建一次会话并带上改过的历史', async () => {
     const harness = createHarness()
     const controller = new AbortController()
-    const first = collect(harness.adapter.stream(baseOptions({ signal: controller.signal })))
+    const first = collect(harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, signal: controller.signal })))
     await waitForRequest(harness.agent, 'session/prompt')
     controller.abort('改提示词')
     await first
 
     const edited = [createUserMessage({ content: [{ type: 'text', text: '改过的问法' }], source: { kind: 'user' } })]
-    const second = collect(harness.adapter.stream(baseOptions({ messages: edited })))
+    const second = collect(harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, messages: edited })))
     await waitForRequest(harness.agent, 'session/prompt', 2)
     await replyWithText(harness, '按新问法答')
     await second
@@ -2567,7 +2569,7 @@ describe('ACP 会话复用与跨进程恢复', () => {
       const history = [...baseOptions().messages]
       const readUntilFinish = async (messages: RequestMessage[]) => {
         const chunks: StreamChunk[] = []
-        for await (const chunk of harness.adapter.stream(baseOptions({ sessionId: DSH_SESSION, messages }))) {
+        for await (const chunk of harness.adapter.stream(baseOptions({ sessionId: CANCEL_SESSION, messages }))) {
           chunks.push(chunk)
           if (chunk.type === 'finish') break
         }

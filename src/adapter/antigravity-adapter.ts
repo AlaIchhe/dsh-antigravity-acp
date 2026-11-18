@@ -1677,8 +1677,12 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     turn.finishRound()
     turn.dispose()
     this.#bridge.resetPending(reason)
-    // 续轮条件被放弃说明这个 ACP 会话已不可信，下一次按新轮重建。
-    this.#dropSessionsForTurn(turn.sessionId, reason)
+    // 用户取消（想改提示词再发）不是「会话不可信」：保留会话与映射，
+    // 下一轮优先 session/resume 接回（真机验证：cancelled 的会话仍可 resume）。
+    const record = [...this.#sessions.values()].find((item) => item.sessionId === turn.sessionId)
+    const keepForCancel = record !== undefined && this.#cancelledKeys.has(record.key)
+    if (!keepForCancel) this.#dropSessionsForTurn(turn.sessionId, reason)
+    else this.#log?.info(`antigravity-acp: 取消后保留 ACP 会话 session=${turn.sessionId}（${reason}）`)
     this.#releaseTurnSubscriptionIfClosed(turn)
   }
 
