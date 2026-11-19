@@ -95,6 +95,20 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-19 的「删除剩余的名字猜测」通过 `npm run check`：类型检查、**35 个文件 / 407 项测试**与构建；真机 `AGY_REAL_ACP=1` 回归通过（日志确认 `模型路由 … configId=model` / `档位路由 … configId=thought_level`，续轮与复用正常）。
+
+**真机证据**：`session/new` 返回 3 个 config option，全部带 `category`——
+`{id:"model", category:"model"}`、`{id:"thought_level", category:"thought_level"}`、
+`{id:"mode", category:"mode"}`；档位当前为 `low/medium/high/xhigh` 四档。
+
+**判断依据**：不是所有启发式都要删。判据是「猜错时的代价」——
+- 脱敏正则猜不到 → 少脱敏，可容忍（保留白名单做法）；
+- 模型目录名字匹配猜错 → 把别的 select 当模型选择器，**路由错误不可逆**（删除）；
+- 档位后缀写死 → 新档位被显示成独立模型，污染选择器（改为数据驱动）；
+- 续轮判定猜错 → 整轮 `AGY_SESSION_UNRECOVERABLE`，对话报废（0.3.0 已改 id）。
+
+只有落在「失败不可逆」分支上的猜测才必须消除；其余保留并注明取舍。
+
 2026-11-19 的「删除注入判定，改用 message id」通过 `npm run check`：类型检查、**33 个文件 / 397 项测试**与构建；真机 `AGY_REAL_ACP=1` 的两组实验全部通过。
 
 **证据（真机 + 真实历史）**：

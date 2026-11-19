@@ -127,10 +127,43 @@ export const DEFAULT_AGY_REASONING_EFFORT: AgyReasoningEffort = 'medium'
  */
 export const AGY_MODEL_EXCLUDED_FAMILIES: ReadonlySet<string> = new Set(['gpt-oss-120b'])
 
-/** 识别 id 的思考强度后缀；识别不出返回 undefined。 */
+/**
+ * 已知档位名的集合：`AGY_REASONING_EFFORTS` 加上历史出现的 `xhigh`。
+ *
+ * 这份集合**只用来识别旧协议的 id 后缀**（档位被编进模型 id 的那条兼容路径），
+ * 不用来决定「有哪些档位可选」——后者以 agent 在 `thought_level` 选择器里
+ * 声明的选项为准（见 `findThoughtLevelSelector`）。
+ *
+ * 加入 `xhigh` 是因为官方 1.5.x 给 Gemini 4 Hydrogen 加过 `-xhigh`：若只认三档，
+ * 那个 id 会被当成独立家族出现在选择器里。这里识别它、折叠进家族，但不路由。
+ */
+const KNOWN_TIER_SUFFIXES = new Set<string>([...AGY_REASONING_EFFORTS, 'xhigh'])
+
+/**
+ * 识别 id 的思考强度后缀；识别不出返回 undefined。
+ *
+ * 从末尾按 `-` 分段，逐段判断是否属于已知档位名——不写死正则里的 4 个值。
+ * 这样官方新增档位名时，只要它在 `thought_level` 里出现并进入
+ * {@link registerTierSuffix}，这里就能识别，不需要改代码。
+ */
 export function tierForModelId(id: string): AgyModelTier | undefined {
-  const match = /-(low|medium|high|xhigh)$/.exec(id)
-  return match ? (match[1] as AgyModelTier) : undefined
+  const cut = id.lastIndexOf('-')
+  if (cut <= 0) return undefined
+  const suffix = id.slice(cut + 1)
+  if (!KNOWN_TIER_SUFFIXES.has(suffix)) return undefined
+  return suffix as AgyModelTier
+}
+
+/**
+ * 登记 agent 在 `thought_level` 里声明过的档位名。
+ *
+ * 由 adapter 在观测到目录时调用：把 agent 真实声明的选项值并入后缀识别集合，
+ * 于是「有哪些档位」以 agent 为准，而不是由客户端写死一份清单。
+ */
+export function registerTierSuffix(values: Iterable<string>): void {
+  for (const value of values) {
+    if (typeof value === 'string' && value !== '') KNOWN_TIER_SUFFIXES.add(value)
+  }
 }
 
 /** 家族 id：去掉思考强度后缀；没有后缀时原样返回。 */

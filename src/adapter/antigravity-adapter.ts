@@ -31,6 +31,7 @@ import {
   foldAgyModelFamilies,
   modelFamilyId,
   routeTieredModelId,
+  registerTierSuffix,
   tierForModelId,
 } from '../runtime/agy-cli.js'
 import type { AgyModelTier } from '../runtime/agy-cli.js'
@@ -1778,6 +1779,9 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     // 整体替换；agent 没声明 `thought_level` 时保留上一次的，让旧协议路径继续可用。
     if (thought) {
       this.#thoughtLevel = thought
+      // 把 agent 真实声明的档位名并进旧协议的后缀识别集合：这样「有哪些档位」
+      // 以 agent 为准，官方新增档位不需要改客户端代码。
+      registerTierSuffix(thought.options.map((option) => option.value))
       changed = true
     }
     if (changed) this.#onMetadataChanged?.(this.exportMetadata())

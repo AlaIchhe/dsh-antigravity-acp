@@ -67,15 +67,19 @@ export function flattenSelectOptions(
 /**
  * 从 configOptions 中找出模型选择器。
  *
- * 判定顺序：显式 `category === "model"` 优先（ACP 规范为此保留了语义标签）；
- * 没有标签时退回「select 且 id/name 含 model」的启发式。都不匹配则返回
- * undefined——调用方据此走「无可选模型」的显式失败，而不是随便挑一个 select。
+ * **只认显式 `category === "model"`**（ACP 规范的语义标签）。真机确认
+ * （2026-11-19，`agy acp` 1.5.10）：`session/new` 返回的三个 select
+ * （`model` / `thought_level` / `mode`）全部带 `category`，没有需要靠
+ * id/name 猜测的情况。
+ *
+ * 这里刻意**不**保留「id/name 含 model」的启发式回退：那等于用字符串猜
+ * 语义，一旦 agent 的命名变化就会把别的 select 误认成模型选择器，而错误
+ * 的模型路由是不可逆的（会把请求发到错误的模型上）。缺标签时返回 undefined，
+ * 让调用方走「无可选模型」的显式失败。
  */
 export function findModelSelector(configOptions: readonly SessionConfigOption[] | null | undefined): ModelSelector | undefined {
   if (!configOptions?.length) return undefined
-  const selects = configOptions.filter(isSelect)
-  const tagged = selects.find((option) => option.category === 'model')
-  const picked = tagged ?? selects.find((option) => /model/i.test(option.id) || /model/i.test(option.name))
+  const picked = configOptions.filter(isSelect).find((option) => option.category === 'model')
   if (!picked) return undefined
   const selector: ModelSelector = {
     configId: picked.id,
@@ -87,23 +91,19 @@ export function findModelSelector(configOptions: readonly SessionConfigOption[] 
 /**
  * 从 configOptions 中找出思考强度选择器。
  *
- * 判定顺序：显式 `category === "thought_level"` 优先（ACP 规范标签）；没有标签
- * 时退回「非 model 类 select，且 id/name 含 thought|effort|reason」的启发式。
- * 都匹配不到返回 undefined——调用方据此走「这台 agent 没有独立档位通道」的
- * 兼容路径（旧协议把档位编进模型 id），而不是编一份档位。
+ * **只认显式 `category === "thought_level"`**（ACP 1.5 起的语义标签）。真机
+ * 确认（2026-11-19）：`agy acp` 1.5.10 的档位选择器 id 为 `thought_level`，
+ * 带该 category，四个档位随当前模型变化（Hydrogen 多一档 `xhigh`）。
+ *
+ * 刻意不保留「id/name 含 thought|effort|reason」的启发式：档位写错会让整轮
+ * 报 `AGY_EFFORT_UNSUPPORTED`，而缺标签时返回 undefined 会让调用方走「这台
+ * agent 没有独立档位通道」的兼容路径，两者都不需要猜。
  */
 export function findThoughtLevelSelector(
   configOptions: readonly SessionConfigOption[] | null | undefined,
 ): ThoughtLevelSelector | undefined {
   if (!configOptions?.length) return undefined
-  const selects = configOptions.filter(isSelect)
-  const tagged = selects.find((option) => option.category === 'thought_level')
-  const picked = tagged ?? selects.find((option) => (
-    option.category !== 'model' && !/model/i.test(option.id)
-    && (/thought/i.test(option.id) || /thought/i.test(option.name)
-      || /effort/i.test(option.id) || /effort/i.test(option.name)
-      || /reason/i.test(option.id) || /reason/i.test(option.name))
-  ))
+  const picked = configOptions.filter(isSelect).find((option) => option.category === 'thought_level')
   if (!picked) return undefined
   const selector: ThoughtLevelSelector = {
     configId: picked.id,

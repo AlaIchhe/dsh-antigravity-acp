@@ -4,6 +4,12 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.3.1 · 2026-11-19
+
+- **删除选择器识别的名字猜测**：`findModelSelector` / `findThoughtLevelSelector` 此前在缺少 `category` 时回退到 `/model/i`、`/thought|effort|reason/i` 的名字匹配。真机确认（`agy acp` 1.5.10）：`session/new` 返回的三个 select（`model` / `thought_level` / `mode`）**全部带 `category`**，不需要猜。现在只认语义标签，缺标签返回 `undefined`，由调用方走「无可选模型 / 无独立档位通道」的显式失败。理由：名字匹配会把别的 select 误认成模型选择器，而错误路由不可逆。
+- **档位后缀识别不再写死四个值**：`tierForModelId` 原用 `/-(low|medium|high|xhigh)$/`，官方新增档位时会被当成独立模型显示。改为按 `-` 分段查已知档位名集合，并新增 `registerTierSuffix()`——adapter 每次观测到 `thought_level` 就把 agent 声明的档位名并进集合，于是「有哪些档位」以 agent 为准。
+- 新增测试：`model-selector.test.ts`（只认 category、名字误导时以 category 为准、分组展平）、`tier-suffix.test.ts`（新档位无需改代码即可折叠）。
+
 ## 0.3.0 · 2026-11-19
 
 - **删除「判定注入块」的逻辑，改用 message id 确认历史身份**。0.2.2–0.2.4 三版都在修同一个枚举不完备的问题（0.2.2 只改比较侧；0.2.3 把 `source.form` 当有限枚举，漏了 `notice`；0.2.4 反转为「默认注入」但仍靠 `kind` 猜测）。根因在指纹只算 `role + content`、不算身份：两条消息文本一样就无法区分「中间插了一条」与「原来那条被改了」，只能靠来源类型去猜。现在指纹改为 `{id, role, content}`，宿主上下文按「`user` 角色 + id 从未发出去过」识别——不需要枚举来源类型，DSH 新增任何来源都自动生效。
