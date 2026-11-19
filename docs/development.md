@@ -95,6 +95,10 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-19 的「注入块剔除两侧对称」通过 `npm run check`：类型检查、**33 个文件 / 395 项测试**与构建。真机证据（`AGY_REAL_ACP=1`，`gemini-4-hydrogen` + 官方 `agy acp`）：`real-injection-regression` 两例通过；离线新增两例锁定对称性（构造时历史含注入块仍可续轮、注入块之外的真实内容变化仍被拒绝）。
+
+问题来源：0.2.2 只改了 `ContinuationState.accepts()` 一侧。`#history` 在构造时用 `messages.map` 原样保留注入块，而 `accepts()` 比对的 `prefix` 已剔除它们，两个序列长度不等导致索引错位。真机表现为「首轮 step 1 正常、step 2 立即 `AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`」——因为续轮永远不会被接受，`#abandonTurn()` 随即丢弃会话与映射。该缺陷在 0.2.2 的离线用例下不可见：那些用例的 `GenerateOptions.messages` 里都没有注入块，构造侧与比较侧的差异因此无法暴露。
+
 2026-11-18 的「工具循环中途注入不再让整轮失败」通过 `npm run check`：类型检查、**33 个文件 / 393 项测试**与构建。**真实上游证据**（`AGY_REAL_ACP=1 npx vitest run tests/real-injection-regression.test.ts`，模型 `gemini-4-hydrogen`，官方 `agy acp` 真进程、真 adapter、真 MCP 桥）：
 
 - 修复前：第 2 轮在工具结果之后追加一条 `time-context` 形状的注入块 → `trailingToolResults()` 返回空 → `matchesParkedCalls()` 首行 false → `#abandonTurn()` 丢弃会话与会话映射 → 整轮 `AGY_SESSION_UNRECOVERABLE`（无法接上原 ACP 会话（没有可用的会话映射））。日志顺序为「取消后保留 ACP 会话」→「放弃 ACP 会话复用（MCP 桥已被其他对话接管）」。

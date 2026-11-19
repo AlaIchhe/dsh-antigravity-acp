@@ -4,6 +4,10 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.2.3 · 2026-11-19
+
+- **修复 0.2.2 漏改的另一半：注入块剔除必须两侧对称**。0.2.2 只在 `accepts()` 里剔除注入块，构造函数仍在 `#history` 里保留它们，两个序列长度不等、索引整体错位——首轮请求里只要有一条 `time-context`（DSH standard preset 每步都会注入），之后**每次工具续轮都失败**，整轮报 `AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`。真机复现：2026-11-19 09:10 的一个新会话，step 1 正常调完 `working_directory`，step 2 立即失败。现在构造与比较共用同一套剔除规则，并补上「构造时历史已有注入块仍能续轮」的回归用例。
+
 ## 0.2.2 · 2026-11-18
 
 - **修复：工具循环中途的宿主注入让整轮报 `AGY_SESSION_UNRECOVERABLE`**（真机复现于 2026-11-18 19:20 的会话）。DSH 的 pre-step 会把 `time-context`（默认 600s 墙钟到期）、`runtime-context`、技能目录与工作区指令追加到请求 `messages` 的**最后一条**；续轮判定原先只检查尾部是否连续 tool 结果，末尾一旦是注入块就返回空数组，续轮假失败 → `#abandonTurn()` 丢弃 ACP 会话与磁盘映射 → 下一轮因无映射失败，对话永久失效。现在 `isInjectedContext()` 统一认定注入块：`trailingToolResults()` 先跳过尾部注入块再找工具结果，`ContinuationState.accepts()` 剔除注入块后再比前缀；注入块本身仍正常发给 agent，真实用户消息与模型输出不获得豁免。

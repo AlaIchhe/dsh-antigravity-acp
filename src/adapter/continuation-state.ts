@@ -61,7 +61,10 @@ export class ContinuationState {
 
   constructor(options: GenerateOptions) {
     this.#configuration = configuration(options)
-    this.#history = options.messages.map((message) => stable(messageValue(message)))
+    // 与 accepts() 用同一套剔除规则：构造时也要把注入块去掉。
+    // 只改 accepts 一侧会让两个序列长度不等，索引整体错位——首轮请求里只要
+    // 有一条 time-context，之后每次工具续轮都会失败（真机 2026-11-19 09:10 复现）。
+    this.#history = withoutInjections(options.messages).map((message) => stable(messageValue(message)))
   }
 
   emitted(block: ContentBlock): void { this.#emitted.push(structuredClone(block)) }

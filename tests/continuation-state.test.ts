@@ -107,3 +107,49 @@ describe('注入块不参与续轮前缀比较', () => {
     expect(state.accepts(tampered, 1)).toBe(false)
   })
 })
+
+describe('注入块剔除必须两侧对称', () => {
+  function injected(text: string): RequestMessage {
+    return createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'time-context', form: 'snapshot', sections: [{ name: 'time-context', text }] },
+    } as never) as RequestMessage
+  }
+
+  it('构造时历史里已有注入块 → 仍能续轮（2026-11-19 真机回归）', () => {
+    // 真机首轮请求就带 time-context；若构造侧不剔除，history 比 prefix 多一条，
+    // 索引错位导致每次工具续轮都失败。
+    const base: GenerateOptions = {
+      ...initial(),
+      messages: [
+        ...initial().messages,
+        injected('Time sampled while preparing turn 1, step 1: ...'),
+      ],
+    }
+    const state = new ContinuationState(base)
+    state.emitted(call)
+    const next: GenerateOptions = { ...base, messages: [
+      ...base.messages,
+      createAssistantMessage({ content: [call], source: { provider: base.provider, model: base.model } }),
+      createToolResultMessage({ callId: call.id, content: [{ type: 'text', text: 'result' }], isError: false }),
+    ] }
+    expect(state.accepts(next, 1)).toBe(true)
+  })
+
+  it('两侧都剔除后，真实内容变化仍被拒绝', () => {
+    const base: GenerateOptions = {
+      ...initial(),
+      messages: [...initial().messages, injected('快照 A')],
+    }
+    const state = new ContinuationState(base)
+    state.emitted(call)
+    // 把真实用户消息改掉（注入块之外的内容）必须仍然拒绝。
+    const next: GenerateOptions = { ...base, messages: [
+      createUserMessage({ content: [{ type: 'text', text: '改过的输入' }], source: { kind: 'user' } }),
+      injected('快照 A'),
+      createAssistantMessage({ content: [call], source: { provider: base.provider, model: base.model } }),
+      createToolResultMessage({ callId: call.id, content: [{ type: 'text', text: 'result' }], isError: false }),
+    ] }
+    expect(state.accepts(next, 1)).toBe(false)
+  })
+})
