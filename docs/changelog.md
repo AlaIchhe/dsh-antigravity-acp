@@ -4,6 +4,11 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.2.4 · 2026-11-19
+
+- **修复：注入块判定改为按来源，不再枚举 `source.form`**。0.2.3 用 `['snapshot','catalog','instructions','recall']` 白名单判断注入块，但 DSH 的 form 取值随版本与插件增长——实测本机历史里还有 `notice`（`tool-jobs` / `model-selection` / `plan-mode` / `ptc-mode` 等，共 143 条）。漏掉的类型会被当成「历史被改写」，整轮报 `AGY_SESSION_UNRECOVERABLE`。真机复现：2026-11-19 12:30 的会话，第 2 轮第 31 步来了一条 `tool-jobs`（后台任务完成通知）后立即失败。现在规则反转为「带 source 且 `kind` 不是 `user`（压缩检查点除外）即为注入」，新出现的来源类型自动落入豁免。
+- **去重范围刻意保持不变**：`isInjectedContext()` 放宽只用于续轮与前缀校验；`incrementalMessages()` 的去重仍只针对快照/目录/指令/召回。`notice` 类每条都是一次真实事件通知，去重会让模型漏看「后台任务已完成」，省下的 token 换不来这个风险。带图片的消息同样永不去重（`ptc-mode` 可能是用户上传的图片引用）。
+
 ## 0.2.3 · 2026-11-19
 
 - **修复 0.2.2 漏改的另一半：注入块剔除必须两侧对称**。0.2.2 只在 `accepts()` 里剔除注入块，构造函数仍在 `#history` 里保留它们，两个序列长度不等、索引整体错位——首轮请求里只要有一条 `time-context`（DSH standard preset 每步都会注入），之后**每次工具续轮都失败**，整轮报 `AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`。真机复现：2026-11-19 09:10 的一个新会话，step 1 正常调完 `working_directory`，step 2 立即失败。现在构造与比较共用同一套剔除规则，并补上「构造时历史已有注入块仍能续轮」的回归用例。

@@ -13,21 +13,36 @@ export function messageSourceForm(message: RequestMessage): string | undefined {
 }
 
 /**
- * 这条消息是否为 DSH 注入的上下文块，而不是对话内容本身。
+ * 这条消息是否为 DSH 在请求生成时注入的上下文/通知块，而不是对话内容本身。
  *
- * 注入块由宿主的 pre-step 在**请求生成时**追加（`time-context` 按 600s 墙钟
- * 到期、`runtime-context` 随服务变化、技能目录与工作区指令随快照刷新），因此
- * 它们可以出现在任意两条真实消息之间，位置与数量都不由模型决定。
+ * 判定按 `source.form` 做**白名单之外的枚举**是错的：DSH 的 form 取值随版本与
+ * 插件增长，实测至少还有 `notice`（`tool-jobs` / `model-selection` / `plan-mode`
+ * / `ptc-mode` 等，单机历史里 143 条）。漏掉一种，那条消息就会被当成「历史被
+ * 改写」，让整轮报 `AGY_SESSION_UNRECOVERABLE`。
  *
- * 真实用户输入（`kind: 'user'` 或无 source）、压缩检查点与模型选择记录**不是**
- * 注入块：它们参与历史前缀比较。未知来源同样保守按真实消息处理。
+ * 因此这里改为**认定「注入」而不是认定「正常」**：只要消息带 `source`、不是
+ * 真实用户输入，就按注入处理。真实用户输入的唯一可靠标志是 `kind: 'user'`
+ * （无论有无 `rpcId`）。
+ *
+ * 刻意**不**按 kind 做黑名单：`ptc-mode` 里既可能是宿主通知，也可能装着用户
+ * 真实上传的图片引用——按 kind 一刀切会把用户内容误当噪声丢掉。
+ *
+ * 参与前缀比较的真实消息：无 `source` 的裸消息、`kind: 'user'`、压缩检查点
+ * （它是历史的一部分，位置与内容都由宿主确定但语义上取代了早期历史）。
  */
 export function isInjectedContext(message: RequestMessage): boolean {
   if (message.role !== 'user') return false
-  const kind = messageSourceKind(message)
-  if (!kind || kind === 'user' || kind === 'compact-checkpoint' || kind === 'model-selection') return false
-  const form = messageSourceForm(message)
-  return ['snapshot', 'catalog', 'instructions', 'recall'].includes(form ?? '')
+  const source = (message as { readonly source?: { readonly kind?: unknown } }).source
+  // 没有 source：adapter 反序列化出的裸消息，按真实内容处理。
+  if (source === undefined || typeof source !== 'object') return false
+  const kind = (source as { readonly kind?: unknown }).kind
+  if (typeof kind !== 'string') return false
+  // 真实用户输入。
+  if (kind === 'user') return false
+  // 压缩检查点虽由宿主生成，但它是早期历史的替身：必须参与前缀比较，否则
+  // 压缩前后的历史会被当成「同一份」。
+  if (kind === 'compact-checkpoint') return false
+  return true
 }
 
 /** Only model-visible values participate; durable message IDs are not prompt content. */

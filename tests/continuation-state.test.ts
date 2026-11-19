@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, RequestMessage, ToolCallBlock } from '@deepseek-ai/dsh-llm'
-import { ContinuationState } from '../src/adapter/continuation-state.js'
+import { ContinuationState, isInjectedContext } from '../src/adapter/continuation-state.js'
 
 const call: ToolCallBlock = { type: 'tool-call', id: ToolCallId('call-1'), name: 'read', arguments: '{"path":"a"}' }
 function initial(): GenerateOptions {
@@ -151,5 +151,55 @@ describe('注入块剔除必须两侧对称', () => {
       createToolResultMessage({ callId: call.id, content: [{ type: 'text', text: 'result' }], isError: false }),
     ] }
     expect(state.accepts(next, 1)).toBe(false)
+  })
+})
+
+describe('注入块判定按来源，不按 form 白名单', () => {
+  /** 真实历史里出现过的 form 取值（含白名单之外）。 */
+  const shapes: Array<[string, string | undefined, boolean]> = [
+    ['time-context', 'snapshot', true],
+    ['runtime-context', 'snapshot', true],
+    ['skill-catalog', 'catalog', true],
+    ['agent-instructions', 'instructions', true],
+    ['tool-jobs', 'notice', true],
+    ['model-selection', 'notice', true],
+    ['plan-mode', 'notice', true],
+    ['goal', undefined, true],
+    ['schedule', undefined, true],
+    ['working-directory', undefined, true],
+    ['user', undefined, false],
+    ['compact-checkpoint', undefined, false],
+  ]
+
+  it.each(shapes)('kind=%s form=%s → 注入=%s', (kind, form, expected) => {
+    const message = createUserMessage({
+      content: [{ type: 'text', text: 'x' }],
+      source: form === undefined ? { kind } : { kind, form },
+    } as never) as RequestMessage
+    expect(isInjectedContext(message)).toBe(expected)
+  })
+
+  it('无 source 的裸消息与 assistant/tool 都不算注入', () => {
+    expect(isInjectedContext(createUserMessage({ content: [{ type: 'text', text: 'hi' }] } as never) as RequestMessage)).toBe(false)
+    expect(isInjectedContext(createAssistantMessage({
+      content: [{ type: 'text', text: 'a' }], source: { provider: 'p', model: 'm' },
+    }))).toBe(false)
+  })
+
+  it('tool-jobs 出现在尾部时续轮仍成立（2026-11-19 12:30 真机回归）', () => {
+    const base = initial()
+    const notice = createUserMessage({
+      content: [{ type: 'text', text: 'background job pty-send-123 finished. Read its output with job_output.' }],
+      source: { kind: 'tool-jobs', form: 'notice' },
+    } as never) as RequestMessage
+    const state = new ContinuationState(base)
+    state.emitted(call)
+    const next: GenerateOptions = { ...base, messages: [
+      ...base.messages,
+      createAssistantMessage({ content: [call], source: { provider: base.provider, model: base.model } }),
+      createToolResultMessage({ callId: call.id, content: [{ type: 'text', text: 'r' }], isError: false }),
+      notice,
+    ] }
+    expect(state.accepts(next, 1)).toBe(true)
   })
 })

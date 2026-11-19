@@ -20,11 +20,20 @@ export function shouldSendIncrement(message: RequestMessage): boolean {
 /**
  * 上下文去重用的键：由 `source.kind` 与 `source.form` 共同确定。
  *
- * 只对注入块返回键（判定见 `isInjectedContext`），真实用户输入、
- * 压缩检查点与模型选择记录返回 undefined——它们每次都必须发送。
+ * 这里**刻意比 `isInjectedContext()` 更窄**：只对确定「重复发送无信息量损失」的
+ * 快照 / 目录 / 指令 / 召回材料去重。`notice` 类（`tool-jobs`、`plan-mode` 等）
+ * 虽然也算注入，但每条都是一次真实事件通知——去重会让模型漏看「后台任务已完成」，
+ * 省下的 token 换不来这个风险，因此每次都发送。
+ *
+ * 带图片的消息同样永不去重：`ptc-mode` 这类来源既可能是宿主通知，也可能装着
+ * 用户真实上传的图片引用；内容里一旦有非文本块，就按用户内容对待。
  */
 function contextKey(message: RequestMessage): string | undefined {
-  return isInjectedContext(message) ? stable([messageSourceKind(message), messageSourceForm(message)]) : undefined
+  if (!isInjectedContext(message)) return undefined
+  if (message.content.some((block) => block.type !== 'text')) return undefined
+  const form = messageSourceForm(message)
+  if (!['snapshot', 'catalog', 'instructions', 'recall'].includes(form ?? '')) return undefined
+  return stable([messageSourceKind(message), form])
 }
 
 /**

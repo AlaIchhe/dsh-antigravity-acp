@@ -95,6 +95,10 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-19 的「注入判定按来源而非 form 白名单」通过 `npm run check`：类型检查、**33 个文件 / 409 项测试**与构建；真机 `AGY_REAL_ACP=1` 两例通过。新增 15 例覆盖真实出现过的全部 `source` 形状（含 `notice`、无 form 的 `goal`/`schedule`/`working-directory`），以及「`tool-jobs` 位于尾部时续轮仍成立」。
+
+教训：0.2.2 与 0.2.3 连续两次都是「枚举了不完整的集合」。0.2.2 只改比较侧没改构造侧；0.2.3 把 `form` 当成有限枚举。两次都靠真机反馈才发现，离线用例当时的覆盖面没有包含这些形状。现在判定改为「默认注入、按来源排除」，新增来源类型不需要再改代码。
+
 2026-11-19 的「注入块剔除两侧对称」通过 `npm run check`：类型检查、**33 个文件 / 395 项测试**与构建。真机证据（`AGY_REAL_ACP=1`，`gemini-4-hydrogen` + 官方 `agy acp`）：`real-injection-regression` 两例通过；离线新增两例锁定对称性（构造时历史含注入块仍可续轮、注入块之外的真实内容变化仍被拒绝）。
 
 问题来源：0.2.2 只改了 `ContinuationState.accepts()` 一侧。`#history` 在构造时用 `messages.map` 原样保留注入块，而 `accepts()` 比对的 `prefix` 已剔除它们，两个序列长度不等导致索引错位。真机表现为「首轮 step 1 正常、step 2 立即 `AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`」——因为续轮永远不会被接受，`#abandonTurn()` 随即丢弃会话与映射。该缺陷在 0.2.2 的离线用例下不可见：那些用例的 `GenerateOptions.messages` 里都没有注入块，构造侧与比较侧的差异因此无法暴露。
