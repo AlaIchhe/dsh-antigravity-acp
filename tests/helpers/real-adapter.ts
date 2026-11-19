@@ -62,10 +62,12 @@ export interface RealAdapter {
  * @param options - 覆盖项（cwd、parkSettleMs、resumeSessions 等）。
  * @returns adapter 与其日志收集器。
  */
-export async function createRealAdapter(options: Partial<AntigravityAcpAdapterOptions> = {}): Promise<RealAdapter> {
+export async function createRealAdapter(
+  options: Partial<AntigravityAcpAdapterOptions> & { cacheDir?: string } = {},
+): Promise<RealAdapter> {
   const logs: RealAdapterLogLine[] = []
   const links: AgentLinkType[] = []
-  const cacheDir = await fs.mkdtemp(join(tmpdir(), 'agy-real-'))
+  const cacheDir = options.cacheDir ?? await fs.mkdtemp(join(tmpdir(), 'agy-real-'))
   const store = createFileSessionMapStore(cacheDir, () => undefined)
   const children: ChildProcess[] = []
   const runtimeDir = await fs.mkdtemp(join(tmpdir(), 'agy-run-'))

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, RequestMessage, ToolCallBlock } from '@deepseek-ai/dsh-llm'
-import { ContinuationState, isInjectedContext } from '../src/adapter/continuation-state.js'
+import { ContinuationState } from '../src/adapter/continuation-state.js'
 
 const call: ToolCallBlock = { type: 'tool-call', id: ToolCallId('call-1'), name: 'read', arguments: '{"path":"a"}' }
 function initial(): GenerateOptions {
@@ -154,52 +154,61 @@ describe('注入块剔除必须两侧对称', () => {
   })
 })
 
-describe('注入块判定按来源，不按 form 白名单', () => {
-  /** 真实历史里出现过的 form 取值（含白名单之外）。 */
-  const shapes: Array<[string, string | undefined, boolean]> = [
-    ['time-context', 'snapshot', true],
-    ['runtime-context', 'snapshot', true],
-    ['skill-catalog', 'catalog', true],
-    ['agent-instructions', 'instructions', true],
-    ['tool-jobs', 'notice', true],
-    ['model-selection', 'notice', true],
-    ['plan-mode', 'notice', true],
-    ['goal', undefined, true],
-    ['schedule', undefined, true],
-    ['working-directory', undefined, true],
-    ['user', undefined, false],
-    ['compact-checkpoint', undefined, false],
-  ]
-
-  it.each(shapes)('kind=%s form=%s → 注入=%s', (kind, form, expected) => {
-    const message = createUserMessage({
-      content: [{ type: 'text', text: 'x' }],
-      source: form === undefined ? { kind } : { kind, form },
+describe('宿主上下文按 id 识别，不再按来源类型', () => {
+  /** 造一条「宿主在请求生成时追加」的消息：user 角色 + 全新 id。 */
+  function hostContext(text: string, kind = 'whichever-new-kind'): RequestMessage {
+    return createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind, form: 'notice' },
     } as never) as RequestMessage
-    expect(isInjectedContext(message)).toBe(expected)
+  }
+
+  it('尾部任意来源的宿主上下文都不阻塞续轮（不枚举 kind）', () => {
+    for (const kind of ['time-context', 'tool-jobs', 'plan-mode', 'goal', 'brand-new-kind-2027']) {
+      const base = initial()
+      const state = new ContinuationState(base)
+      state.emitted(call)
+      const next = continuation(base)
+      next.messages = [...next.messages, hostContext('宿主追加', kind)]
+      expect(state.accepts(next, 1), `kind=${kind} 应放行`).toBe(true)
+    }
   })
 
-  it('无 source 的裸消息与 assistant/tool 都不算注入', () => {
-    expect(isInjectedContext(createUserMessage({ content: [{ type: 'text', text: 'hi' }] } as never) as RequestMessage)).toBe(false)
-    expect(isInjectedContext(createAssistantMessage({
-      content: [{ type: 'text', text: 'a' }], source: { provider: 'p', model: 'm' },
-    }))).toBe(false)
-  })
-
-  it('tool-jobs 出现在尾部时续轮仍成立（2026-11-19 12:30 真机回归）', () => {
+  it('工具循环中途插入的宿主上下文同样被放行（0.2.2 的原始事故）', () => {
     const base = initial()
-    const notice = createUserMessage({
-      content: [{ type: 'text', text: 'background job pty-send-123 finished. Read its output with job_output.' }],
-      source: { kind: 'tool-jobs', form: 'notice' },
-    } as never) as RequestMessage
     const state = new ContinuationState(base)
     state.emitted(call)
-    const next: GenerateOptions = { ...base, messages: [
-      ...base.messages,
-      createAssistantMessage({ content: [call], source: { provider: base.provider, model: base.model } }),
-      createToolResultMessage({ callId: call.id, content: [{ type: 'text', text: 'r' }], isError: false }),
-      notice,
-    ] }
+    const next = continuation(base)
+    // 插在 assistant 与 tool 结果之间：工具结果不再紧邻尾部。
+    next.messages = [
+      next.messages[0]!, next.messages[1]!, hostContext('中途快照'),
+      ...next.messages.slice(2),
+    ]
     expect(state.accepts(next, 1)).toBe(true)
+  })
+
+  it('真实用户消息仍然破坏增量判定（豁免不会扩散成任意篡改）', () => {
+    const base = initial()
+    const state = new ContinuationState(base)
+    state.emitted(call)
+    const next = continuation(base)
+    next.messages = [
+      ...next.messages,
+      createUserMessage({ content: [{ type: 'text', text: '插入的用户消息' }], source: { kind: 'user' } }),
+    ]
+    expect(state.accepts(next, 1)).toBe(false)
+  })
+
+  it('已发送的历史被改写（同 id 不同内容）必须拒绝', () => {
+    const base = initial()
+    const state = new ContinuationState(base)
+    state.emitted(call)
+    const next = continuation(base)
+    const original = next.messages[0]!
+    next.messages = [
+      { ...original, content: [{ type: 'text', text: '改过的内容' }] } as RequestMessage,
+      ...next.messages.slice(1),
+    ]
+    expect(state.accepts(next, 1)).toBe(false)
   })
 })

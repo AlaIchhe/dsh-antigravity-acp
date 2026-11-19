@@ -4,6 +4,12 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.3.0 · 2026-11-19
+
+- **删除「判定注入块」的逻辑，改用 message id 确认历史身份**。0.2.2–0.2.4 三版都在修同一个枚举不完备的问题（0.2.2 只改比较侧；0.2.3 把 `source.form` 当有限枚举，漏了 `notice`；0.2.4 反转为「默认注入」但仍靠 `kind` 猜测）。根因在指纹只算 `role + content`、不算身份：两条消息文本一样就无法区分「中间插了一条」与「原来那条被改了」，只能靠来源类型去猜。现在指纹改为 `{id, role, content}`，宿主上下文按「`user` 角色 + id 从未发出去过」识别——不需要枚举来源类型，DSH 新增任何来源都自动生效。
+- **去重同样改为按 id**：`incrementalMessages()` 不再按 `source.kind` / `source.form` 判断，内容相同但 id 不同的两条消息会被正确视为两条（此前内容去重会把用户重复发送的同一句话吞掉）。
+- 依 **DSH 的稳定契约**：`id` 在消息创建时生成一次、写入会话日志、派生历史时原样返回（`dsh-session/src/surface.ts` 的 `case 'user/message': return event.data`），跨进程重启不变。已用真机实验验证：销毁 adapter 后用新实例 + 同一 `sessions.json` 恢复成功（`已恢复 ACP 会话 … 已发送消息=1`）。
+
 ## 0.2.4 · 2026-11-19
 
 - **修复：注入块判定改为按来源，不再枚举 `source.form`**。0.2.3 用 `['snapshot','catalog','instructions','recall']` 白名单判断注入块，但 DSH 的 form 取值随版本与插件增长——实测本机历史里还有 `notice`（`tool-jobs` / `model-selection` / `plan-mode` / `ptc-mode` 等，共 143 条）。漏掉的类型会被当成「历史被改写」，整轮报 `AGY_SESSION_UNRECOVERABLE`。真机复现：2026-11-19 12:30 的会话，第 2 轮第 31 步来了一条 `tool-jobs`（后台任务完成通知）后立即失败。现在规则反转为「带 source 且 `kind` 不是 `user`（压缩检查点除外）即为注入」，新出现的来源类型自动落入豁免。

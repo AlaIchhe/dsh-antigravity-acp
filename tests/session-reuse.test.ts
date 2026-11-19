@@ -34,32 +34,45 @@ describe('会话历史与实际交付输出一致性', () => {
   })
 })
 
-describe('上下文按内容去重，而非按类别丢弃', () => {
-  for (const form of ['snapshot', 'catalog', 'instructions', 'recall']) {
-    it(`${form} 首次与变化内容发送，相同内容不重复发送`, () => {
-      const initial = context('版本 A', form)
-      const messages = [initial, answer('A1'), context('版本 A', form), context('版本 B', form), user('Q2')]
-      expect(incrementalMessages(messages, 1)).toEqual([messages[3], messages[4]])
-      expect(incrementalMessages([user('Q1'), initial, user('Q2')], 1)).toContainEqual(initial)
-    })
-  }
-  it('快照回滚 A→B→A 必须再次发送 A', () => {
-    const a = context('A', 'snapshot'), b = context('B', 'snapshot')
+describe('增量按 message id 判定，不按内容或类别', () => {
+  it('已发送过的同一条消息（同 id）不再发送', () => {
+    const notice = context('后台任务完成', 'notice')
     const q = user('Q')
-    expect(incrementalMessages([a, b, a, q], 2)).toEqual([a, q])
+    // notice 在 sentCount=1 之内，视为已发送。
+    expect(incrementalMessages([notice, q], 1)).toEqual([q])
   })
-  it('指令旧版本重新成为当前版本时不能被永久去重', () => {
-    const a = context('规则 A', 'instructions'), b = context('规则 B', 'instructions')
-    const q = user('Q')
-    expect(incrementalMessages([a, b, a, q], 2)).toEqual([a, q])
+
+  it('内容相同但 id 不同 → 视为两条新消息都发', () => {
+    const a = context('状态', 'snapshot')
+    const b = context('状态', 'snapshot')
+    expect(a.id).not.toBe(b.id)
+    expect(incrementalMessages([a, b], 1)).toEqual([b])
   })
-  it('不同 producer、notice、relay、未知类别与重复真实用户请求均保留', () => {
-    const old = context('状态', 'snapshot', 'one')
-    const fresh = [context('状态', 'snapshot', 'two'), context('通知', 'notice'), context('通知', 'notice'), context('消息', 'relay'), context('未知', 'future-form'), user('相同问题'), user('相同问题')]
-    expect(incrementalMessages([old, ...fresh], 1)).toEqual(fresh)
+
+  it('任何类别的新消息都发送，不按 form 丢弃', () => {
+    const fresh = [context('通知', 'notice'), context('未知', 'future-form'), user('问题')]
+    expect(incrementalMessages([context('旧', 'snapshot'), ...fresh], 1)).toEqual(fresh)
   })
-  it('保留新注入，把最新用户消息重排到末尾', () => {
-    const request = user('当前问题'), notice = context('目标变化', 'notice')
-    expect(incrementalMessages([user('Q1'), request, notice], 1)).toEqual([notice, request])
+
+  it('两条内容完全相同的真实用户消息都会发送（id 不同）', () => {
+    const first = user('相同问题')
+    const second = user('相同问题')
+    expect(first.id).not.toBe(second.id)
+    expect(incrementalMessages([first, second], 1)).toEqual([second])
+  })
+
+  it('assistant 永不作为增量重发', () => {
+    const q2 = user('Q2')
+    expect(incrementalMessages([user('Q'), answer('A'), q2], 1)).toEqual([q2])
+  })
+
+  it('最新用户消息重排到末尾', () => {
+    const request = user('当前问题')
+    const notice = context('目标变化', 'notice')
+    // 两种排列都归一到「注入在前、当前请求在最后」：模型最后看到的必须是用户请求。
+    expect(incrementalMessages([user('Q1'), request, notice], 1).map((m) => (m.content[0] as { text: string }).text))
+      .toEqual(['目标变化', '当前问题'])
+    expect(incrementalMessages([user('Q1'), notice, request], 1).map((m) => (m.content[0] as { text: string }).text))
+      .toEqual(['目标变化', '当前问题'])
   })
 })
