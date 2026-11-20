@@ -22,7 +22,7 @@ import { fetchAgyUsage } from '../runtime/agy-cli.js'
 import type { CliRun } from '../runtime/agy-cli.js'
 import type { SettingsControl, AccountSnapshot, ModelSnapshot } from './control.js'
 import { redactSensitiveText } from '../runtime/redact.js'
-import { ACCOUNT_ADMIN_ACTIONS } from '../accounts/types.js'
+import { ACCOUNT_ADMIN_ACTIONS, CLI_INSTALL_ACTIONS } from '../accounts/types.js'
 import type { AccountAdminAction, AccountAdminRequest } from '../accounts/types.js'
 import type { AccountsManager } from '../accounts/manager.js'
 
@@ -84,12 +84,16 @@ function isAdminAction(value: unknown): value is AccountAdminAction {
   return typeof value === 'string' && (ACCOUNT_ADMIN_ACTIONS as readonly string[]).includes(value)
 }
 
-function parseAccountRequest(value: unknown): { action: AcpAccountAction | AccountAdminAction; id?: string; alias?: string } {
+function isCliInstallAction(value: unknown): boolean {
+  return typeof value === 'string' && (CLI_INSTALL_ACTIONS as readonly string[]).includes(value)
+}
+
+function parseAccountRequest(value: unknown): { action: AcpAccountAction | AccountAdminAction | 'install-cli'; id?: string; alias?: string } {
   if (value === undefined) return { action: 'status' }
   if (!value || typeof value !== 'object' || !('action' in value)) throw new TypeError('Invalid AgYAccountRequest')
   const record = value as Record<string, unknown>
   const action = record.action
-  if (!(ACP_ACCOUNT_ACTIONS as readonly unknown[]).includes(action) && !isAdminAction(action)) {
+  if (!(ACP_ACCOUNT_ACTIONS as readonly unknown[]).includes(action) && !isAdminAction(action) && !isCliInstallAction(action)) {
     throw new TypeError('Invalid AgYAccountRequest.action')
   }
   const id = record.id
@@ -97,7 +101,7 @@ function parseAccountRequest(value: unknown): { action: AcpAccountAction | Accou
   const alias = record.alias
   if (alias !== undefined && typeof alias !== 'string') throw new TypeError('Invalid AgYAccountRequest.alias')
   return {
-    action: action as AcpAccountAction | AccountAdminAction,
+    action: action as AcpAccountAction | AccountAdminAction | 'install-cli',
     ...(id === undefined ? {} : { id }),
     ...(alias === undefined ? {} : { alias: alias.slice(0, 80) }),
   }
@@ -210,6 +214,11 @@ export interface AgYQuotaServiceOptions {
   modelTarget?: (model: string) => string | undefined
   /** 多账号管理器：账号列表、登录与当前账号解析。 */
   accounts?: AccountsManager
+  /**
+   * 一键安装官方 CLI（`agy`）。返回给面板的短句；失败时由实现方抛出可读错误。
+   * 只在用户显式点按钮时调用，不参与任何自动流程。
+   */
+  installCli?: () => Promise<{ message: string }>
   /** 宿主日志（index.ts 接 `ctx.logger`）；用于记录每次取数的来源与结果。 */
   log?: { info(message: string): void; warn(message: string, error?: unknown): void }
 }
@@ -249,6 +258,7 @@ export class AgYQuotaService extends TypertRemoteService {
   private readonly _log: AgYQuotaServiceOptions['log']
   private readonly _control: SettingsControl | undefined
   private readonly _accounts: AccountsManager | undefined
+  private readonly _installCli: (() => Promise<{ message: string }>) | undefined
 
   constructor(ctx: Context, options: AgYQuotaServiceOptions = {}) {
     super(ctx, AGY_QUOTA_SERVICE)
@@ -260,6 +270,7 @@ export class AgYQuotaService extends TypertRemoteService {
     this._log = options.log
     this._control = options.control
     this._accounts = options.accounts
+    this._installCli = options.installCli
   }
 
   /**
@@ -268,6 +279,18 @@ export class AgYQuotaService extends TypertRemoteService {
    */
   async account(request?: { action?: string; id?: string; alias?: string }): Promise<AccountSnapshot> {
     const parsed = parseAccountRequest(request)
+    if (isCliInstallAction(parsed.action)) {
+      if (!this._installCli) throw new Error('一键安装未接入')
+      const outcome = await this._installCli()
+      const base: AccountSnapshot = this._control
+        ? this._control.account('status')
+        : { state: 'idle', message: '', updatedAt: new Date().toISOString() }
+      return {
+        ...base,
+        ...(this._accounts ? this._accounts.snapshot() : {}),
+        message: outcome.message,
+      } as AccountSnapshot
+    }
     if (isAdminAction(parsed.action)) {
       if (!this._accounts) throw new Error('账号管理服务未就绪')
       const result = await this._accounts.handle({
@@ -278,11 +301,12 @@ export class AgYQuotaService extends TypertRemoteService {
       const base: AccountSnapshot = this._control
         ? this._control.account('status')
         : { state: 'idle', message: result.message, updatedAt: new Date().toISOString() }
-      return { ...base, ...result.snapshot, message: result.message }
+      return { ...base, ...result.snapshot, message: result.message, cliInstalled: this._resolveCli?.() !== undefined }
     }
     if (!this._control) throw new Error('账户控制服务未就绪')
     const snapshot = this._control.account(parsed.action as AcpAccountAction)
-    return this._accounts ? { ...snapshot, ...this._accounts.snapshot() } : snapshot
+    const withCli: AccountSnapshot = { ...snapshot, cliInstalled: this._resolveCli?.() !== undefined }
+    return this._accounts ? { ...withCli, ...this._accounts.snapshot(), cliInstalled: withCli.cliInstalled } : withCli
   }
 
   async models(request?: AgYQuotaRequest): Promise<ModelSnapshot> {

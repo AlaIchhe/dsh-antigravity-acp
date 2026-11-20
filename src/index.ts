@@ -9,7 +9,7 @@
  */
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-llm'
@@ -42,6 +42,7 @@ import { describeLowIntegrity, isLowIntegrityTarget } from './runtime/integrity.
 import { describeAuthWait, redactSensitiveText } from './runtime/redact.js'
 import { readCachedCatalog, writeCachedCatalog } from './runtime/catalog-cache.js'
 import { createFileSessionMapStore } from './runtime/session-map.js'
+import { installAgyCli } from './runtime/agy-cli-install.js'
 import { agyCliCandidates, createSubprocessCliRun, fetchAgyModels } from './runtime/agy-cli.js'
 import { AgYQuotaService, registerAgYQuotaRemote } from './quota/quota-remote.js'
 import { SettingsControl } from './quota/control.js'
@@ -774,6 +775,18 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
     deps: { acpVersion, cliPath: config.agyCliPath, fetchImpl: pluginFetch },
     cliQuotaEnabled: () => config.cliQuotaEnabled === true,
     resolveCli: () => { const cliPath = findCli(); return cliPath ? { run: cliRun, cliPath } : undefined },
+    // 一键安装：只在用户点按钮时走，装到官方脚本的默认位置（~/.local/bin/agy）。
+    // 不执行 `curl | bash`，由本插件按官方 manifest 下载并校验 SHA-512。
+    installCli: async () => {
+      const existing = findCli()
+      if (existing) return { message: `官方 CLI 已存在：${existing}` }
+      const outcome = await installAgyCli({
+        targetDir: join(homedir(), '.local', 'bin'),
+        fetchImpl: pluginFetch as unknown as typeof fetch,
+      })
+      ctx.logger?.info?.(`antigravity-acp: 已安装官方 CLI ${outcome.version} → ${outcome.path}`)
+      return { message: `已安装官方 CLI ${outcome.version}（${outcome.path}），请重载插件后生效` }
+    },
     modelTarget: (model) => config.modelOverrides?.[model]?.target?.trim() || model,
     // 取数打点：浏览器侧无法写宿主日志，这条是「药丸有没有真的发请求、结果如何」的唯一现场。
     log: {

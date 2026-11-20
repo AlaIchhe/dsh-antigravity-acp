@@ -181,6 +181,11 @@ window.__ModuleLoader__.load({
 
     /** 登录流程提示：等待时给出授权链接与取消，完成/失败只显示结果。 */
     function AccountAuthNotice({ auth, onCancel, onStart }) {
+      // hooks 必须在任何 return 之前调用（React 规则）。
+      const [copied, setCopied] = React.useState('idle')
+      const authUrl = auth && typeof auth.authUrl === 'string' ? auth.authUrl : undefined
+      // 换了一次登录流程就重置按钮文案，避免沿用上一次的「已复制」。
+      React.useEffect(() => { setCopied('idle') }, [authUrl])
       if (!auth || auth.phase === 'idle') return null
       if (auth.phase === 'done') return h(StatusNotice, { status: { kind: 'ok', text: auth.message ?? '登录成功' } })
       if (auth.phase === 'failed') {
@@ -191,13 +196,35 @@ window.__ModuleLoader__.load({
       if (auth.phase === 'cancelled') return h(StatusNotice, { status: { kind: 'busy', text: auth.message ?? '已取消登录' } })
       const waiting = auth.phase === 'waiting'
       const href = typeof auth.authUrl === 'string' && auth.authUrl.startsWith('https://accounts.google.com/') ? auth.authUrl : undefined
+      // 无头主机（没有 X/Wayland）上浏览器永远不会自动打开，用户必须自己复制这条链接。
+      // 只给一个 <a> 很容易被复制不全：URL 里的 & 一旦断掉，Google 只会收到 client_id，
+      // 报「Required parameter is missing: response_type」——看起来像授权坏了，其实是粘丢了。
+      // 所以这里提供显式复制按钮，并把完整地址以可选中的纯文本再显示一遍。
       return h('div', { role: 'region', 'aria-label': '登录流程', style: { display: 'grid', gap: '8px', padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(128,128,128,.18)', background: 'rgba(23,124,85,.06)' } },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
           h('strong', { style: { fontSize: '12px' } }, waiting ? '等待浏览器授权' : auth.phase === 'exchanging' ? '正在完成登录' : '正在准备授权'),
           h('span', { style: { flex: 1 } }),
           onCancel ? h('button', { type: 'button', style: ACTION, onClick: onCancel }, '取消登录') : null),
         waiting && href
-          ? h('a', { href, target: '_blank', rel: 'noreferrer noopener', style: { fontSize: '12px', color: '#177c55', overflowWrap: 'anywhere' } }, '浏览器没有自动打开？点此完成授权')
+          ? h('div', { style: { display: 'grid', gap: '6px' } },
+            h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' } },
+              h('button', {
+                type: 'button',
+                style: { ...ACTION, minHeight: '28px', padding: '3px 9px', fontSize: '11px' },
+                onClick: () => {
+                  // 异步剪贴板失败时退回选中文本，让用户按 Ctrl+C。
+                  const done = (ok) => setCopied(ok ? 'copied' : 'failed')
+                  if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(href).then(() => done(true), () => done(false))
+                  } else done(false)
+                },
+              }, copied === 'copied' ? '已复制' : copied === 'failed' ? '复制失败，请手动选中' : '复制授权链接'),
+              h('a', { href, target: '_blank', rel: 'noreferrer noopener', style: { fontSize: '12px', color: '#177c55' } }, '直接打开')),
+            h('code', {
+              style: { fontSize: '11px', lineHeight: 1.5, wordBreak: 'break-all', padding: '6px 8px', borderRadius: '6px', background: 'rgba(128,128,128,.10)', userSelect: 'all' },
+            }, href),
+            h('div', { style: { fontSize: '11px', opacity: 0.7 } },
+              '完整复制整条地址再粘贴；若只粘到 「?client_id=…」 一段，Google 会报 Required parameter is missing: response_type。'))
           : null)
     }
 
@@ -230,6 +257,8 @@ window.__ModuleLoader__.load({
       const [account, setAccount] = React.useState(undefined)
       const [accountNotice, setAccountNotice] = React.useState(null)
       const [confirmRemoveId, setConfirmRemoveId] = React.useState(undefined)
+      const [installingCli, setInstallingCli] = React.useState(false)
+      const [installNotice, setInstallNotice] = React.useState(null)
       const [models, setModels] = React.useState([])
       const [modelMessage, setModelMessage] = React.useState('')
       const alive = React.useRef(true)
@@ -509,7 +538,32 @@ window.__ModuleLoader__.load({
             ? h(StatusNotice, { status: accountNotice }) : null,
           h('section', { style: PANEL, 'aria-label': '账号' },
             h(SectionHeading, { title: '账号', description: '登录多个 Antigravity 账号；新建 ACP 连接使用「使用中」的账号。',
-              action: h('button', { type: 'button', style: { ...PRIMARY, minHeight: '30px', padding: '4px 10px' }, disabled: !props.control || authBusy, onClick: () => accountAction('add-account') }, authBusy ? '等待授权…' : '添加账号') }),
+              action: h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+                account?.cliInstalled === false
+                  ? h('button', {
+                    type: 'button',
+                    title: '安装官方 Antigravity CLI（agy）：补齐模型目录并支持 CLI 额度读取。不影响聊天与登录。',
+                    style: { ...ACTION, minHeight: '30px', padding: '4px 10px' },
+                    disabled: !props.control || installingCli,
+                    onClick: () => {
+                      setInstallingCli(true)
+                      setInstallNotice({ kind: 'busy', text: '正在下载并校验官方 CLI，约 200–300MB，可能需要一两分钟…' })
+                      accountAction('install-cli').then(() => {
+                        setInstallNotice({ kind: 'ok', text: '安装完成，请重载插件后生效' })
+                      }).catch((error) => {
+                        setInstallNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+                      }).finally(() => setInstallingCli(false))
+                    },
+                  }, installingCli ? '正在安装…' : '安装官方 CLI')
+                  : null,
+                h('button', { type: 'button', style: { ...PRIMARY, minHeight: '30px', padding: '4px 10px' }, disabled: !props.control || authBusy, onClick: () => accountAction('add-account') }, authBusy ? '等待授权…' : '添加账号')) }),
+            // CLI 缺失只影响「目录补齐」与「CLI 额度」，聊天与 OAuth 登录都照常，
+            // 所以这条是提示而不是阻断；说明足够具体，用户才能判断要不要装。
+            account?.cliInstalled === false
+              ? installNotice
+                ? h(StatusNotice, { status: installNotice })
+                : h(StatusNotice, { status: { kind: 'busy', text: '未检测到官方 Antigravity CLI（agy）。聊天与账号登录不受影响；安装后可补齐模型目录并读取 CLI 额度。' } })
+              : null,
             h(AccountAuthNotice, {
               auth: account?.auth,
               onCancel: authBusy ? () => accountAction('cancel-add') : undefined,

@@ -4,6 +4,13 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.4.0 · 2026-11-20
+
+- **账号页新增「安装官方 CLI」按钮**。此前 `agy` 缺失时没有任何入口：模型目录只剩 ACP 观测、`cliQuotaEnabled` 直接报错，而用户不知道缺什么、去哪装。现在面板检测到缺失时给出说明与按钮，一键安装到官方脚本的默认位置 `~/.local/bin/agy`。
+- **安装不执行 `curl | bash`**。官方给出的是 `curl -fsSL https://antigravity.google/cli/install.sh | bash`；插件改为复现该脚本的**行为**（查 manifest → 下载 → SHA-512 校验 → 解包 → 落盘），不把网络返回交给 shell。下载地址限定在白名单内（manifest 服务与 `storage.googleapis.com`）且拒绝重定向，校验在落盘**之前**完成；解包只取单个可执行文件，不展开整个归档。
+- **授权链接改为可复制**。无头主机（无 X/Wayland）上浏览器永远打不开，用户必须手动复制。原来只给一个 `<a>`，URL 里的 `&` 一旦在复制时断掉，Google 只会收到 `client_id` 并报 `Required parameter is missing: response_type`——看起来像授权坏了，其实是粘丢了。现在提供「复制授权链接」按钮、可全选的完整地址，以及这句错误的成因提示。
+- 账号页在缺 CLI 时明确说明影响范围：**聊天与账号登录不受影响**，安装只补齐模型目录与 CLI 额度。
+
 ## 0.3.2 · 2026-11-20
 
 - **删除 `sessions.lock` 跨进程租约**。它想防的是「两个 Host 同时写 `sessions.json`」，但这份文件的键是 DSH 会话 id、值是官方 agent 分配给**那一条 ACP 连接**的 session id——一条 DSH 会话只存在于一个 profile，一条 ACP 会话只属于创建它的链路，所以「两个 Host 指向同一个 ACP 会话」在协议层面就不成立，需要排他的并发写者并不存在。

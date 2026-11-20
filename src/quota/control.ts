@@ -13,6 +13,13 @@ export interface AccountSnapshot {
   activeAccountId?: string
   /** 面板内 OAuth 登录流程状态。 */
   auth?: AccountAuthView
+  /**
+   * 是否检测到官方 CLI（`agy`）。
+   *
+   * 为 false 时面板显示「安装官方 CLI」按钮：聊天与账号登录都不依赖它，但模型
+   * 目录补齐与 CLI 额度需要它。缺省表示未探测（不据此隐藏按钮以外的任何东西）。
+   */
+  cliInstalled?: boolean
 }
 export interface ModelSnapshot {
   status: 'ok' | 'error'

@@ -95,6 +95,14 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-20 的「一键安装官方 CLI + 授权链接可复制」通过 `npm run check`：类型检查、**36 个文件 / 416 项测试**与构建。
+
+**真机端到端**：从官方 manifest（`antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`）真实下载 1.5.13，SHA-512 校验通过，解包出 270MB 可执行文件（权限 0755），安装后 `agy --version` 输出 `1.5.13`。全程约 53 秒。
+
+**为什么不执行官方 `curl | bash`**：把网络返回直接交给 shell，等于让远端决定本机执行什么。插件只复现该脚本的行为，并把下载限制在 manifest 服务与 `storage.googleapis.com` 白名单内、拒绝重定向、校验先于落盘。离线用例覆盖：白名单外地址被拒、manifest 缺字段被拒、校验不符不落盘、已存在时跳过下载。
+
+**关于 `Required parameter is missing: response_type`**：解码该 OAuth 错误页的 `authError` 载荷确认是 `invalid_request`。逐环节实测（代码构造、面板暴露的 `authUrl`、已安装构建、直接用该 URL 请求 Google 得到 302）全部带 `response_type=code`，说明报错来自被截断的链接——错误的 URL 只剩 `client_id`，其余 8 个参数全丢，正是 `&` 断掉的特征。因此改的是复制体验，不是 URL 构造。
+
 2026-11-20 的「删除 sessions.lock」通过 `npm run check`：类型检查、**35 个文件 / 408 项测试**与构建。
 
 **实验过程**：

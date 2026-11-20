@@ -59,7 +59,18 @@ export interface AccountAuthView {
 /** `account` remote 的登录/切换动作；ACP 的 status/login/warmup/cancel 保持原义。 */
 export type AccountAdminAction = 'add-account' | 'cancel-add' | 'activate' | 'remove' | 'relogin'
 
+/**
+ * 面板动作里不含账号语义、但共用同一条 RPC 的那一个：安装官方 CLI。
+ *
+ * 它与账号无关（装的是 `agy` 二进制），但面板需要一个「点一下做事、回报进度」的
+ * 通道，而 `account` remote 已经是这样一个通道，单独开一条 remote 只为安装按钮
+ * 不值得。
+ */
+export type CliInstallAction = 'install-cli'
+
 export const ACCOUNT_ADMIN_ACTIONS: readonly AccountAdminAction[] = ['add-account', 'cancel-add', 'activate', 'remove', 'relogin']
+
+export const CLI_INSTALL_ACTIONS: readonly CliInstallAction[] = ['install-cli']
 
 export interface AccountAdminRequest {
   action: AccountAdminAction
