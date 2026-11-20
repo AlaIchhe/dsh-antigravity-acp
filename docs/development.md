@@ -95,6 +95,14 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-20 的「删除旧 agent 兼容 + 放宽恢复路径」通过 `npm run check`：类型检查、**36 个文件 / 416 项测试**与构建；真机 `AGY_REAL_ACP=1` 回归通过（`模型路由 … configId=model`、`档位路由 … configId=thought_level`、续轮与复用正常）。
+
+**真机能力探测**（删除依据，不是推测）：`agy acp` 1.5.13 的 `sessionCapabilities` 为 `{resume, close, load, list, additionalDirectories}`，`promptCapabilities` 为 `{image:true, embeddedAudio:false, embeddedContext:true}`，`configOptions` 三项全部带 `category`。因此「档位被编进模型 id」的推断路径在受支持版本上永不执行。
+
+**数据侧证据**（关于「历史被编辑或回退」）：全库 64,104 条 `surfaceOp: append`，`replace` 约 40 条且**全部**是 `compact-checkpoint`（压缩检查点），没有任何编辑/回退事件类型。错误文案里「回退或编辑」是臆造的成因，已删除。
+
+**取舍**：`modelFamilyId` 与 `foldAgyModelFamilies` 保留（新协议仍要按家族归并、匹配上下文容量），只删掉「从目录反推档位表」的部分。
+
 2026-11-20 的「中断与会话改写分离」通过 `npm run check`：类型检查、**36 个文件 / 420 项测试**与构建。
 
 **真实成因**（来自用户的实际故障，不是构造）：第 15 轮正在用 `terminal_send` 改 `dae` / `sing-box` 代理配置，网络被改断，ACP 连接随之断开、进程在写回映射前退出。`sessions.json` 停在第 14 轮的 `sent=407`，第 16 轮因此报「上一轮输出已变化或来自其他会话」。

@@ -4,6 +4,15 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.5.0 · 2026-11-20
+
+- **删除旧 agent 的档位兼容路径**（净删约 135 行）。真机确认当前 agent 已声明全部能力——`sessionCapabilities` 含 `resume`/`close`/`load`/`list`，`configOptions` 三项全带 `category`（`model`/`thought_level`/`mode`）——因此「档位被编进模型 id」那套推断（`routeTieredModelId`、`tierForModelId`、`registerTierSuffix`、`#familyTiers`）在受支持版本上永不执行。现在模型一律发家族 id，档位只走 `thought_level`；CLI 清单里真实出现过的档位名按需补齐（解决 Hydrogen 因当前模型不同而缺 `xhigh` 的问题），不再维护客户端档位表。
+- **恢复路径不再对可恢复的情况失败**：
+  - 历史前缀变化（压缩检查点替换早期历史）→ 丢弃旧映射、按新会话开始，不再报「历史不是已发送前缀的追加」。
+  - agent 未声明 `session/resume` → 按新会话继续，不再判死整轮。
+  - 删除错误文案里不存在的成因「回退或编辑」——实测 DSH 没有编辑/回退事件类型，全库 64,104 条 `append` 中 `replace` 只有压缩检查点一种。
+- 现在只有**映射确实不存在**（无法恢复任何上下文）才报 `AGY_SESSION_UNRECOVERABLE`。
+
 ## 0.4.1 · 2026-11-20
 
 - **修复：上一轮异常中断（连接断开 / 进程被杀 / 网络崩溃）后对话报废**。此前 `#resumeSession` 在 `outputMatches` 失败时一律报「上一轮输出已变化或来自其他会话」，把「历史被改写」和「上一轮没记完」当成同一件事。真机复现（2026-11-20 16:50）：第 15 轮正在改代理配置时连接断了，进程在 `#advanceSession` 之前退出，`sessions.json` 停在 16:41 的第 14 轮；17:24 第 16 轮因此报错。现在区分两者——**前缀已校验通过**时输出对不上只可能是中断遗留，此时丢弃旧映射并按新会话开始（仍然不重放历史），日志记「上一轮疑似异常中断」。

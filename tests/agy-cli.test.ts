@@ -17,8 +17,6 @@ import {
   modelFamilyId,
   parseAgyModels,
   parseAgyUsage,
-  routeTieredModelId,
-  tierForModelId,
 } from '../src/runtime/agy-cli.js'
 import type { CliRun, CliRunResult } from '../src/runtime/agy-cli.js'
 
@@ -245,28 +243,17 @@ describe('家族折叠与思考强度路由', () => {
 
   it('gpt-oss-120b 整族排除（临近下架，用户指示不进选择器）', () => {
     expect(AGY_MODEL_EXCLUDED_FAMILIES.has('gpt-oss-120b')).toBe(true)
-    const { models, tiers } = foldAgyModelFamilies(RAW)
+    const { models } = foldAgyModelFamilies(RAW)
     expect(models.some((m) => m.id.includes('gpt-oss'))).toBe(false)
-    expect(tiers.has('gpt-oss-120b')).toBe(false)
   })
 
-  it('记录各家族支持的档位', () => {
-    const { tiers } = foldAgyModelFamilies(RAW)
-    expect([...(tiers.get('claude-opus-5-5') ?? [])]).toEqual(['low', 'medium', 'high'])
-  })
-
-  it('路由：家族 + 思考强度 → 对应档位模型', () => {
-    expect(routeTieredModelId('claude-opus-5-5', 'high')).toBe('claude-opus-5-5-high')
-    expect(routeTieredModelId('gemini-4-argon', 'low')).toBe('gemini-4-argon-low')
-    const onlyMedium = new Set(['medium'] as const)
-    expect(routeTieredModelId('x', 'high', onlyMedium)).toBe('x-medium')
-  })
-
-  it('家族/档位识别：无后缀的 id 原样作为家族', () => {
-    expect(tierForModelId('claude-opus-5-5-high')).toBe('high')
-    expect(tierForModelId('claude-opus-5-5')).toBeUndefined()
-    expect(modelFamilyId('gemini-3.8-flash-low')).toBe('gemini-3.8-flash')
+  it('家族识别：剥掉已知档位后缀，无后缀原样返回', () => {
+    expect(modelFamilyId('claude-opus-5-5-high')).toBe('claude-opus-5-5')
+    expect(modelFamilyId('gemini-4-hydrogen-xhigh')).toBe('gemini-4-hydrogen')
+    expect(modelFamilyId('claude-opus-5-5')).toBe('claude-opus-5-5')
     expect(modelFamilyId('server-default')).toBe('server-default')
+    // 名称里含档位词但不是后缀，不误判。
+    expect(modelFamilyId('gemini-low-flash')).toBe('gemini-low-flash')
   })
 })
 

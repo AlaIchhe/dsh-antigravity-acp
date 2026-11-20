@@ -97,17 +97,6 @@ export function parseAgyModels(text: string): Array<{ id: string; name: string }
 export const AGY_REASONING_EFFORTS = ['low', 'medium', 'high'] as const
 export type AgyReasoningEffort = (typeof AGY_REASONING_EFFORTS)[number]
 
-/**
- * 目录里可能出现的档位后缀。`xhigh` 属于「可识别、但不路由」的一档：官方 1.5.x
- * 给 Gemini 4 Hydrogen 加了 `-xhigh`，客户端若只认三档，这个 id 会被当成独立家族
- * 出现在模型选择器里；但宿主侧的 reasoning 只接受 low/medium/high，暴露它会让
- * 选中后调用直接以 UNSUPPORTED_REASONING_EFFORT 失败。
- *
- * 所以：识别它（折叠进家族、去掉显示名后缀），不把它放进 AGY_REASONING_EFFORTS
- * （不进思考强度菜单、不参与就近档位回退）。
- */
-export type AgyModelTier = AgyReasoningEffort | 'xhigh'
-
 /** 显示名映射（档位标签与思考强度菜单同名）。 */
 export const AGY_REASONING_EFFORT_NAMES: Record<AgyReasoningEffort, string> = {
   low: '低',
@@ -128,49 +117,21 @@ export const DEFAULT_AGY_REASONING_EFFORT: AgyReasoningEffort = 'medium'
 export const AGY_MODEL_EXCLUDED_FAMILIES: ReadonlySet<string> = new Set(['gpt-oss-120b'])
 
 /**
- * 已知档位名的集合：`AGY_REASONING_EFFORTS` 加上历史出现的 `xhigh`。
+ * 家族 id：去掉思考强度后缀；没有后缀时原样返回。
  *
- * 这份集合**只用来识别旧协议的 id 后缀**（档位被编进模型 id 的那条兼容路径），
- * 不用来决定「有哪些档位可选」——后者以 agent 在 `thought_level` 选择器里
- * 声明的选项为准（见 `findThoughtLevelSelector`）。
- *
- * 加入 `xhigh` 是因为官方 1.5.x 给 Gemini 4 Hydrogen 加过 `-xhigh`：若只认三档，
- * 那个 id 会被当成独立家族出现在选择器里。这里识别它、折叠进家族，但不路由。
+ * 主要服务新协议：`thought_level` 是独立选择器，模型 id 本身已是家族 id
+ * （`claude-opus-5-5`），但官方 CLI 清单里仍可能带 `-high` 这类后缀，按家族
+ * 归并与匹配上下文容量时必须先剥掉。
  */
-const KNOWN_TIER_SUFFIXES = new Set<string>([...AGY_REASONING_EFFORTS, 'xhigh'])
-
-/**
- * 识别 id 的思考强度后缀；识别不出返回 undefined。
- *
- * 从末尾按 `-` 分段，逐段判断是否属于已知档位名——不写死正则里的 4 个值。
- * 这样官方新增档位名时，只要它在 `thought_level` 里出现并进入
- * {@link registerTierSuffix}，这里就能识别，不需要改代码。
- */
-export function tierForModelId(id: string): AgyModelTier | undefined {
-  const cut = id.lastIndexOf('-')
-  if (cut <= 0) return undefined
-  const suffix = id.slice(cut + 1)
-  if (!KNOWN_TIER_SUFFIXES.has(suffix)) return undefined
-  return suffix as AgyModelTier
-}
-
-/**
- * 登记 agent 在 `thought_level` 里声明过的档位名。
- *
- * 由 adapter 在观测到目录时调用：把 agent 真实声明的选项值并入后缀识别集合，
- * 于是「有哪些档位」以 agent 为准，而不是由客户端写死一份清单。
- */
-export function registerTierSuffix(values: Iterable<string>): void {
-  for (const value of values) {
-    if (typeof value === 'string' && value !== '') KNOWN_TIER_SUFFIXES.add(value)
-  }
-}
-
-/** 家族 id：去掉思考强度后缀；没有后缀时原样返回。 */
 export function modelFamilyId(id: string): string {
-  const tier = tierForModelId(id)
-  return tier === undefined ? id : id.slice(0, -(tier.length + 1))
+  const cut = id.lastIndexOf('-')
+  if (cut <= 0) return id
+  const suffix = id.slice(cut + 1)
+  return AGY_KNOWN_TIER_NAMES.has(suffix) ? id.slice(0, cut) : id
 }
+
+/** 已知档位名，仅用于识别 id 后缀（不决定「有哪些档位」，那由 agent 声明）。 */
+const AGY_KNOWN_TIER_NAMES = new Set<string>([...AGY_REASONING_EFFORTS, 'xhigh'])
 
 /** 显示名里的档位标签（如 `Claude Opus 5.5 (High)` → `Claude Opus 5.5`）。 */
 function stripTierLabel(name: string): string {
@@ -178,75 +139,37 @@ function stripTierLabel(name: string): string {
 }
 
 /**
- * 把档位化的模型 id 折叠成家族条目，并记录各家族支持的档位。
+ * 把官方 CLI 清单里的档位化行折叠成家族条目。
  *
- * 模型选择只出**家族**（`claude-opus-5-5` 一行），思考强度由 DSH 的思考强度
- * 菜单选择后自动路由到对应档位模型（`claude-opus-5-5-high`）——2026-10-16
- * 用户指示「不要把思考强度单独放进模型，而是做一个路由」。
- * 被排除的家族（gpt-oss-120b）整组不出现。
+ * CLI 的 `agy models` 输出是档位化原始行（`claude-opus-5-5-high`、
+ * "Claude Opus 5.5 (High)"）。模型选择器只该列家族，因此先折叠。这里**不再**
+ * 返回档位表：新协议由 agent 的 `thought_level` 选择器声明档位，不需要客户端
+ * 再从目录里推断一套。
+ *
+ * @param rows - CLI 原始清单。
+ * @returns 家族条目（按首次出现顺序）。
  */
 export function foldAgyModelFamilies(
   rows: readonly { id: string; name: string; description?: string }[],
-): { models: Array<{ id: string; name: string; description?: string }>; tiers: Map<string, ReadonlySet<AgyModelTier>> } {
-  const families = new Map<string, { id: string; name: string; description?: string; tiers: Set<AgyModelTier> }>()
+): { models: Array<{ id: string; name: string; description?: string }> } {
+  const families = new Map<string, { id: string; name: string; description?: string }>()
   for (const row of rows) {
-    const tier = tierForModelId(row.id)
     const familyId = modelFamilyId(row.id)
     if (AGY_MODEL_EXCLUDED_FAMILIES.has(familyId)) continue
-    const entry = families.get(familyId) ?? {
-      id: familyId,
-      name: stripTierLabel(row.name),
-      ...(row.description === undefined ? {} : { description: row.description }),
-      tiers: new Set<AgyModelTier>(),
+    const existing = families.get(familyId)
+    const stripped = stripTierLabel(row.name)
+    if (existing === undefined) {
+      families.set(familyId, {
+        id: familyId,
+        name: stripped,
+        ...(row.description === undefined ? {} : { description: row.description }),
+      })
+      continue
     }
-    if (tier) entry.tiers.add(tier)
-    if (entry.name === familyId && stripTierLabel(row.name) !== row.name) entry.name = stripTierLabel(row.name)
-    families.set(familyId, entry)
+    // 已有条目若名称还是裸 id，用这次更可读的名称补上。
+    if (existing.name === familyId && stripped !== row.name) existing.name = stripped
   }
-  const tiers = new Map<string, ReadonlySet<AgyModelTier>>()
-  const models: Array<{ id: string; name: string; description?: string }> = []
-  for (const entry of families.values()) {
-    models.push({
-      id: entry.id,
-      name: entry.name,
-      ...(entry.description === undefined ? {} : { description: entry.description }),
-    })
-    tiers.set(entry.id, entry.tiers)
-  }
-  return { models, tiers }
-}
-
-/**
- * 家族 + 思考强度 → 官方档位模型 id。
- *
- * - 家族**有**档位变体：取请求档位；缺该档位时取最接近的已有档位
- *   （按 low→medium→high 顺序）；
- * - 家族**已知没有**档位变体（目录里的普通 id）：原样返回，不编造后缀；
- * - 家族未知（目录尚未观测到）：明确给了强度才拼后缀，否则原样返回。
- */
-export function routeTieredModelId(
-  familyId: string,
-  effort: AgyReasoningEffort,
-  tiers?: ReadonlySet<AgyModelTier>,
-): string {
-  if (tiers && tiers.size === 0) return familyId
-  if (tiers && tiers.size > 0) {
-    if (tiers.has(effort)) return `${familyId}-${effort}`
-    const order = AGY_REASONING_EFFORTS
-    const wanted = order.indexOf(effort)
-    let best: AgyReasoningEffort | undefined
-    let bestDistance = Number.POSITIVE_INFINITY
-    for (const candidate of order) {
-      if (!tiers.has(candidate)) continue
-      const distance = Math.abs(order.indexOf(candidate) - wanted)
-      if (distance < bestDistance) {
-        best = candidate
-        bestDistance = distance
-      }
-    }
-    return best === undefined ? familyId : `${familyId}-${best}`
-  }
-  return `${familyId}-${effort}`
+  return { models: [...families.values()] }
 }
 
 /**

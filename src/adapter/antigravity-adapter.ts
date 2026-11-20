@@ -25,16 +25,11 @@ import type { AgentLink, AgentLinkHandlers } from '../protocol/agent-link.js'
 import { BRIDGE_MCP_SERVER_NAME, McpToolBridge } from '../bridge/mcp-bridge.js'
 import type { BridgeToolResult } from '../bridge/mcp-bridge.js'
 import {
-  AGY_REASONING_EFFORTS,
   AGY_REASONING_EFFORT_NAMES,
   DEFAULT_AGY_REASONING_EFFORT,
   foldAgyModelFamilies,
   modelFamilyId,
-  routeTieredModelId,
-  registerTierSuffix,
-  tierForModelId,
 } from '../runtime/agy-cli.js'
-import type { AgyModelTier } from '../runtime/agy-cli.js'
 import { findModelSelector, findThoughtLevelSelector, toModelCatalog } from './model-catalog.js'
 import type { ModelSelector, ThoughtLevelSelector } from './model-catalog.js'
 import type { CachedCatalog, CachedThoughtLevel } from '../runtime/catalog-cache.js'
@@ -265,7 +260,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   /** 官方 CLI 清单的在途读取；完成即释放，底层负责缓存和后台刷新。 */
   #cliCatalog?: Promise<readonly { id: string; name: string }[]>
   /** 家族 → 支持的思考强度档位（由目录折叠得到）。 */
-  #familyTiers = new Map<string, ReadonlySet<AgyModelTier>>()
   /** 防止异步 CLI 读取后的旧折叠结果覆盖较新的会话目录。 */
   #catalogFoldGeneration = 0
   /**
@@ -273,6 +267,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
    * 显示名：DSH 的路由键是折叠后的家族 id，而 `#catalog` 只含 ACP 的档位 id。
    */
   #foldedFamilies = new Map<string, { id: string; name: string; description?: string }>()
+  /** 官方 CLI 清单里每个家族真实出现过的档位名（只用于补齐 thought_level 的缺档）。 */
+  #cliFamilyTiers = new Map<string, Set<string>>()
   readonly #bridge: McpToolBridge
   /** 身份稳定的 ACP 事件处理器：AgentLink 只在构造时取一次 handlers。 */
   readonly #handlers: AgentLinkHandlers
@@ -605,7 +601,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
    */
   async #foldCatalog(provider: string): Promise<{
     models: Array<{ id: string; name: string; description?: string }>
-    tiers: Map<string, ReadonlySet<AgyModelTier>>
   }> {
     const generation = ++this.#catalogFoldGeneration
     // 未观测到真实目录时用磁盘缓存兜住选择器空窗。
@@ -624,8 +619,19 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     ])
     // 目录可能在 CLI 缓存读取期间更新；旧折叠结果不能覆盖新观测。
     if (generation === this.#catalogFoldGeneration) {
-      this.#familyTiers = folded.tiers
       this.#foldedFamilies = new Map(folded.models.map((model) => [model.id, model]))
+      // 记录 CLI 原始行里出现过的「家族-档位」组合，供 #reasoningInfo 补齐缺档。
+      const tierNames = new Map<string, Set<string>>()
+      for (const row of await this.#cliRawRows()) {
+        const family = modelFamilyId(row.id)
+        if (family === row.id) continue
+        const suffix = row.id.slice(family.length + 1)
+        if (suffix === '') continue
+        const bucket = tierNames.get(family) ?? new Set<string>()
+        bucket.add(suffix)
+        tierNames.set(family, bucket)
+      }
+      this.#cliFamilyTiers = tierNames
     }
     return folded
   }
@@ -704,7 +710,6 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     const folded = await withAbort(this.#foldCatalog(provider), signal)
     throwIfAborted(signal)
     const families = new Map(folded.models.map((entry) => [entry.id, entry]))
-    const tiers = folded.tiers
     // DSH 的路由键是折叠后的家族 id（`claude-opus-5-5`），而 `#catalog` 只含
     // ACP 声明的档位 id（`…-high`）。查不到时用最近一次折叠结果补上显示名，
     // 不要退化成裸 id。
@@ -717,7 +722,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     // 不报告容量，绝不填猜测值。缺省时不带 context，压缩引擎按未知处理。
     const contextWindow = this.#contextWindows.get(model)
     // 没有档位变体的模型必须省略 reasoning（宿主拒绝空 efforts）。
-    const reasoning = this.#reasoningInfo(model, tiers)
+    const reasoning = this.#reasoningInfo(model)
     return {
       provider,
       id: model,
@@ -743,40 +748,42 @@ export class AntigravityAcpAdapter extends LlmAdapter {
    * 非法元数据（INVALID_MODEL_REASONING）并使该模型不可用，所以不支持档位的
    * 模型必须**省略 reasoning 字段**，不能给空数组。
    */
-  #reasoningInfo(model: string, familyTiers = this.#familyTiers): LlmModelReasoningInfo | undefined {
+  #reasoningInfo(model: string): LlmModelReasoningInfo | undefined {
     const thought = this.#thoughtLevel
-    if (thought) {
-      const efforts = reasoningsFrom(thought.options)
-      // `thought_level` 的选项跟随 agent **当前模型**：会话停在 Argon/Claude 时，
-      // 选项里不会有 Hydrogen 的 `xhigh`。只按它声明会让 Hydrogen 少一档，所以
-      // 再并上官方 CLI 目录里该家族真实存在的档位（`gemini-4-hydrogen-xhigh`）。
-      const tiers = familyTiers.get(modelFamilyId(model))
-      for (const tier of tiers ?? []) {
-        if (efforts.some((entry) => entry.id.toString() === tier)) continue
-        efforts.push({ id: ReasoningEffortId(tier), name: TIER_LABELS[tier] ?? tier })
-      }
-      if (efforts.length === 0) return undefined
-      efforts.sort((a, b) => effortRank(a.id.toString()) - effortRank(b.id.toString()))
-      const preferred = thought.currentValue === undefined
-        ? undefined
-        : efforts.find((entry) => entry.id === ReasoningEffortId(thought.currentValue as string))
-      // 当前值可能来自别的模型（例如 Hydrogen 的 xhigh 切到 Claude 后不在选项里），
-      // 这时退回官方默认 medium，不指向不存在的选项。
-      const fallback = preferred ?? efforts.find((entry) => entry.id === ReasoningEffortId(DEFAULT_AGY_REASONING_EFFORT))
-      return { efforts, ...(fallback ? { defaultEffort: fallback.id } : {}) }
+    // 没有 `thought_level` 选择器 = 这个 agent 没有独立档位通道，模型也就不该
+    // 有档位菜单。不退回「从目录推断档位」的旧路径：那套推断只对把档位编进
+    // 模型 id 的老 agent 成立，而当前 agent 已全部声明 category（实测 1.5.13）。
+    if (!thought) return undefined
+    const efforts = reasoningsFrom(thought.options)
+    // `thought_level` 的选项跟随 agent **当前模型**：会话停在 Argon/Claude 时，
+    // 选项里不会有 Hydrogen 的 `xhigh`。只按它声明会让 Hydrogen 少一档，所以
+    // 再并上官方 CLI 目录里该家族真实存在的档位（`gemini-4-hydrogen-xhigh`）。
+    for (const tier of this.#familyTierNames(model)) {
+      if (efforts.some((entry) => entry.id.toString() === tier)) continue
+      efforts.push({ id: ReasoningEffortId(tier), name: TIER_LABELS[tier] ?? tier })
     }
-    // 旧协议兼容：档位被编进模型 id，只能从目录里推断有哪些档位。
-    const tiers = familyTiers.get(modelFamilyId(model))
-    // 已知该 id 没有档位变体（目录里的普通 id）：强度菜单不适用，不声明 reasoning。
-    if (tiers !== undefined && tiers.size === 0) return undefined
-    const efforts = AGY_REASONING_EFFORTS
-      .filter((effort) => tiers === undefined || tiers.has(effort))
-      .map((effort) => ({
-        id: ReasoningEffortId(effort),
-        name: AGY_REASONING_EFFORT_NAMES[effort],
-      }))
-    const fallback = efforts.find((entry) => entry.id === ReasoningEffortId(DEFAULT_AGY_REASONING_EFFORT))
+    if (efforts.length === 0) return undefined
+    efforts.sort((a, b) => effortRank(a.id.toString()) - effortRank(b.id.toString()))
+    const preferred = thought.currentValue === undefined
+      ? undefined
+      : efforts.find((entry) => entry.id === ReasoningEffortId(thought.currentValue as string))
+    // 当前值可能来自别的模型（例如 Hydrogen 的 xhigh 切到 Claude 后不在选项里），
+    // 这时退回官方默认 medium，不指向不存在的选项。
+    const fallback = preferred ?? efforts.find((entry) => entry.id === ReasoningEffortId(DEFAULT_AGY_REASONING_EFFORT))
     return { efforts, ...(fallback ? { defaultEffort: fallback.id } : {}) }
+  }
+
+  /**
+   * 该家族在官方 CLI 清单里真实出现过的档位名。
+   *
+   * 只用于补齐 `thought_level` 因「当前模型」而缺失的档位（例如 Hydrogen 的
+   * `xhigh`）。判定依据是 CLI 原始行里存在 `<family>-<tier>`，不再维护一张
+   * 客户端档位表。
+   */
+  #familyTierNames(model: string): string[] {
+    const family = modelFamilyId(model)
+    const rows = this.#cliFamilyTiers.get(family)
+    return rows === undefined ? [] : [...rows]
   }
 
   /** 池已选定 worker 后，为该连接协商图片能力；不建会话、不发送 prompt。 */
@@ -867,7 +874,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     if (entry.cwd !== this.#cwd) return fail('会话工作目录与当前不一致')
     if (entry.route !== this.#sessionRouteFingerprint(options)) return fail('模型、系统提示或工具目录已变化')
     if (options.messages.length <= entry.sentCount) return fail('没有新增消息')
-    if (!prefixMatches(options.messages, entry.sentCount, entry.sentHash)) return fail('历史不是已发送前缀的追加')
+    if (!prefixMatches(options.messages, entry.sentCount, entry.sentHash)) {
+      // 前缀变了只有两种真实成因：压缩检查点替换了早期历史，或映射与当前会话
+      // 不是同一条。两者都不该让对话报废——丢弃旧映射、按新会话开始即可。
+      this.#sessionStore?.delete(key, this.#sessionOwner)
+      this.#log?.info('antigravity-acp: 历史前缀已变化（压缩或映射不匹配），按新会话开始；历史不重放')
+      return undefined
+    }
     if (!outputMatches(options.messages.slice(entry.sentCount), entry.outputHash)) {
       // 前缀已经校验过（上面那行），所以输出对不上只可能是「上一轮没记完」：
       // 进程在写回映射之前就死了（连接断开、网络崩溃、宿主重启）。这不是历史被
@@ -902,7 +915,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       if (!this.#bridge.listening) await this.#bridge.start()
       mcpServers = this.#bridge.acpRegistration()
     }
-    if (!link.supportsResumeSession()) return fail('agent 未声明 session/resume')
+    if (!link.supportsResumeSession()) {
+      // agent 不支持 resume 时，正确做法是**新建会话继续**，不是让对话失败。
+      // 实测 1.5.13 声明了该能力；这里是能力回退，不是错误。
+      this.#log?.info('antigravity-acp: agent 未声明 session/resume，改按新会话继续')
+      this.#sessionStore?.unclaim(key, this.#sessionOwner)
+      return undefined
+    }
     this.#suppressUpdates += 1
     try {
       const timeoutMs = Math.min(this.#promptTimeoutMs, 120_000)
@@ -996,7 +1015,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       return undefined
     }
     if (!prefixMatches(options.messages, record.sentCount, record.sentHash)) {
-      this.#dropSession(record, '历史已不是已发送前缀的追加（压缩、回退或编辑）')
+      this.#dropSession(record, '历史已不是已发送前缀的追加')
       return undefined
     }
     if (record.cancelled !== true && !outputMatches(options.messages.slice(record.sentCount), record.outputHash)) {
@@ -1790,12 +1809,9 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       changed = true
     }
     // 档位选择器的 options 随当前模型变化（Hydrogen 多一档 xhigh），每次观测都
-    // 整体替换；agent 没声明 `thought_level` 时保留上一次的，让旧协议路径继续可用。
+    // 整体替换；agent 没声明 `thought_level` 时保留上一次的。
     if (thought) {
       this.#thoughtLevel = thought
-      // 把 agent 真实声明的档位名并进旧协议的后缀识别集合：这样「有哪些档位」
-      // 以 agent 为准，官方新增档位不需要改客户端代码。
-      registerTierSuffix(thought.options.map((option) => option.value))
       changed = true
     }
     if (changed) this.#onMetadataChanged?.(this.exportMetadata())
@@ -1869,28 +1885,17 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       )
     }
     const family = modelFamilyId(model)
-    const pinnedTier = tierForModelId(model)
-    const effortId = normalizeEffort(effort) ?? pinnedTier
     const thought = this.#thoughtLevel
-    const tiers = this.#familyTiers.get(family)
+    const effortId = normalizeEffort(effort)
     const target = modelSettingFor(settings, model).target
     const modelValue = resolveModelTarget({
       settings,
       model,
       effort: effortId,
-      route: (tier) => {
-        // 有独立档位通道时模型只发家族 id；若模型 id 本身就是旧会话钉住的档位 id，
-        // 也折回家族，档位交给 thought_level。
-        if (thought) return family
-        const legacyTier = tier === undefined ? undefined : AGY_REASONING_EFFORTS.find((candidate) => candidate === tier)
-        return legacyTier !== undefined
-          ? routeTieredModelId(family, legacyTier, tiers)
-          : pinnedTier !== undefined
-            ? model
-            : tiers !== undefined && tiers.size > 0
-              ? routeTieredModelId(family, DEFAULT_AGY_REASONING_EFFORT, tiers)
-              : family
-      },
+      // 模型一律发**家族 id**，档位由 `thought_level` 单独写入。旧会话里若钉着
+      // 档位化的模型 id（`claude-opus-5-5-high`），这里同样折回家族——档位通道
+      // 是唯一真相，不再拼 `-high` 后缀。
+      route: () => family,
     })
     // 两种短路都只认本会话自己的证据：已确认写入过的值，或本会话建立时自己
     // 声明的选择器当前值。连接级选择器可能来自别的会话，不能用。
@@ -1901,7 +1906,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       // 给的 id → 我们发出去的 configId/value」的地方）。
       this.#log?.info(
         `antigravity-acp: 模型路由 dsh=${model} → configId=${selector.configId} value=${modelValue}` +
-          `（family=${family}${effortId ? ` effort=${effortId}` : ''}${pinnedTier ? ' 档位已钉住' : ''}` +
+          `（family=${family}${effortId ? ` effort=${effortId}` : ''}` +
           `${target === undefined ? '' : ' 已按映射改写'}${thought ? ' 档位走 thought_level' : ''}）`,
       )
       // 目录成员资格按 dsh-llm 语义是建议性的：未登记的 id 仍然照发，由 ACP
