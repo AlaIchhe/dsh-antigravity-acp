@@ -633,9 +633,12 @@ export function apply(ctx: Context, input: AntigravityPluginConfig): void {
     return cliModelRows ?? []
   }
 
-  // The store is lazy: no lock or file is opened until recovery is enabled and used.
+  // The store is lazy: no file is opened until recovery is enabled and used.
   const sessionStore = createFileSessionMapStore(cacheDir,
-    () => ctx.logger?.warn?.('antigravity-acp: 会话映射不可用或由另一 Host 占用，跨进程恢复已降级；不影响本地聊天'),
+    () => ctx.logger?.warn?.(
+      'antigravity-acp: 会话映射写入失败（缓存目录不可写或磁盘已满），跨进程恢复已降级：'
+      + '本次运行期间聊天正常，但重启后将无法接回这些 ACP 会话。',
+    ),
   )
   const workers: AntigravityAcpAdapter[] = []
   let metadata: AdapterMetadata | undefined

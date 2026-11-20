@@ -4,6 +4,12 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.3.2 · 2026-11-20
+
+- **删除 `sessions.lock` 跨进程租约**。它想防的是「两个 Host 同时写 `sessions.json`」，但这份文件的键是 DSH 会话 id、值是官方 agent 分配给**那一条 ACP 连接**的 session id——一条 DSH 会话只存在于一个 profile，一条 ACP 会话只属于创建它的链路，所以「两个 Host 指向同一个 ACP 会话」在协议层面就不成立，需要排他的并发写者并不存在。
+- 而它制造了真实故障：`open(..., 'wx')` 在锁文件已存在时失败，锁又只在正常 `close()` 且内容匹配时才删除，于是进程被杀 / 崩溃留下的残留锁会让映射**永久无法写盘**，且只有一条启动期 warn。实测（2026-11-19）：某会话 6 轮、1293 个事件，`sessions.json` 一条都没写进去，直到下次重启才发现「接不上原 ACP 会话」。
+- 写入改为**读盘合并 + 原子替换**（临时文件 + rename，按 `updatedAt` 谁新谁赢），并发写入不会互相抹掉条目。失败告警文案改为明确说明后果（本次运行正常、重启后无法接回）。
+
 ## 0.3.1 · 2026-11-19
 
 - **删除选择器识别的名字猜测**：`findModelSelector` / `findThoughtLevelSelector` 此前在缺少 `category` 时回退到 `/model/i`、`/thought|effort|reason/i` 的名字匹配。真机确认（`agy acp` 1.5.10）：`session/new` 返回的三个 select（`model` / `thought_level` / `mode`）**全部带 `category`**，不需要猜。现在只认语义标签，缺标签返回 `undefined`，由调用方走「无可选模型 / 无独立档位通道」的显式失败。理由：名字匹配会把别的 select 误认成模型选择器，而错误路由不可逆。

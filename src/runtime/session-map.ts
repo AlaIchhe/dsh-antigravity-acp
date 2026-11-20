@@ -89,7 +89,15 @@ export async function readSessionMap(cacheDir: string): Promise<Record<string, S
  * 恢复能力是优化，不是功能。
  */
 export async function writeSessionMap(cacheDir: string, entries: Record<string, SessionMapEntry>): Promise<boolean> {
-  const kept = Object.entries(entries)
+  // 写前先读盘合并：没有跨进程锁之后，另一个 store 可能在这期间写过别的键。
+  // 合并规则是「谁新谁赢」，因此不会把别人的条目抹掉，也不会让旧数据盖住新数据。
+  const onDisk = await readSessionMap(cacheDir).catch(() => ({} as Record<string, SessionMapEntry>))
+  const merged: Record<string, SessionMapEntry> = { ...onDisk }
+  for (const [key, entry] of Object.entries(entries)) {
+    const existing = merged[key]
+    if (existing === undefined || entry.updatedAt >= existing.updatedAt) merged[key] = entry
+  }
+  const kept = Object.entries(merged)
     .sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
     .slice(0, MAX_ENTRIES)
   const payload: SessionMapFile = { format: SESSION_MAP_FORMAT, entries: Object.fromEntries(kept) }
@@ -116,35 +124,34 @@ export async function writeSessionMap(cacheDir: string, entries: Record<string, 
 }
 
 /**
- * 跨 Host 的排他写租约；另一实例持有缓存时，本实例仅保留内存复用，不读写恢复映射。
- * 不按 mtime 猜测锁过期：崩溃残留锁需在确认所有 Host 已退出后人工清理。
+ * 文件形式的会话映射存储：读一次、按需写回。
+ *
+ * **为什么没有跨进程锁**：这份文件的键是 DSH 会话 id，值是官方 agent 分配给
+ * *那一条 ACP 连接*的 session id。一条 DSH 会话只存在于一个 profile 里，而一条
+ * ACP 会话只属于创建它的那条链路——「两个 Host 指向同一个 ACP 会话」在协议层面
+ * 就不成立，所以这里没有需要排他的并发写者。
+ *
+ * 曾经存在的 `sessions.lock` 反而制造了真实故障：`open(..., 'wx')` 在锁文件
+ * 已存在时失败，而锁只在正常 `close()` 且内容匹配时才删除，于是进程被杀 /
+ * 崩溃留下的残留锁会让映射**永久无法写盘**，用户毫无察觉，直到某次重启后发现
+ * 所有会话都接不上（2026-11-19 实测：6 轮对话、1293 个事件，一条都没写进去）。
+ * 为一个不存在的竞态付出「全部会话历史不可恢复」的代价，是错的取舍。
+ *
+ * 写入本身仍是原子的（临时文件 + rename），进程内写入由 SessionMapStore 串行化。
  */
 export function createFileSessionMapStore(cacheDir: string, onError?: () => void): SessionMapStore {
-  const file = join(cacheDir, 'sessions.lock')
-  const marker = JSON.stringify({ pid: process.pid, token: randomUUID() })
-  let handle: Awaited<ReturnType<typeof open>> | undefined
-  let ready = false
+  let loaded = false
   return new SessionMapStore({
     load: async () => {
       await mkdir(cacheDir, { recursive: true })
-      handle = await open(file, 'wx', 0o600)
-      await handle.writeFile(marker, 'utf8')
-      ready = true
+      loaded = true
       return readSessionMap(cacheDir)
     },
     save: async entries => {
-      if (!ready || !await writeSessionMap(cacheDir, entries)) throw new Error('Session map unavailable')
+      if (!loaded) throw new Error('Session map not loaded yet')
+      if (!await writeSessionMap(cacheDir, entries)) throw new Error('Session map unavailable')
     },
     onError,
-    close: async () => {
-      if (!handle) return
-      ready = false
-      const owned = handle
-      handle = undefined
-      await owned.close()
-      // 只删除本实例确实创建、且内容仍匹配的锁；绝不清理其他 Host 的锁。
-      if (await readFile(file, 'utf8').catch(() => '') === marker) await unlink(file).catch(() => undefined)
-    },
   })
 }
 

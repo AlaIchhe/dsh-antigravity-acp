@@ -95,6 +95,17 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-20 的「删除 sessions.lock」通过 `npm run check`：类型检查、**35 个文件 / 408 项测试**与构建。
+
+**实验过程**：
+- 离线复现：预置一个残留 `sessions.lock` 后，旧实现 `claim()` 静默返回 `undefined`、`sessions.json` 完全不产生，`onError` 只调用一次。这解释了 2026-11-19 那个会话「6 轮 1293 个事件、一条映射都没写进去」。
+- 真机验证（`AGY_REAL_ACP=1`）：临时目录里预置残留锁，跑两轮真实对话，`sessions.json` **正常写入**（`lock-probe::chat`，`sentCount=3`）。同样的条件在旧实现下不可能成功。
+- 回归用例：`session-map.test.ts` 新增两例——「两个 store 都能读写且不产生锁文件」「残留锁不影响读写」。
+
+**为什么锁的目标不成立**：`sessions.json` 的键是 DSH 会话 id，值是官方 agent 分配给**那一条 ACP 连接**的 session id。一条 DSH 会话只存在于一个 profile，一条 ACP 会话只属于创建它的链路，因此不存在需要排他的并发写者。为一个不存在的竞态付出「全部会话历史不可恢复」的代价是错误的取舍。
+
+**顺带修正**：`writeSessionMap` 由「整体覆盖」改为「读盘合并 + 原子替换」，否则删除锁后两个 store 会互相抹掉对方的条目。
+
 2026-11-19 的「删除剩余的名字猜测」通过 `npm run check`：类型检查、**35 个文件 / 407 项测试**与构建；真机 `AGY_REAL_ACP=1` 回归通过（日志确认 `模型路由 … configId=model` / `档位路由 … configId=thought_level`，续轮与复用正常）。
 
 **真机证据**：`session/new` 返回 3 个 config option，全部带 `category`——

@@ -44,24 +44,46 @@ describe('会话映射文件', () => {
   })
   })
 
-describe('跨 Host 文件租约', () => {
-  it('并发实例不读取/覆盖另一实例的映射，关闭外来实例不删除原租约', async () => {
-    const dir = await directory(), warning = vi.fn()
-    const first = createFileSessionMapStore(dir), second = createFileSessionMapStore(dir, warning)
+describe('文件存储不再有跨进程锁', () => {
+  it('同一目录下的两个 store 都能正常读写，且不产生 sessions.lock', async () => {
+    const dir = await directory()
+    const first = createFileSessionMapStore(dir), second = createFileSessionMapStore(dir)
     const a = Symbol(), b = Symbol()
     try {
       await first.claim('chat', a); first.set('chat', a, entry(1)); await first.flush()
-      expect(await second.claim('chat', b)).toBeUndefined()
-      second.set('chat', b, entry(3)); second.set('other', b, entry(4)); await second.flush()
-      expect(await readSessionMap(dir)).toEqual({ chat: entry(1) })
-      expect(warning).toHaveBeenCalledTimes(1)
-      await second.close()
-      expect(await readdir(dir)).toContain('sessions.lock')
+      // 第二个 store 读得到第一个写的条目（锁已删除，不再互相屏蔽）。
+      expect(await second.claim('chat', b)).toEqual(entry(1))
+      // set 必须先 claim 该键，否则被所有权检查丢弃（这是既有契约）。
+      await second.claim('other', b)
+      second.set('other', b, entry(2)); await second.flush()
+      // 两个 key 都在：写入是合并而非互斥屏蔽。
+      expect(await readSessionMap(dir)).toEqual({ chat: entry(1), other: entry(2) })
+      // 全程没有锁文件。
+      expect(await readdir(dir)).not.toContain('sessions.lock')
     } finally { await first.close(); await second.close() }
-    expect(await readdir(dir)).toEqual(['sessions.json'])
-    const restarted = createFileSessionMapStore(dir)
-    try { expect(await restarted.claim('chat', Symbol())).toEqual(entry(1)) }
-    finally { await restarted.close() }
+    expect((await readdir(dir)).sort()).toEqual(['sessions.json'])
+  })
+
+  it('重启后能读回已写入的映射（残留锁导致写不进的回归）', async () => {
+    const dir = await directory()
+    const before = createFileSessionMapStore(dir)
+    const owner = Symbol()
+    try {
+      await before.claim('chat', owner)
+      before.set('chat', owner, entry(1))
+      await before.flush()
+    } finally { await before.close() }
+
+    // 关键：即便目录里躺着一个「上个进程崩溃留下的」锁文件，也照样能读能写。
+    await writeFile(join(dir, 'sessions.lock'), JSON.stringify({ pid: 99999, token: 'stale' }), 'utf8')
+    const after = createFileSessionMapStore(dir)
+    const next = Symbol()
+    try {
+      expect(await after.claim('chat', next)).toEqual(entry(1))
+      after.set('chat', next, entry(2))
+      await after.flush()
+      expect(await readSessionMap(dir)).toEqual({ chat: entry(2) })
+    } finally { await after.close() }
   })
 })
 
