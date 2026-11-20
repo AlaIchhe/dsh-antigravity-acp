@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, RequestMessage } from '@deepseek-ai/dsh-llm'
-import { incrementalMessages, outputHash, outputMatches, prefixHash, prefixMatches } from '../src/adapter/session-reuse.js'
+import { incrementalMessages, looksLikeInterruptedTurn, outputHash, outputMatches, prefixHash, prefixMatches } from '../src/adapter/session-reuse.js'
 
 function user(text: string): RequestMessage {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
@@ -74,5 +74,30 @@ describe('增量按 message id 判定，不按内容或类别', () => {
       .toEqual(['目标变化', '当前问题'])
     expect(incrementalMessages([user('Q1'), notice, request], 1).map((m) => (m.content[0] as { text: string }).text))
       .toEqual(['目标变化', '当前问题'])
+  })
+})
+
+describe('异常中断与历史改写必须区分', () => {
+  it('前缀没变、只有输出对不上 → 判为中断遗留', () => {
+    // 前缀一致说明历史没被改写；此时输出 hash 不匹配只能是「上一轮没记完」。
+    const fresh = [answer('第 15 轮的部分输出'), user('第 16 轮的问题')]
+    expect(looksLikeInterruptedTurn(fresh, outputHash(blocks))).toBe(true)
+  })
+
+  it('新增里没有任何 assistant 输出 → 不判为中断（保守）', () => {
+    // 期望一个非空 hash，但新历史里没有 assistant 块：更像是外部追加了别的东西，
+    // 交给调用方按其它规则处理，不在这里猜。
+    expect(looksLikeInterruptedTurn([user('只有新问题')], outputHash(blocks))).toBe(false)
+  })
+
+  it('没有记录指纹时不判为中断', () => {
+    expect(looksLikeInterruptedTurn([answer('A')], undefined)).toBe(false)
+  })
+
+  it('前缀真的被改过时，由 prefixMatches 先拦下（不走本判断）', () => {
+    const history = [user('Q1'), answer('A1')]
+    const hash = prefixHash(history)
+    // 改写第 1 条：前缀不再匹配，调用方不该继续检查输出。
+    expect(prefixMatches([user('改过')], 1, hash)).toBe(false)
   })
 })

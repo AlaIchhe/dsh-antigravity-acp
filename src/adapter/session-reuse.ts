@@ -95,3 +95,31 @@ export function routeFingerprint(
     tools: [...(options.tools ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
   })).digest('hex')
 }
+
+/**
+ * 上一轮是否**异常中断**（进程被杀、连接断开、网络崩溃），而不是历史被改写。
+ *
+ * 判据是「已发送前缀完全一致，但前缀之后的 assistant 输出对不上」。这两种情况
+ * 在数据上看起来很像，但成因完全不同：
+ *
+ * - **异常中断**：ACP 会话里其实已经产生了本轮输出，只是插件没来得及把它记进
+ *   `sessions.json`（进程在 `#advanceSession` 之前就死了）。前缀本身没动过。
+ * - **历史被改写**：用户编辑、回退、压缩检查点替换了早期消息。这时前缀会变。
+ *
+ * 调用方必须**先**用 `prefixMatches()` 确认前缀没变，再调用本函数；前缀变了
+ * 就不该走到这里。满足这个前提时，`outputMatches` 失败只可能是前者。
+ *
+ * @param fresh - `sentCount` 之后的新增消息。
+ * @param expected - 映射里记录的上一轮输出指纹。
+ * @returns true 表示「前缀没变、只有输出对不上」，即中断遗留。
+ */
+export function looksLikeInterruptedTurn(
+  fresh: readonly RequestMessage[],
+  expected: string | undefined,
+): boolean {
+  if (expected === undefined) return false
+  // 没有 assistant 输出却对不上：说明期望的 hash 不是空输出的 hash，
+  // 但新历史里也没有可供交付的输出——更像是被外部追加了非 assistant 内容，
+  // 不按中断处理（保守）。
+  return fresh.some((message) => message.role === 'assistant')
+}

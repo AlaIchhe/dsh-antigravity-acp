@@ -45,7 +45,7 @@ import type { ImageReader } from './image-content.js'
 import { AGY_TURN_ERROR, PromptTurn } from './prompt-turn.js'
 import type { AcpLifecycle } from '../runtime/lifecycle.js'
 import { ContinuationState } from './continuation-state.js'
-import { incrementalMessages, outputHash, outputMatches, prefixHash, prefixMatches, reusableSessionKey, routeFingerprint } from './session-reuse.js'
+import { incrementalMessages, looksLikeInterruptedTurn, outputHash, outputMatches, prefixHash, prefixMatches, reusableSessionKey, routeFingerprint } from './session-reuse.js'
 import { SessionMapStore } from '../runtime/session-map.js'
 import type { SessionMapEntry } from '../runtime/session-map.js'
 import type { ModelOverride } from '../settings.js'
@@ -854,7 +854,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
    * 历史当文本重灌（那会消耗几十万 token 并把模型带回旧任务）。没有 `session/load`
    * 退路——旧 agent 不支持 resume 时同样报错。
    */
-  async #resumeSession(options: GenerateOptions, key: string, entry?: SessionMapEntry): Promise<ReusedSession> {
+  async #resumeSession(options: GenerateOptions, key: string, entry?: SessionMapEntry): Promise<ReusedSession | undefined> {
     const fail = (reason: string): never => {
       this.#sessionStore?.delete(key, this.#sessionOwner)
       throw new LlmError(
@@ -868,7 +868,21 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     if (entry.route !== this.#sessionRouteFingerprint(options)) return fail('模型、系统提示或工具目录已变化')
     if (options.messages.length <= entry.sentCount) return fail('没有新增消息')
     if (!prefixMatches(options.messages, entry.sentCount, entry.sentHash)) return fail('历史不是已发送前缀的追加')
-    if (!outputMatches(options.messages.slice(entry.sentCount), entry.outputHash)) return fail('上一轮输出已变化或来自其他会话')
+    if (!outputMatches(options.messages.slice(entry.sentCount), entry.outputHash)) {
+      // 前缀已经校验过（上面那行），所以输出对不上只可能是「上一轮没记完」：
+      // 进程在写回映射之前就死了（连接断开、网络崩溃、宿主重启）。这不是历史被
+      // 改写，重放整段历史毫无必要——丢弃旧映射、按新会话开始即可，不该让用户
+      // 看到一个要求「新开会话」的错误。
+      if (looksLikeInterruptedTurn(options.messages.slice(entry.sentCount), entry.outputHash)) {
+        this.#sessionStore?.delete(key, this.#sessionOwner)
+        this.#log?.info(
+          `antigravity-acp: 上一轮疑似异常中断（映射停在已发送=${entry.sentCount} 条），`
+          + '丢弃旧映射并按新会话开始；历史不重放',
+        )
+        return undefined
+      }
+      return fail('上一轮输出已变化或来自其他会话')
+    }
     if (options.messages.slice(entry.sentCount).some((message) => message.role === 'tool')) return fail('新增消息包含工具结果')
     if (incrementalMessages(options.messages, entry.sentCount).length === 0) return fail('没有可发送的增量')
     // 启动失败/取消时不能把 claim 留在本 worker 名下：条目内容本身没被否定

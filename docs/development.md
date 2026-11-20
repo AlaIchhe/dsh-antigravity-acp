@@ -95,6 +95,14 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-20 的「中断与会话改写分离」通过 `npm run check`：类型检查、**36 个文件 / 420 项测试**与构建。
+
+**真实成因**（来自用户的实际故障，不是构造）：第 15 轮正在用 `terminal_send` 改 `dae` / `sing-box` 代理配置，网络被改断，ACP 连接随之断开、进程在写回映射前退出。`sessions.json` 停在第 14 轮的 `sent=407`，第 16 轮因此报「上一轮输出已变化或来自其他会话」。
+
+**判定依据**：`prefixMatches` 已证明前缀没变，那么 `outputMatches` 失败只可能是「这一轮没记完」。调用方必须先过前缀校验，所以该判断不会掩盖真正的历史改写。
+
+**真机验证**：映射停在第 1 轮、历史里多出一轮 assistant（模拟断线前的真实输出），第二轮不再报错，日志为「上一轮疑似异常中断（映射停在已发送=1 条），丢弃旧映射并按新会话开始；历史不重放」，`finish = stop`。修复前同一场景报 `AGY_SESSION_UNRECOVERABLE`。
+
 2026-11-20 的「一键安装官方 CLI + 授权链接可复制」通过 `npm run check`：类型检查、**36 个文件 / 416 项测试**与构建。
 
 **真机端到端**：从官方 manifest（`antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`）真实下载 1.5.13，SHA-512 校验通过，解包出 270MB 可执行文件（权限 0755），安装后 `agy --version` 输出 `1.5.13`。全程约 53 秒。
