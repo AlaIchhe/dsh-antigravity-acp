@@ -252,7 +252,8 @@ export interface CallbackListener {
   cancel(reason?: string): void
 }
 
-class CallbackRejected extends Error {
+/** 授权流程以可读原因失败（取消、超时、手动提交的地址不可用）。 */
+export class CallbackRejected extends Error {
   readonly phase = 'failed'
 }
 
@@ -347,4 +348,47 @@ export function startCallbackListener(options: CallbackListenerOptions): Promise
       })
     })
   })
+}
+
+/** 手动提交回调的结果：成功给出 code，失败给出可读原因。 */
+export type ManualCallbackOutcome =
+  | { ok: true; code: string }
+  | { ok: false; reason: string }
+
+/**
+ * 从用户粘贴的回调地址里取出授权码。
+ *
+ * 无头主机（浏览器在另一台机器上）无法把 loopback 回调送回 DSH：授权后浏览器
+ * 停在 `http://localhost:51121/oauth-callback?code=…&state=…` 打不开，但地址栏
+ * 里的 URL 是完整的。让用户整条粘回来，校验 state 后取 code，与监听器拿到的
+ * 结果走完全相同的换码流程。
+ *
+ * 校验规则与 handler 一致：
+ * - `error` 参数优先（用户拒绝授权）；
+ * - 缺 `code` / `state` 直接拒绝；
+ * - `state` 不匹配拒绝——那是别的流程或过期标签页的回调。
+ *
+ * @param raw - 用户粘贴的完整回调地址（允许前后空格）。
+ * @param expectedState - 本次流程生成的 state。
+ * @returns 成功给 code，失败给可读原因；**不抛异常**，让调用方决定怎么显示。
+ */
+export function parseManualCallback(raw: string, expectedState: string): ManualCallbackOutcome {
+  const trimmed = raw.trim()
+  if (trimmed === '') return { ok: false, reason: '回调地址为空' }
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    return { ok: false, reason: '这不是一个完整地址；请粘贴浏览器地址栏里的整条 URL' }
+  }
+  const error = url.searchParams.get('error')
+  if (error) return { ok: false, reason: `Google 返回授权错误：${error}` }
+  const code = url.searchParams.get('code')
+  const state = url.searchParams.get('state')
+  if (!code) return { ok: false, reason: '地址里没有 code 参数；请确认复制的是授权完成后的那条地址' }
+  if (!state) return { ok: false, reason: '地址里没有 state 参数；请确认复制的是完整地址' }
+  if (state !== expectedState) {
+    return { ok: false, reason: 'state 不匹配：这条地址可能来自上一次登录或已过期，请重新发起登录' }
+  }
+  return { ok: true, code }
 }

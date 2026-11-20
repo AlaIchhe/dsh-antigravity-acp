@@ -88,7 +88,12 @@ function isCliInstallAction(value: unknown): boolean {
   return typeof value === 'string' && (CLI_INSTALL_ACTIONS as readonly string[]).includes(value)
 }
 
-function parseAccountRequest(value: unknown): { action: AcpAccountAction | AccountAdminAction | 'install-cli'; id?: string; alias?: string } {
+function parseAccountRequest(value: unknown): {
+  action: AcpAccountAction | AccountAdminAction | 'install-cli'
+  id?: string
+  alias?: string
+  callbackUrl?: string
+} {
   if (value === undefined) return { action: 'status' }
   if (!value || typeof value !== 'object' || !('action' in value)) throw new TypeError('Invalid AgYAccountRequest')
   const record = value as Record<string, unknown>
@@ -100,10 +105,14 @@ function parseAccountRequest(value: unknown): { action: AcpAccountAction | Accou
   if (id !== undefined && (typeof id !== 'string' || !id.trim())) throw new TypeError('Invalid AgYAccountRequest.id')
   const alias = record.alias
   if (alias !== undefined && typeof alias !== 'string') throw new TypeError('Invalid AgYAccountRequest.alias')
+  const callbackUrl = record.callbackUrl
+  if (callbackUrl !== undefined && typeof callbackUrl !== 'string') throw new TypeError('Invalid AgYAccountRequest.callbackUrl')
   return {
     action: action as AcpAccountAction | AccountAdminAction | 'install-cli',
     ...(id === undefined ? {} : { id }),
     ...(alias === undefined ? {} : { alias: alias.slice(0, 80) }),
+    // 回调地址可以很长（含 code），给 4KB 上限避免滥用，不做进一步裁剪。
+    ...(callbackUrl === undefined ? {} : { callbackUrl: callbackUrl.slice(0, 4096) }),
   }
 }
 function parseAccount(value: unknown): unknown {
@@ -297,6 +306,7 @@ export class AgYQuotaService extends TypertRemoteService {
         action: parsed.action,
         ...(parsed.id === undefined ? {} : { id: parsed.id }),
         ...(parsed.alias === undefined ? {} : { alias: parsed.alias }),
+        ...(parsed.callbackUrl === undefined ? {} : { callbackUrl: parsed.callbackUrl }),
       } satisfies AccountAdminRequest)
       const base: AccountSnapshot = this._control
         ? this._control.account('status')

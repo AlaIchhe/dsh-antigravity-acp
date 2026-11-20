@@ -180,12 +180,13 @@ window.__ModuleLoader__.load({
     }
 
     /** 登录流程提示：等待时给出授权链接与取消，完成/失败只显示结果。 */
-    function AccountAuthNotice({ auth, onCancel, onStart }) {
+    function AccountAuthNotice({ auth, onCancel, onStart, onSubmitCallback }) {
       // hooks 必须在任何 return 之前调用（React 规则）。
       const [copied, setCopied] = React.useState('idle')
+      const [callbackUrl, setCallbackUrl] = React.useState('')
       const authUrl = auth && typeof auth.authUrl === 'string' ? auth.authUrl : undefined
       // 换了一次登录流程就重置按钮文案，避免沿用上一次的「已复制」。
-      React.useEffect(() => { setCopied('idle') }, [authUrl])
+      React.useEffect(() => { setCopied('idle'); setCallbackUrl('') }, [authUrl])
       if (!auth || auth.phase === 'idle') return null
       if (auth.phase === 'done') return h(StatusNotice, { status: { kind: 'ok', text: auth.message ?? '登录成功' } })
       if (auth.phase === 'failed') {
@@ -224,7 +225,27 @@ window.__ModuleLoader__.load({
               style: { fontSize: '11px', lineHeight: 1.5, wordBreak: 'break-all', padding: '6px 8px', borderRadius: '6px', background: 'rgba(128,128,128,.10)', userSelect: 'all' },
             }, href),
             h('div', { style: { fontSize: '11px', opacity: 0.7 } },
-              '完整复制整条地址再粘贴；若只粘到 「?client_id=…」 一段，Google 会报 Required parameter is missing: response_type。'))
+              '完整复制整条地址再粘贴；若只粘到 「?client_id=…」 一段，Google 会报 Required parameter is missing: response_type。'),
+            // 浏览器不在本机时（远程访问 DSH），授权完成后会停在
+            // http://localhost:51121/oauth-callback?code=… 打不开——但地址栏是完整的。
+            // 这里把那条地址粘回来即可，服务端按同一套 state 校验换码。
+            h('div', { style: { display: 'grid', gap: '6px', marginTop: '2px', paddingTop: '8px', borderTop: '1px solid rgba(128,128,128,.14)' } },
+              h('div', { style: { fontSize: '11px', opacity: 0.8 } },
+                '授权完成后浏览器会停在 localhost:51121 打不开的页面——把地址栏里的**整条地址**复制到下面：'),
+              h('textarea', {
+                value: callbackUrl,
+                rows: 2,
+                placeholder: 'http://localhost:51121/oauth-callback?code=…&state=…',
+                onChange: (event) => setCallbackUrl(event.target.value),
+                style: { width: '100%', boxSizing: 'border-box', fontSize: '11px', fontFamily: 'ui-monospace, monospace', padding: '6px 8px', borderRadius: '6px', border: '1px solid rgba(128,128,128,.35)', resize: 'vertical' },
+              }),
+              h('div', null,
+                h('button', {
+                  type: 'button',
+                  style: { ...PRIMARY, minHeight: '28px', padding: '3px 9px', fontSize: '11px' },
+                  disabled: callbackUrl.trim() === '',
+                  onClick: () => onSubmitCallback && onSubmitCallback(callbackUrl.trim()),
+                }, '用这条地址完成登录'))))
           : null)
     }
 
@@ -566,6 +587,7 @@ window.__ModuleLoader__.load({
               : null,
             h(AccountAuthNotice, {
               auth: account?.auth,
+              onSubmitCallback: (url) => accountAction('submit-callback', { callbackUrl: url }),
               onCancel: authBusy ? () => accountAction('cancel-add') : undefined,
               onStart: !authBusy && account?.auth?.phase === 'failed'
                 ? () => accountAction(accounts.some((row) => row.id === account?.auth?.accountId) ? 'relogin' : 'add-account',

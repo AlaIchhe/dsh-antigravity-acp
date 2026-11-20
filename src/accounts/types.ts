@@ -57,7 +57,7 @@ export interface AccountAuthView {
 }
 
 /** `account` remote 的登录/切换动作；ACP 的 status/login/warmup/cancel 保持原义。 */
-export type AccountAdminAction = 'add-account' | 'cancel-add' | 'activate' | 'remove' | 'relogin'
+export type AccountAdminAction = 'add-account' | 'cancel-add' | 'activate' | 'remove' | 'relogin' | 'submit-callback'
 
 /**
  * 面板动作里不含账号语义、但共用同一条 RPC 的那一个：安装官方 CLI。
@@ -68,7 +68,7 @@ export type AccountAdminAction = 'add-account' | 'cancel-add' | 'activate' | 're
  */
 export type CliInstallAction = 'install-cli'
 
-export const ACCOUNT_ADMIN_ACTIONS: readonly AccountAdminAction[] = ['add-account', 'cancel-add', 'activate', 'remove', 'relogin']
+export const ACCOUNT_ADMIN_ACTIONS: readonly AccountAdminAction[] = ['add-account', 'cancel-add', 'activate', 'remove', 'relogin', 'submit-callback']
 
 export const CLI_INSTALL_ACTIONS: readonly CliInstallAction[] = ['install-cli']
 
@@ -78,6 +78,13 @@ export interface AccountAdminRequest {
   id?: string
   /** 新增账号时的显示名；留空按「账号 N」生成。 */
   alias?: string
+  /**
+   * `submit-callback` 用：用户从浏览器地址栏复制回来的完整回调地址。
+   *
+   * 无头主机上浏览器在另一台机器，loopback 回调送不回来，只能人工搬运。
+   * 其余动作忽略该字段。
+   */
+  callbackUrl?: string
 }
 
 export interface AccountsSnapshot {

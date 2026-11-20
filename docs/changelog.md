@@ -4,6 +4,12 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.5.1 · 2026-11-20
+
+- **修复：远程访问 DSH 时无法完成账号登录**。回调地址硬编码为 `http://localhost:51121/oauth-callback`，监听器只绑 `127.0.0.1`——浏览器在另一台机器上时，那个 `localhost` 指的是用户自己的电脑，回调永远送不到 DSH，页面停在「无法访问此网站」。授权码其实就在地址栏里，却没有任何入口提交。
+- 现在登录面板多一个输入框：把浏览器地址栏里的**整条回调地址**粘回来即可。解析使用与监听器完全相同的规则（`error` 优先、缺 `code`/`state` 拒绝、**state 不匹配拒绝**），之后走同一套 PKCE 换码流程，安全模型不变。
+- 监听器与手动提交并行等待，谁先到用谁：本机浏览器仍可自动完成，无头/远程主机补一条人工通道。
+
 ## 0.5.0 · 2026-11-20
 
 - **删除旧 agent 的档位兼容路径**（净删约 135 行）。真机确认当前 agent 已声明全部能力——`sessionCapabilities` 含 `resume`/`close`/`load`/`list`，`configOptions` 三项全带 `category`（`model`/`thought_level`/`mode`）——因此「档位被编进模型 id」那套推断（`routeTieredModelId`、`tierForModelId`、`registerTierSuffix`、`#familyTiers`）在受支持版本上永不执行。现在模型一律发家族 id，档位只走 `thought_level`；CLI 清单里真实出现过的档位名按需补齐（解决 Hydrogen 因当前模型不同而缺 `xhigh` 的问题），不再维护客户端档位表。

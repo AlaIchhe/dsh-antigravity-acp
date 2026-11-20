@@ -17,6 +17,8 @@ import {
   fetchUserEmail,
   generatePkce,
   buildAuthorizeUrl,
+  CallbackRejected,
+  parseManualCallback,
   startCallbackListener,
   writeCliTokenFile,
 } from './oauth.js'
@@ -73,6 +75,8 @@ interface ActiveLogin {
   verifier: string
   redirectUri: string
   listener: CallbackListener
+  /** 手动提交回调地址：无头主机上浏览器在本机之外，回调送不回来。 */
+  submit(raw: string): void
   cancel(): void
 }
 
@@ -175,6 +179,8 @@ export class AccountsManager {
         return this.remove(request.id)
       case 'relogin':
         return this.beginRelogin(request.id)
+      case 'submit-callback':
+        return this.submitCallback(request.callbackUrl)
       default:
         throw new Error('不支持的账号操作')
     }
@@ -335,6 +341,28 @@ export class AccountsManager {
     }
   }
 
+  /**
+   * 提交用户粘贴回来的回调地址。
+   *
+   * 无头主机上浏览器不在本机，`http://localhost:51121/oauth-callback?code=…`
+   * 打不开，但地址栏里的 URL 是完整的。这里把它交给等待中的登录流程，
+   * 校验 state 后走与监听器完全相同的换码路径。
+   *
+   * @param raw - 完整回调地址；为空或不可解析时返回可读错误，不打断流程。
+   * @returns 结果快照与提示。
+   */
+  private submitCallback(raw: string | undefined): AccountActionResult {
+    if (this.login === undefined) {
+      return { snapshot: this.snapshot(), message: '当前没有进行中的登录流程' }
+    }
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      return { snapshot: this.snapshot(), message: '请粘贴浏览器地址栏里的完整回调地址' }
+    }
+    // 先本地判一次，能立刻把「地址不对」反馈给用户；真正的等待由登录流程接住。
+    this.login.submit(raw)
+    return { snapshot: this.snapshot(), message: '已提交回调地址，正在换取登录态…' }
+  }
+
   private cancelLogin(): AccountActionResult {
     if (!this.login) return { snapshot: this.snapshot(), message: '当前没有进行中的登录流程' }
     this.login.cancel()
@@ -381,11 +409,26 @@ export class AccountsManager {
       // 授权链接与换码使用同一个 redirect_uri；生产端口固定 51121，测试可让系统分配。
       const redirectUri = `http://localhost:${listener.port}${OAUTH_CALLBACK_PATH}`
       const authUrl = buildAuthorizeUrl({ clientId: client.clientId, challenge, state, redirectUri })
+      // 监听器与手动提交是同一件事的两条来路：谁先到用谁。手动提交走
+      // parseManualCallback 校验 state，与监听器完全同规则，之后共用换码流程。
+      let settleManual!: (value: { code: string }) => void
+      let rejectManual!: (reason: Error) => void
+      const manual = new Promise<{ code: string }>((resolve, reject) => {
+        settleManual = resolve
+        rejectManual = reject
+      })
+      // 手动分支失败不能变成未处理的 rejection：只在真的用到时才抛出。
+      manual.catch(() => undefined)
       this.login = {
         target,
         verifier,
         redirectUri,
         listener,
+        submit: (raw: string) => {
+          const outcome = parseManualCallback(raw, state)
+          if (outcome.ok) settleManual({ code: outcome.code })
+          else rejectManual(new CallbackRejected(outcome.reason))
+        },
         cancel: () => {
           listener.cancel('已取消登录')
         },
@@ -397,7 +440,8 @@ export class AccountsManager {
       }
       let callback
       try {
-        callback = await listener.result
+        // 谁先给出授权码就用谁：本机浏览器回调，或用户从别处粘回来的地址。
+        callback = await Promise.race([listener.result, manual])
       } catch (error) {
         if (this.auth.phase === 'cancelled') return
         throw error

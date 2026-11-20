@@ -95,6 +95,16 @@ node scripts/preview-ui.mjs
 
 ### 本次改动的补充验证
 
+2026-11-20 的「手动回填授权回调」通过 `npm run check`：类型检查、**37 个文件 / 422 项测试**与构建。
+
+**成因而非猜测**：本机 `xdg-open` 是 headless 替身（对 http/https 一律 `exit 3`），且用户通过 `https://dsh.home.alaic.xyz/` 远程访问 DSH——浏览器所在机器与 DSH 不是同一台，`http://localhost:51121/oauth-callback` 必然打不开。原实现只提供自动回调，没有人工通道。
+
+**端到端验证**：假 fetch 顶住换码请求，完整走一遍「点添加账号 → 取得 state → submit-callback 提交带匹配 state 的地址」；流程从 `waiting` 推进到换码阶段并如实报告 `token endpoint 400: invalid_grant`（假 code 的预期结果），证明控制流正确。6 例离线用例覆盖：state 不匹配拒绝、缺 code/state 各自可读、空与非法地址、Google 返回 error 时优先报错。
+
+**安全边界不变**：手动提交复用 `parseManualCallback` 的 state 校验，与监听器同一套规则；PKCE verifier 仍只存在于服务端。
+
+### 本次改动的补充验证
+
 2026-11-20 的「删除旧 agent 兼容 + 放宽恢复路径」通过 `npm run check`：类型检查、**36 个文件 / 416 项测试**与构建；真机 `AGY_REAL_ACP=1` 回归通过（`模型路由 … configId=model`、`档位路由 … configId=thought_level`、续轮与复用正常）。
 
 **真机能力探测**（删除依据，不是推测）：`agy acp` 1.5.13 的 `sessionCapabilities` 为 `{resume, close, load, list, additionalDirectories}`，`promptCapabilities` 为 `{image:true, embeddedAudio:false, embeddedContext:true}`，`configOptions` 三项全部带 `category`。因此「档位被编进模型 id」的推断路径在受支持版本上永不执行。
