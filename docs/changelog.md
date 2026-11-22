@@ -4,6 +4,12 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.5.2 · 2026-11-22
+
+- **修复：系统账号的登录态会被官方 CLI 写成空壳，导致下一轮对话 `Authentication required` 报废**。`isolatedHomeEnv()` 在 Linux 上无条件把 `DBUS_SESSION_BUS_ADDRESS` 指向账号目录里一个不存在的 `.no-dbus-session`，系统账号也照此处理。官方 CLI 于是读不到 gnome-keyring 里的登录态；它刷新 token 后写 keyring 失败（`Failed keyring SaveToken ... dial unix /root/.no-dbus-session`）、降级写文件时只落 `{"token": null}`（真机 2026-11-22 09:05:16，文件从 588 字节变成 14 字节），09:13 那一轮就报 `session/resume 失败：Authentication required`。
+- 现在只有**隔离账号**才阻断 keyring；系统账号用的是真实 HOME，登录态本来就属于它自己，保留真实 DBUS 让它正常读写 keyring。判定按规范化后的 HOME 比较（Windows 忽略大小写与尾部分隔符）。
+- 该修复只解决「不该被掐」的一侧：隔离账号仍不接触真实 keyring，多账号互不串号的设计不变。
+
 ## 0.5.1 · 2026-11-20
 
 - **修复：远程访问 DSH 时无法完成账号登录**。回调地址硬编码为 `http://localhost:51121/oauth-callback`，监听器只绑 `127.0.0.1`——浏览器在另一台机器上时，那个 `localhost` 指的是用户自己的电脑，回调永远送不到 DSH，页面停在「无法访问此网站」。授权码其实就在地址栏里，却没有任何入口提交。
