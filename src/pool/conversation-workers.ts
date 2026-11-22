@@ -14,7 +14,7 @@ import { AGY_TURN_ERROR } from '../adapter/prompt-turn.js'
  * 把进程数收敛到「活跃对话数」。
  */
 export interface AcpWorker {
-  adapter: Pick<AntigravityAcpAdapter, 'busy' | 'stream' | 'listModels' | 'resolveModel' | 'warmup' | 'discoverModels'> & Partial<Pick<AntigravityAcpAdapter, 'prepareCall' | 'releaseConversation'>>
+  adapter: Pick<AntigravityAcpAdapter, 'busy' | 'stream' | 'listModels' | 'resolveModel' | 'warmup' | 'discoverModels'> & Partial<Pick<AntigravityAcpAdapter, 'prepareCall' | 'releaseConversation' | 'ownsSession'>>
   ensureImages?: (signal?: AbortSignal) => Promise<void>
   read(): AcpLifecycleSnapshot
   dispose(): Promise<void>
@@ -236,6 +236,15 @@ export class ConversationWorkers extends LlmAdapter {
     if (affinityKey !== undefined) {
       const pinned = this.slots[this.affinity.get(affinityKey) ?? -1]
       if (pinned && !pinned.leased && !pinned.worker.adapter.busy) return pinned
+      // affinity 只是缓存：真丢了就按「谁真正持有该会话映射」重新定位。
+      // 否则会把对话派给另一个 worker，那边认领不到映射只能报
+      // AGY_SESSION_UNRECOVERABLE，而持有者就在旁边闲着。
+      const holder = this.slots.find(s => !s.leased && !s.worker.adapter.busy
+        && s.worker.adapter.ownsSession?.(affinityKey) === true)
+      if (holder) {
+        this.rememberAffinity(affinityKey, this.slots.indexOf(holder))
+        return holder
+      }
     }
 
     const free = this.slots.filter(s => !s.leased && !s.worker.adapter.busy)

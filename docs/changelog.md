@@ -4,6 +4,14 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.5.3 · 2026-11-22
+
+- **修复：会话被另一个 worker 认领一次就永久报废**（`AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`）。`SessionMapStore.claim()` 发现同一个键已由**另一个 owner** 持有时，会 `delete` 掉内存里的条目；而 `load()` 只在第一次执行（`#ready ??=`），删掉后永不重读，于是之后每一轮都拿不到映射——磁盘上却完好无损。
+- 真机复现（2026-11-22）：turn 27 在 16:32:22 正常完成并写入 `sent=396`，16:48:17 turn 28 立刻报「没有可用的会话映射」，同秒失败、连 ACP 都没启动。用真实 store 复现出 `A claim=有 → B claim=undefined → A 再 claim=undefined`。
+- 现在 `claim` 遇到他人持有只返回 `undefined`、**不删条目、不登记新 owner**：映射留给持有者继续用，持有者 `release`/`unclaim` 后下一位仍能接管。
+- 连接池同时补上路由：`affinity` 只是缓存，真丢了就按「谁真正持有该会话映射」重新定位（新增 `ownsSession()`），不再把一个活得好好的会话派给没有映射的 worker。
+- 旧测试「接管后 b 能写入 entry(3)」按新语义改写：b 既然没拿到所有权，它的 set/delete 本就该被丢弃。
+
 ## 0.5.2 · 2026-11-22
 
 - **删掉对 `DBUS_SESSION_BUS_ADDRESS` 的干预**。此前 `isolatedHomeEnv()` 在 Linux 上把它指向账号目录里一个不存在的 `.no-dbus-session`，想「阻止官方 CLI 落到 Secret Service 读主账号 token」。2026-11-22 实测证明这条防御**既无效又有害**：

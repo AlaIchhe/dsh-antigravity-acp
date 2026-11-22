@@ -184,18 +184,22 @@ export class SessionMapStore {
     this.#ready ??= this.storage.load().then(entries => { this.#entries = { ...entries } }, () => { this.#reportError() })
     await this.#ready
     const previous = this.#owners.get(key)
-    const entry = previous === undefined || previous === owner ? this.#entries[key] : undefined
+    // 另一个 worker 仍持有该键：**不接管、不登记、更不删除条目**。
+    // 条目代表「磁盘上确实可恢复的 ACP 会话」，删掉它会让下一个 worker 拿到
+    // undefined，于是整轮报 AGY_SESSION_UNRECOVERABLE——那条对话就永久报废了
+    // （2026-11-22 真机复现：turn 27 正常完成写入 sent=396，16 分钟后 turn 28
+    // 立刻报「没有可用的会话映射」，磁盘上却完好无损）。
+    // 正确做法是原样返回 undefined，由调用方决定换 worker 还是报错；映射保留，
+    // 持有者释放所有权后（release/unclaim）下一位仍能接管。
+    if (previous !== undefined && previous !== owner) return undefined
     this.#owners.delete(key)
     this.#owners.set(key, owner)
-    if (previous !== undefined && previous !== owner) {
-      delete this.#entries[key]
-      this.#enqueue()
-    }
     while (this.#owners.size > MAX_ENTRIES) {
       const oldest = this.#owners.keys().next().value
       if (oldest === undefined) break
       this.#owners.delete(oldest)
     }
+    const entry = this.#entries[key]
     return entry ? { ...entry } : undefined
   }
 

@@ -399,6 +399,19 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     return this.#turnOwner !== undefined && this.#turnOwner.sessionId === options.sessionId && this.#turnOwner.purpose === options.purpose
   }
 
+  /**
+   * 该 DSH 对话的 ACP 会话映射是否正由本 worker 持有。
+   *
+   * 供连接池路由：映射是「一对话一 worker」的唯一权威，池里的 affinity 只是缓存。
+   * affinity 丢失（LRU 淘汰、插件重载）时若把对话派给另一个 worker，那个 worker
+   * 认领不到映射，只能报 AGY_SESSION_UNRECOVERABLE —— 而真正持有它的 worker 明明
+   * 就在旁边。宁可让池问一句，也不要让对话报废。
+   */
+  ownsSession(dshSessionId: string): boolean {
+    if (!this.#resumeSessions || !this.#sessionStore) return false
+    return this.#sessionStore.owns(`${dshSessionId}::chat`, this.#sessionOwner)
+  }
+
   exportMetadata(): AdapterMetadata {
     return {
       // 同步原始档位条目：仅传折叠后的家族会丢掉其他 worker 尚未列出的

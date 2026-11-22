@@ -101,15 +101,34 @@ describe('共享 SessionMapStore 所有权与串行提交', () => {
     expect(maximum).toBe(1)
     expect(disk).toEqual({ a: entry(1), b: entry(2) })
   })
-  it('旧 worker 不得覆盖或删除已被接管的键，接管不恢复仍在旧进程里的会话', async () => {
+  it('另一个 worker 持有时 claim 不删除映射：条目必须留给持有者与后续接管', async () => {
+    // 2026-11-22 真机回归：turn 27 正常写入 sent=396，16 分钟后 turn 28 报
+    // 「没有可用的会话映射」，磁盘却完好。原因是 claim 换 owner 时 delete 了内存
+    // 条目，而 load() 只跑一次，之后永久拿不到——对话就此报废。
+    let disk: Record<string, SessionMapEntry> = {}
+    const store = new SessionMapStore({ load: async () => ({}), save: rows => { disk = rows } })
+    const a = Symbol(), b = Symbol()
+    await store.claim('chat', a); store.set('chat', a, entry(1)); await store.flush()
+    // 别的 worker 认领：拒绝并原样返回 undefined，但**条目不许被删**。
+    expect(await store.claim('chat', b)).toBeUndefined()
+    expect(disk.chat).toEqual(entry(1))
+    // 持有者仍可继续用；释放后下一位仍能接管到同一条目。
+    expect(await store.claim('chat', a)).toEqual(entry(1))
+    store.release(a)
+    expect(await store.claim('chat', b)).toEqual(entry(1))
+  })
+
+  it('旧 worker 不得覆盖或删除仍在他人手中的键', async () => {
     let disk: Record<string, SessionMapEntry> = {}
     const store = new SessionMapStore({ load: async () => ({}), save: rows => { disk = rows } })
     const a = Symbol(), b = Symbol()
     await store.claim('chat', a); store.set('chat', a, entry(1))
+    // b 拿不到所有权：claim 拒绝，随后 b 的 set/delete 全部被所有权检查丢弃。
     expect(await store.claim('chat', b)).toBeUndefined()
-    store.set('chat', b, entry(3)); store.set('chat', a, entry(1)); store.delete('chat', a)
+    store.set('chat', b, entry(3)); store.delete('chat', b)
     await store.claim('other', a); store.set('other', a, entry(2)); await store.flush()
-    expect(disk.chat?.sentCount).toBe(3)
+    // chat 仍是 a 写的 entry(1)，没有被 b 篡改或删除。
+    expect(disk.chat).toEqual(entry(1))
     expect(disk.other?.sentCount).toBe(2)
   })
   it('卸载 release 保留磁盘记录，新的 owner 可恢复；坏写入不毒化队列', async () => {
