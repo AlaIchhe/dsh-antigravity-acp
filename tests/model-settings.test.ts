@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyModelSettings, modelSettingFor, modelVisible, normalizeModelSettings, resolveModelTarget } from '../src/adapter/model-settings.js'
+import { applyModelSettings, modelSettingFor, normalizeModelSettings, resolveModelTarget } from '../src/adapter/model-settings.js'
 
 describe('模型目录用户设置', () => {
   it('收敛非法配置：丢掉空键、非对象条目与空串', () => {
@@ -27,8 +27,7 @@ describe('模型目录用户设置', () => {
 
   it('未配置的模型默认启用，停用项不列入选择器但设置仍可读', () => {
     const settings = normalizeModelSettings({ hidden: { enabled: false, name: '隐藏' } })
-    expect(modelVisible(settings, 'unknown-model')).toBe(true)
-    expect(modelVisible(settings, 'hidden')).toBe(false)
+    expect(modelSettingFor(settings, 'unknown-model')).toEqual({ enabled: true })
     expect(modelSettingFor(settings, 'hidden')).toMatchObject({ enabled: false, name: '隐藏' })
   })
 

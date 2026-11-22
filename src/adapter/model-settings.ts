@@ -52,11 +52,6 @@ export function modelSettingFor(settings: ReadonlyMap<string, ModelSetting>, id:
   return settings.get(id) ?? { enabled: true }
 }
 
-/** 是否列入 DSH 模型选择器。 */
-export function modelVisible(settings: ReadonlyMap<string, ModelSetting>, id: string): boolean {
-  return modelSettingFor(settings, id).enabled
-}
-
 /**
  * 应用显示名覆盖；停用不影响调用，因此本函数只处理名称，不做过滤。
  */

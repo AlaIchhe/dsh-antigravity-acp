@@ -13,29 +13,13 @@ import { homedir as osHomedir, tmpdir } from 'node:os'
 import { dirname, join, normalize, resolve, sep, win32 } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import yauzl from 'yauzl'
 
 /** 默认下载的官方 server 版本（可经 config.acpVersion 配置）。 */
 export const DEFAULT_ACP_SERVER_VERSION = '1.4.0'
-/** 官方 zip 下载的整体超时（含读完响应体）。 */
-export const DOWNLOAD_TIMEOUT_MS = 10 * 60_000
-/** 唯一允许的下载域名。 */
-export const DOWNLOAD_HOST_WHITELIST = 'dl.google.com'
 /** 数据缓存（模型清单等**非可执行**产物）在 DSH home 下的相对位置。 */
 export const CACHE_SUBPATH = ['cache', 'antigravity-acp'] as const
 /** 可执行文件安装根目录的目录名。 */
 export const INSTALL_DIR_NAME = 'dsh-antigravity-host'
-/**
- * 解压上限（压缩炸弹纵深防御）。
- *
- * 官方 zip 解压后约 200–300MB、条目数十个；给 4 倍余量既不误伤正常包，也挡住
- * 「几 KB 的 zip 解出几十 GB」这类攻击。下载源已限定 https + dl.google.com +
- * 拒绝重定向，因此这一层是纯纵深防御，不是唯一屏障。
- */
-export const MAX_EXTRACT_ENTRIES = 2_000
-export const MAX_EXTRACT_BYTES = 1_024 * 1_024 * 1024
-/** 单个条目上限：官方最大条目就是主程序本身。 */
-export const MAX_EXTRACT_ENTRY_BYTES = 512 * 1_024 * 1_024
 /** 覆盖可执行文件安装根目录的环境变量名。 */
 export const INSTALL_ROOT_ENV = 'AGY_ACP_HOME'
 
@@ -44,22 +28,10 @@ export const INSTALL_ROOT_ENV = 'AGY_ACP_HOME'
  * 便于在日志中区分归属。
  */
 export const AGY_BINARY_ERROR = {
-  /** URL 不满足 https + dl.google.com 白名单。 */
+  /** 配置值不合法（当前用于 acpVersion 格式校验）。 */
   BLOCKED_URL: 'AGY_DOWNLOAD_BLOCKED',
-  /** 服务器返回 3xx 重定向；安全策略要求拒绝且不跟随。 */
-  REDIRECT_REFUSED: 'AGY_DOWNLOAD_REDIRECT_REFUSED',
-  /** 下载返回非 2xx（非 3xx）状态。 */
-  BAD_STATUS: 'AGY_DOWNLOAD_BAD_STATUS',
-  /** 流式下载中途失败：断网、超时或写盘错误。 */
-  TRANSFER_FAILED: 'AGY_DOWNLOAD_TRANSFER_FAILED',
-  /** zip 条目路径不安全（绝对路径、穿越、盘符等）。 */
-  UNSAFE_ENTRY: 'AGY_UNSAFE_ZIP_ENTRY',
-  /** zip 内找不到可执行文件等结构异常。 */
+  /** 解压目录里找不到可执行文件等结构异常。 */
   ARCHIVE_LAYOUT: 'AGY_ARCHIVE_LAYOUT',
-  /** zip 打开或读取失败。 */
-  ARCHIVE_READ: 'AGY_ARCHIVE_READ',
-  /** zip 条目数或解压后大小超过上限（压缩炸弹防护）。 */
-  ARCHIVE_TOO_LARGE: 'AGY_ARCHIVE_TOO_LARGE',
   /** 所有解析顺序都未找到二进制且未启用自动下载。 */
   BINARY_MISSING: 'AGY_BINARY_MISSING',
   /** 当前平台/架构无法映射出已知的下载坐标。 */
@@ -101,41 +73,6 @@ export function defaultAgentArgs(platform: NodeJS.Platform = process.platform): 
 
 
 
-
-/**
- * 校验单个 zip 条目路径，返回规范化的 POSIX 相对路径（目录条目保留尾随 `/`）。
- *
- * 拒绝：空路径、反斜杠分隔、绝对路径、Windows 盘符、`.`/`..` 段、中间空段。
- * 放行：以 `/` 结尾的**目录条目**（`dir/`、`dir/sub/`）——它们是合法的 zip
- * 布局（yauzl 的 validateFileName 同样接受），其尾随斜杠只是「这是目录」的
- * 标记，不构成路径穿越或绝对路径；解压时按目录创建。
- */
-export function validateZipEntryPath(entryName: string): string {
-  if (entryName.length === 0) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.UNSAFE_ENTRY, 'zip 条目路径为空')
-  }
-  if (entryName.includes('\\')) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.UNSAFE_ENTRY, `zip 条目含反斜杠分隔符（Windows 路径注入嫌疑）: ${entryName}`)
-  }
-  if (entryName.startsWith('/')) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.UNSAFE_ENTRY, `zip 条目为绝对路径: ${entryName}`)
-  }
-  if (/^[A-Za-z]:/.test(entryName)) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.UNSAFE_ENTRY, `zip 条目含 Windows 盘符: ${entryName}`)
-  }
-  const isDirectory = entryName.endsWith('/')
-  // 目录条目：只在末尾允许一个空段（`dir//` 这类畸形写法仍会在下面的循环里被拒）。
-  const segments = isDirectory ? entryName.split('/').slice(0, -1) : entryName.split('/')
-  if (segments.length === 0) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.UNSAFE_ENTRY, `zip 条目含非法段（空/./..）: ${entryName}`)
-  }
-  for (const segment of segments) {
-    if (segment === '' || segment === '.' || segment === '..') {
-      throw new AgyBinaryError(AGY_BINARY_ERROR.UNSAFE_ENTRY, `zip 条目含非法段（空/./..）: ${entryName}`)
-    }
-  }
-  return isDirectory ? `${segments.join('/')}/` : segments.join('/')
-}
 
 /**
  * 从已校验的相对条目列表里挑出 ACP server 可执行文件。

@@ -158,7 +158,7 @@ HTTP 额度回退只读 CLI 登录材料，换发 access token 仅留内存，�
 
 ## 运行目录与下载安全
 
-默认官方 server **1.4.0**，不随 registry 自动升级。自动下载限定 HTTPS / `dl.google.com`，拒绝任何重定向，按流写入临时文件；解压检查绝对路径、`..`、盘符、反斜杠与逃逸路径。成功后提交缓存，失败清理本次暂存。官方未提供校验和，不能据此宣称签名 / 校验和验证通过。
+默认官方 server **1.4.0**，不随 registry 自动升级，也**不再自动下载**：只从 `binaryPath` / `AGY_ACP_BIN` / 版本缓存目录解析，都找不到就报 `AGY_BINARY_MISSING`。
 
 二进制默认**不放在 DSH home**：
 
@@ -220,7 +220,6 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 | `AGY_IMAGE_UNAVAILABLE` / `AGY_INVALID_IMAGE` | 附件服务 / image capability 不在场，或附件引用不一致 | 重新连接检查能力与附件；不要将文字描述误当已发送图片像素。 |
 | `AGY_BRIDGE_INVALID_ARGUMENTS` | 参数别名修正后仍缺必填键 | 按错误中签名补齐；模糊别名不由桥猜测。 |
 | `AGY_EMPTY_RESPONSE` | 上游结束时没有可见文本或工具调用 | 查看结束原因与 Host 日志；不把仅思考、进度或空白当成功。 |
-| `AGY_ARCHIVE_TOO_LARGE` | 下载的 zip 条目数或解压后大小超过上限 | 官方包远低于上限；出现此码说明下载源异常，先核对 `AGY_ACP_URL` 未被改指他处，再重新下载，不要放宽上限。 |
 | 额度 / Credits 不完整 | CLI 未登录、旧版本缺字段、HTTP 产品授权不足或网络失败 | 分别查看额度与 Credits 状态，检查 `agyCliPath`；ACP 登录不等于 CLI 登录。 |
 | 药丸完全消失 | 未选择本 provider，或 Client / remote 未装载 | 先确认选中 `antigravity-acp`、Host 与 Client 同版本；开发时核对 `$mount` 与依赖，避免让贡献型 remote 等待自身。 |
 | 运行目录积累 | 被强杀后残留 | 插件不再自动回收历史目录（不再做 pid 探测）；停止相关进程后人工删除。 |

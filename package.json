@@ -68,8 +68,7 @@
     "@cortexkit/antigravity-auth-core": "3.0.14",
     "@deepseek-ai/schemastery": "^3.18.4",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "undici": "8.12.2",
-    "yauzl": "^3.4.0"
+    "undici": "8.12.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5-alpha.2",
@@ -79,7 +78,6 @@
     "@deepseek-ai/dsh-typert-protocol": "0.2.1-alpha.4",
     "@types/node": "^22.19.0",
     "@types/react-test-renderer": "18.3.1",
-    "@types/yauzl": "^2.10.3",
     "react": "18.3.1",
     "react-test-renderer": "18.3.1",
     "typescript": "^5.9.3",

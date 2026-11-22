@@ -473,19 +473,6 @@ function toLaunchError(error: unknown, stderr: string, credentialsNote?: string)
   )
 }
 
-/** 设置页显式连接：独立运行时，只建空工具会话验证认证，不发送模型 prompt。 */
-export async function connectAcpAccount(ctx: Context, config: AntigravityHostConfig, signal: AbortSignal, deps: AcpRuntimeDeps = {}) {
-  const runtime: ActiveAcpRuntime = {}
-  try {
-    const link = await ensureAcpRuntime(ctx, config, {
-      onRequestPermission: () => ({ outcome: { outcome: 'cancelled' } }),
-    }, runtime, { ...deps, signal })
-    return await link.newSession({ cwd: process.cwd(), mcpServers: [] }, { signal })
-  } finally {
-    await disposeAcpRuntime(runtime)
-  }
-}
-
 /**
  * 面板登录时尽力打开默认浏览器；失败不阻断（授权链接始终交给客户端）。
  * 经 ctx.subprocess 启动，不 import child_process；只转发打开浏览器所需键。
