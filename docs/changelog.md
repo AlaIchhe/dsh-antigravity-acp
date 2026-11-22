@@ -11,6 +11,9 @@
   - **有害**：官方 CLI 自带完整降级链（`Using file-based token storage because a keyring timeout was recorded...`，并写 `<cache>/antigravity-keyring-unavailable` 标记避免反复超时）。外部强行指到一个连不上的地址只是让它每次走超时分支——单次调用从约 3.6s 涨到约 12.2s——并制造出「keyring 能读到旧 token、文件却写不进」的矛盾状态。
 - **修复：这个矛盾状态会让登录态变成空壳，下一轮对话报 `Authentication required`**。真机 2026-11-22 09:05:16：官方 CLI 从 keyring 读到已过期 token、刷新成功，但写 keyring 失败（`Failed keyring SaveToken ... dial unix /root/.no-dbus-session`），降级写文件时只落 `{"token": null}`（588 字节 → 14 字节）；09:13 那一轮就报 `session/resume 失败：Authentication required`。现在不干预 D-Bus，这条路径不再出现。
 - 账号隔离仍然完整：Unix 用 `HOME` + `GEMINI_CLI_HOME`，Windows 另改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`。多账号互不串号的设计不变。
+- **清理自动下载功能的残留死代码**（净删 128 行）。自动下载早已从设计中移除（`ensureAgentBinary` 找不到二进制直接报 `AGY_BINARY_MISSING`），但周边脚手架没跟着清：`yauzl` 是**零调用的生产依赖**；`validateZipEntryPath`、`connectAcpAccount`、`modelVisible` 均无生产调用；5 个下载/解压上限常量各只在定义处出现一次；6 个 `AGY_DOWNLOAD_*` / ZIP 错误码在 src/tests/docs 全部零引用。以上全部删除。
+- **修正文档里已不存在的功能描述**：配置文档仍写「`binaryPath` → `AGY_ACP_BIN` → 缓存 → 自动下载」，还列了 `AGY_ACP_URL`（该环境变量已无任何代码读取）；参考文档仍在描述「自动下载限定 HTTPS / `dl.google.com`、拒绝重定向、三道解压上限」与 `AGY_ARCHIVE_TOO_LARGE`。按这些说明配置会完全无效，现已改为如实说明「不再自动下载」。
+- 顺带修正 `BLOCKED_URL` 错误码的注释：它现在用于 `acpVersion` 格式校验，不描述 URL 白名单（错误码字面仍是 `AGY_DOWNLOAD_BLOCKED`，语义错配未改，留待决定）。
 
 ## 0.5.1 · 2026-11-20
 
