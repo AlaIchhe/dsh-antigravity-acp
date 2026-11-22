@@ -1,10 +1,11 @@
 /**
- * 账号 HOME 隔离：系统账号必须保留真实 keyring 访问权。
+ * 账号 HOME 隔离：只靠 HOME 系列变量，不碰 DBUS。
  *
- * 回归背景（2026-11-22）：`isolatedHomeEnv()` 对**所有**账号都掐掉 DBUS，系统账号
- * 也一样。官方 CLI 因此读不到 gnome-keyring 里的登录态，刷新 token 后写 keyring
- * 失败、降级写文件时只落 `{"token": null}`，下一次启动就报
- * `session/resume ... Authentication required`，整个对话报废。
+ * 回归背景（2026-11-22）：这里曾经把 `DBUS_SESSION_BUS_ADDRESS` 指到账号目录里
+ * 一个不存在的路径，想阻止官方 CLI 读到主账号 token。实测证明它既无效（隔离本来
+ * 就靠 HOME 生效）又有害（官方 CLI 自己的 keyring 降级链被绕过，单次调用多花 8
+ * 秒，并制造出「keyring 可读、文件写不进」的空壳 token）。这些用例锁住「不碰
+ * DBUS」这件事，避免它被重新加回来。
  */
 import { describe, expect, it } from 'vitest'
 import { isolatedHomeEnv } from '../src/runtime/isolated-home.js'
@@ -12,42 +13,39 @@ import { isolatedHomeEnv } from '../src/runtime/isolated-home.js'
 const REAL_HOME = '/root'
 
 describe('isolatedHomeEnv', () => {
-  it('系统账号保留真实 DBUS：否则官方 CLI 读不到也写不进 keyring', () => {
-    const env = isolatedHomeEnv(REAL_HOME, 'linux', REAL_HOME)
-    expect(env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined()
-    // HOME 仍如实设置为该账号的 home。
+  it('系统账号：HOME 如实设置为真实 HOME', () => {
+    const env = isolatedHomeEnv(REAL_HOME, 'linux')
     expect(env.HOME).toBe(REAL_HOME)
     expect(env.GEMINI_CLI_HOME).toBe('/root/.gemini')
+    expect(env.ANTIGRAVITY_GEMINI_DIR).toBe('/root/.gemini')
+    expect(env.ANTIGRAVITY_APP_DATA_DIR).toBe('/root/.gemini/antigravity-cli')
   })
 
-  it('隔离账号阻断 keyring：避免读到主账号 token', () => {
-    const env = isolatedHomeEnv('/root/.dsh/agy-accounts/acc_1', 'linux', REAL_HOME)
-    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/root/.dsh/agy-accounts/acc_1/.no-dbus-session')
+  it('隔离账号：HOME 切到账号目录，官方 CLI 按它定位自己的 .gemini', () => {
+    const env = isolatedHomeEnv('/root/.dsh/agy-accounts/acc_1', 'linux')
     expect(env.HOME).toBe('/root/.dsh/agy-accounts/acc_1')
+    expect(env.GEMINI_CLI_HOME).toBe('/root/.dsh/agy-accounts/acc_1/.gemini')
+    expect(env.ANTIGRAVITY_APP_DATA_DIR).toBe('/root/.dsh/agy-accounts/acc_1/.gemini/antigravity-cli')
   })
 
-  it('尾部斜杠不影响系统账号判定', () => {
-    expect(isolatedHomeEnv('/root/', 'linux', REAL_HOME).DBUS_SESSION_BUS_ADDRESS).toBeUndefined()
-    expect(isolatedHomeEnv(REAL_HOME, 'linux', '/root/').DBUS_SESSION_BUS_ADDRESS).toBeUndefined()
+  it('任何平台都不改写 DBUS：这是官方 CLI 自己的事', () => {
+    for (const platform of ['linux', 'darwin', 'win32'] as const) {
+      for (const home of [REAL_HOME, '/root/.dsh/agy-accounts/acc_1', '/root/', 'D:\\accounts\\a1']) {
+        expect(isolatedHomeEnv(home, platform).DBUS_SESSION_BUS_ADDRESS).toBeUndefined()
+      }
+    }
   })
 
-  it('Windows 上系统账号同样不改 USERPROFILE 语义', () => {
-    const env = isolatedHomeEnv('C:\\Users\\me', 'win32', 'C:\\Users\\me')
-    expect(env.USERPROFILE).toBe('C:\\Users\\me')
-    // Windows 分支本来就不碰 DBUS。
-    expect(env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined()
-  })
-
-  it('Windows 隔离账号仍改写 USERPROFILE / HOMEDRIVE / HOMEPATH', () => {
-    const env = isolatedHomeEnv('D:\\accounts\\a1', 'win32', 'C:\\Users\\me')
+  it('Windows 上改写 USERPROFILE / HOMEDRIVE / HOMEPATH（libuv 只认这些）', () => {
+    const env = isolatedHomeEnv('D:\\accounts\\a1', 'win32')
     expect(env.USERPROFILE).toBe('D:\\accounts\\a1')
     expect(env.HOMEDRIVE).toBe('D:')
     expect(env.HOMEPATH).toBe('\\accounts\\a1')
   })
 
-  it('Windows 判等忽略大小写', () => {
-    const env = isolatedHomeEnv('c:\\users\\ME', 'win32', 'C:\\Users\\me')
-    // 判为同一个 home：不阻断（Windows 分支无 DBUS），但 HOME 仍是传入值。
-    expect(env.HOME).toBe('c:\\users\\ME')
+  it('Windows 上 HOME 与 GEMINI_CLI_HOME 也一并设置', () => {
+    const env = isolatedHomeEnv('C:\\Users\\me', 'win32')
+    expect(env.HOME).toBe('C:\\Users\\me')
+    expect(env.GEMINI_CLI_HOME).toContain('.gemini')
   })
 })

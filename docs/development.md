@@ -69,7 +69,7 @@ npm pack
 | 工具 / runtime | 假 ACP / MCP、乱序工具结果、池所有权、续轮变更、取消、写入阻塞和回收 |
 | 图片 | 附件引用校验、图片内容映射与跨 worker 能力、附件缺席降级；未调用真实视觉模型 |
 | 设置交互 | React 18 renderer 覆盖全部即时字段（普通配置不在卡片内编辑，`proxyBypass` 不提供控制项）与逐模型 `modelOverrides` 的显示开关、保存回读、草稿、冲突、只读与 namespace 恢复；账号 / 模型分页后非活动页只隐藏不卸载，账号页渲染账号卡片、添加账号的授权链接与取消、切换、两段确认删除与逐账号额度；不替代真实宿主设置服务或 GUI 验收 |
-| 多账号 | 账号持久化 / 坏文件回退 / 跨目录记录拒绝；系统账号不可删除、不可面板重登；真实 loopback OAuth 回调（state 不匹配不消费流程）、取消清理暂存目录、换码失败与登录后自动激活；隔离 HOME 的 Linux D-Bus / Windows USERPROFILE / Unix HOME 覆盖；ACP 启动按账号 id 与登录代际回收旧链路；额度缓存与在途请求按账号隔离；不触真实 Google 账户 |
+| 多账号 | 账号持久化 / 坏文件回退 / 跨目录记录拒绝；系统账号不可删除、不可面板重登；真实 loopback OAuth 回调（state 不匹配不消费流程）、取消清理暂存目录、换码失败与登录后自动激活；隔离 HOME 的 Unix HOME / Windows USERPROFILE 覆盖（不碰 D-Bus）；ACP 启动按账号 id 与登录代际回收旧链路；额度缓存与在途请求按账号隔离；不触真实 Google 账户 |
 | 面板 OAuth | PKCE / authorize URL 参数、授权码换 token、userinfo 邮箱、CLI token 文件形态与 0600、ACP 凭据文件直写；授权 URL 只含 state / challenge，不下发 code 或 token；测试使用 127.0.0.1 与假 fetch，不代表真实 Google 可达性 |
 | 无 CLI 授权闭环 | 不存在的 CLI 文件 → 实际 OAuth/PKCE → 生产监听器随机测试端口的真实 HTTP 回调 → 模拟 Google 换码/项目 → 真实临时 store → 真实适配器目录 → 重建读取；拒绝/缺码/过期/端口冲突/项目及保存失败/取消后可重试 |
 | 设置页 UX | 精简首屏、无修改时隐藏保存区、当前账户、模型显示标签、账号卡片与自动额度；未保存计数/撤销/只读/冲突，取消可用性、授权链接/阶段；自动额度、实际路由家族、账户切换及旧广播、共享刷新收尾 |

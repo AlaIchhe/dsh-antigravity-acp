@@ -6,9 +6,11 @@
 
 ## 0.5.2 · 2026-11-22
 
-- **修复：系统账号的登录态会被官方 CLI 写成空壳，导致下一轮对话 `Authentication required` 报废**。`isolatedHomeEnv()` 在 Linux 上无条件把 `DBUS_SESSION_BUS_ADDRESS` 指向账号目录里一个不存在的 `.no-dbus-session`，系统账号也照此处理。官方 CLI 于是读不到 gnome-keyring 里的登录态；它刷新 token 后写 keyring 失败（`Failed keyring SaveToken ... dial unix /root/.no-dbus-session`）、降级写文件时只落 `{"token": null}`（真机 2026-11-22 09:05:16，文件从 588 字节变成 14 字节），09:13 那一轮就报 `session/resume 失败：Authentication required`。
-- 现在只有**隔离账号**才阻断 keyring；系统账号用的是真实 HOME，登录态本来就属于它自己，保留真实 DBUS 让它正常读写 keyring。判定按规范化后的 HOME 比较（Windows 忽略大小写与尾部分隔符）。
-- 该修复只解决「不该被掐」的一侧：隔离账号仍不接触真实 keyring，多账号互不串号的设计不变。
+- **删掉对 `DBUS_SESSION_BUS_ADDRESS` 的干预**。此前 `isolatedHomeEnv()` 在 Linux 上把它指向账号目录里一个不存在的 `.no-dbus-session`，想「阻止官方 CLI 落到 Secret Service 读主账号 token」。2026-11-22 实测证明这条防御**既无效又有害**：
+  - **无效**：隔离本来就靠 HOME 生效。给隔离账号配真实 D-Bus 跑，官方 CLI 读到的仍是它自己 HOME 下的账号（报的是该账号自己的错误），没有读到主账号 token。
+  - **有害**：官方 CLI 自带完整降级链（`Using file-based token storage because a keyring timeout was recorded...`，并写 `<cache>/antigravity-keyring-unavailable` 标记避免反复超时）。外部强行指到一个连不上的地址只是让它每次走超时分支——单次调用从约 3.6s 涨到约 12.2s——并制造出「keyring 能读到旧 token、文件却写不进」的矛盾状态。
+- **修复：这个矛盾状态会让登录态变成空壳，下一轮对话报 `Authentication required`**。真机 2026-11-22 09:05:16：官方 CLI 从 keyring 读到已过期 token、刷新成功，但写 keyring 失败（`Failed keyring SaveToken ... dial unix /root/.no-dbus-session`），降级写文件时只落 `{"token": null}`（588 字节 → 14 字节）；09:13 那一轮就报 `session/resume 失败：Authentication required`。现在不干预 D-Bus，这条路径不再出现。
+- 账号隔离仍然完整：Unix 用 `HOME` + `GEMINI_CLI_HOME`，Windows 另改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`。多账号互不串号的设计不变。
 
 ## 0.5.1 · 2026-11-20
 

@@ -127,7 +127,7 @@ ACP fs / terminal 与未知原生权限请求始终拒绝并记录，但不因�
 
 面板的 `添加账号` / `登录` 直接跑 Google OAuth：PKCE、本机 `127.0.0.1:51121/oauth-callback`、state 校验、5 分钟超时；回调后换 token、读 userinfo（邮箱）、写两份登录态文件，不要求本机先有官方二进制或 CLI。登录期间 Host 只返回授权 URL 与阶段，不返回 code、token 或文件路径；取消会关闭监听并清理暂存目录。
 
-面板 OAuth 的回调固定在 Host 的 `127.0.0.1:51121`，浏览器必须与 Host 同机；远程访问 DSH Web 时没有手工粘贴授权码的回退。ACP 启动、只读 CLI（`models` / `/usage` / `/credits`）与 HTTP 额度都按当前账号解析 HOME：Linux 阻断系统 D-Bus，Windows 同时改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`，macOS 可能仍受系统钥匙串影响（见配置文档的已知边界）。切换账号或重新登录同一账号后，下一次 worker 启动会回收旧链路再按新账号创建；正在跑的回合不被打断。
+面板 OAuth 的回调固定在 Host 的 `127.0.0.1:51121`，浏览器必须与 Host 同机；远程访问 DSH Web 时没有手工粘贴授权码的回退。ACP 启动、只读 CLI（`models` / `/usage` / `/credits`）与 HTTP 额度都按当前账号解析 HOME：Unix 用 `HOME` + `GEMINI_CLI_HOME`，Windows 另改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`。不干预 D-Bus——隔离靠 HOME 生效，阻断 keyring 只会绕过官方 CLI 自带的降级链（见配置文档的已知边界）。切换账号或重新登录同一账号后，下一次 worker 启动会回收旧链路再按新账号创建；正在跑的回合不被打断。
 
 ### 额度药丸与 AI Credits
 

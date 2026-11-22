@@ -105,6 +105,6 @@ ACP 官方 agent 在同一会话内会保留上下文（2026-10-23 真机验证�
 - **切换语义**：点「使用此账号」只影响之后的连接；已建立且正在跑回合的 ACP 进程不会被立刻杀掉，下一次该 worker 启动时按新账号回收重建。重新登录同一账号会让它的代际 +1，同样在下一次启动时生效。
 - **删除**：只删除插件在账号根目录下创建的隔离 HOME；系统账号不可删除。删除当前账号会回落到系统账号。
 - **额度**：HTTP 额度按账号 HOME 读取；开启 `cliQuotaEnabled` 时，`agy -p /usage|/credits` 也带该账号的 HOME 启动。药丸只跟随当前账号，面板可逐账号拉取；切换 / 登录 / 删除后药丸会重新取数。
-- **已知边界**：面板登录的 OAuth 回调固定在 Host 的 `127.0.0.1:51121`，要求**浏览器与 Host 在同一台机器**；从另一台设备访问 DSH Web 时，浏览器会把 localhost 指向自己，回调到不了 Host（本版本没有手工粘贴授权码的回退，可先在本机完成登录或用系统账号）。macOS 的官方 CLI 可能优先使用系统钥匙串，隔离 HOME 未必能完全隔离 token；Linux 上通过把 `DBUS_SESSION_BUS_ADDRESS` 指向账号目录内不存在路径来阻断桌面 Secret Service；Windows 同时改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`。OAuth 使用官方二进制里审计过的 client；从二进制提取不到时回落到 `@cortexkit/antigravity-auth-core` 的同一对。
+- **已知边界**：面板登录的 OAuth 回调固定在 Host 的 `127.0.0.1:51121`，要求**浏览器与 Host 在同一台机器**；从另一台设备访问 DSH Web 时，浏览器会把 localhost 指向自己，回调到不了 Host。远程场景用「把地址栏里的整条回调地址粘回面板」完成登录（见 0.5.1）。账号隔离只靠 HOME 系列变量：Unix 用 `HOME` + `GEMINI_CLI_HOME`，Windows 另改 `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH`（libuv 只认这些）。**不阻断 D-Bus**——2026-11-22 实测：隔离本来靠 HOME 生效，强行把 `DBUS_SESSION_BUS_ADDRESS` 指到不存在的路径只是绕过官方 CLI 自带的 keyring 降级链，让单次调用从约 3.6s 涨到约 12.2s。macOS 的官方 CLI 可能优先使用系统钥匙串，这一点仍未验证。OAuth 使用官方二进制里审计过的 client；从二进制提取不到时回落到 `@cortexkit/antigravity-auth-core` 的同一对。
 
 不提供目录条目删除或付费 Credits 开关；账号切换与删除见上。停用只是不列入选择器，已知模型的显示名、上下文容量与路由仍保留。思考强度不在配置里：它是 agent 声明的模型元数据（`thought_level` 选项），由 DSH 思考强度菜单选择后逐个会话写入，不维护第二份档位配置；旧配置文件里残留的 `effort` 键会被忽略。只读 Profile 禁止修改；外部刷新不会覆盖未保存草稿，保存失败保留输入。

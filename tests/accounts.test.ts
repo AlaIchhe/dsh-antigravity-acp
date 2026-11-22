@@ -170,25 +170,7 @@ describe('AccountsManager', () => {
   })
 })
 
-describe('isolatedHomeEnv', () => {
-  it('Unix 覆盖 HOME / GEMINI_CLI_HOME，并在 Linux 上阻断系统 D-Bus', async () => {
-    const { isolatedHomeEnv } = await import('../src/runtime/isolated-home.js')
-    const env = isolatedHomeEnv('/tmp/account-a', 'linux')
-    expect(env.HOME).toBe('/tmp/account-a')
-    expect(env.GEMINI_CLI_HOME).toBe('/tmp/account-a/.gemini')
-    expect(env.ANTIGRAVITY_APP_DATA_DIR).toBe('/tmp/account-a/.gemini/antigravity-cli')
-    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/tmp/account-a/.no-dbus-session')
-    expect(isolatedHomeEnv('/tmp/account-a', 'darwin').USERPROFILE).toBeUndefined()
-  })
-
-  it('Windows 同时改 USERPROFILE 与 HOMEDRIVE/HOMEPATH', async () => {
-    const { isolatedHomeEnv } = await import('../src/runtime/isolated-home.js')
-    const env = isolatedHomeEnv('C:\\Users\\tester\\acc', 'win32')
-    expect(env.USERPROFILE).toBe('C:\\Users\\tester\\acc')
-    expect(env.HOMEDRIVE).toBe('C:')
-    expect(env.HOMEPATH).toBe('\\Users\\tester\\acc')
-  })
-})
+// isolatedHomeEnv 的行为集中在 tests/isolated-home.test.ts（含「不碰 DBUS」的回归用例）。
 
 describe('额度按账号隔离', () => {
   it('每个账号用各自 HOME 取数并按账号缓存，互不覆盖', async () => {
