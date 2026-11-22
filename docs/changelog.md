@@ -4,6 +4,15 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.5.4 · 2026-11-22
+
+- **诊断：`AGY_SESSION_UNRECOVERABLE` 不再把两种成因报成同一句话**。`claim()` 返回空有两种完全不同的意思，处置方式相反：
+  - `no-entry`——磁盘上就没有这条映射，对话确实无从恢复；
+  - `held-by-other`——映射在，但正被**同进程另一个 worker**持有，这一轮本应路由给它。
+  过去两轮排查都卡在这里：报错只说「没有可用的会话映射」，而 `sessions.json` 里条目完好，只能靠猜。现在 `SessionMapStore.describe()` 把状态写进错误文案，日志也会记一条 warn。
+- **连接池补上持有者路由**：affinity 只是缓存（LRU 淘汰、插件重载都会丢）。丢了就按「谁真正持有该会话映射」重新定位；持有者正忙时返回 undefined 让宿主重试，**不再另起一个没有映射的 worker 把对话判死**——`AGY_SESSION_UNRECOVERABLE` 是不可恢复错误，比「连接忙」严重得多。
+- 0.5.3 的修复（不删除被他人持有的映射）仍然有效，但只解决了一半：不再销毁数据，却仍会误报。这一版补上另一半。
+
 ## 0.5.3 · 2026-11-22
 
 - **修复：会话被另一个 worker 认领一次就永久报废**（`AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`）。`SessionMapStore.claim()` 发现同一个键已由**另一个 owner** 持有时，会 `delete` 掉内存里的条目；而 `load()` 只在第一次执行（`#ready ??=`），删掉后永不重读，于是之后每一轮都拿不到映射——磁盘上却完好无损。

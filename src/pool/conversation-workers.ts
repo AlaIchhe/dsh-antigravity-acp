@@ -245,6 +245,14 @@ export class ConversationWorkers extends LlmAdapter {
         this.rememberAffinity(affinityKey, this.slots.indexOf(holder))
         return holder
       }
+      // 持有者正忙（例如上一轮的工具续轮还没收尾）：等它，而不是另起一个
+      // 没有映射的 worker 把对话判死。返回 undefined 让上层报「连接忙」，
+      // 宿主会重试；这比 AGY_SESSION_UNRECOVERABLE 好得多——后者是不可恢复的。
+      const busyHolder = this.slots.find(s => s.worker.adapter.ownsSession?.(affinityKey) === true)
+      if (busyHolder) {
+        this.rememberAffinity(affinityKey, this.slots.indexOf(busyHolder))
+        return undefined
+      }
     }
 
     const free = this.slots.filter(s => !s.leased && !s.worker.adapter.busy)

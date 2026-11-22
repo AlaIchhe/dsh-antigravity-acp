@@ -101,6 +101,22 @@ describe('共享 SessionMapStore 所有权与串行提交', () => {
     expect(maximum).toBe(1)
     expect(disk).toEqual({ a: entry(1), b: entry(2) })
   })
+  it('describe 区分「磁盘没有」与「被他人持有」：两者的处置方式完全不同', async () => {
+    const store = new SessionMapStore({ load: async () => ({ chat: entry(1) }), save: () => {} })
+    const a = Symbol(), b = Symbol()
+    // 还没 load 过：describe 走 no-entry（内存视图里确实没有）。
+    expect(store.describe('chat')).toBe('no-entry')
+    expect(await store.claim('chat', a)).toEqual(entry(1))
+    expect(store.describe('chat')).toBe('held-by-other')
+    // 同一 owner 再 claim 时 describe 仍是 held-by-other（这是「有人持有」，不是归属判断）。
+    expect(await store.claim('chat', b)).toBeUndefined()
+    expect(store.describe('chat')).toBe('held-by-other')
+    // 释放后变 idle：映射还在，下一段旅程可以接管。
+    store.release(a)
+    expect(store.describe('chat')).toBe('idle')
+    expect(await store.claim('chat', b)).toEqual(entry(1))
+  })
+
   it('另一个 worker 持有时 claim 不删除映射：条目必须留给持有者与后续接管', async () => {
     // 2026-11-22 真机回归：turn 27 正常写入 sent=396，16 分钟后 turn 28 报
     // 「没有可用的会话映射」，磁盘却完好。原因是 claim 换 owner 时 delete 了内存

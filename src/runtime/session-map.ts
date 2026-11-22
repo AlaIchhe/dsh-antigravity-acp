@@ -205,6 +205,19 @@ export class SessionMapStore {
 
   owns(key: string, owner: symbol): boolean { return this.#owners.get(key) === owner }
 
+  /**
+   * 诊断用：该键在**本 store 的内存视图**里是什么状态。
+   *
+   * `claim()` 返回 undefined 有两种完全不同的成因，只有这里能区分：
+   * - `no-entry`：磁盘加载时就没有这条映射（对话确实无从恢复）；
+   * - `held-by-other`：映射在，但正被同进程内另一个 worker 持有（应当路由给它）。
+   * 把它们报成同一句话，线上就只能靠猜——2026-11-22 连排查两轮都是这么卡住的。
+   */
+  describe(key: string): 'no-entry' | 'held-by-other' | 'idle' {
+    if (!Object.hasOwn(this.#entries, key)) return 'no-entry'
+    return this.#owners.has(key) ? 'held-by-other' : 'idle'
+  }
+
   set(key: string, owner: symbol, entry: SessionMapEntry): void {
     if (!this.owns(key, owner)) return
     this.#entries[key] = { ...entry }

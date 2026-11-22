@@ -883,7 +883,16 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       )
     }
     if (!this.#resumeSessions) return fail('resumeSessions 未开启')
-    if (!entry) return fail('没有可用的会话映射')
+    if (!entry) {
+      // 区分「磁盘上就没有」与「被同进程另一个 worker 占着」：后者应当把这一轮
+      // 路由给持有者，而不是判对话死刑。把现状写进错误里，避免下次仍只能靠猜。
+      const state = this.#sessionStore?.describe(key)
+      if (state === 'held-by-other') {
+        this.#log?.warn(`antigravity-acp: 会话映射 ${key} 正被同进程另一个 worker 持有，本轮未接管`)
+        return fail('该会话正被另一个 worker 持有（若持续出现请反馈，这属于路由缺陷）')
+      }
+      return fail(state === 'no-entry' ? '磁盘上没有该会话的映射（可能已被清理）' : '没有可用的会话映射')
+    }
     if (entry.cwd !== this.#cwd) return fail('会话工作目录与当前不一致')
     if (entry.route !== this.#sessionRouteFingerprint(options)) return fail('模型、系统提示或工具目录已变化')
     if (options.messages.length <= entry.sentCount) return fail('没有新增消息')
