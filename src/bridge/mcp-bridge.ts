@@ -3,9 +3,9 @@
  *
  * 目的：工具留在 DSH 侧执行。ACP agent 不直接拥有 DSH 的工具，而是看到一台
  * 进程内的 MCP server（`@modelcontextprotocol/sdk` 的 Streamable HTTP），
- * 该 server 只监听 127.0.0.1、端口随机、每次启动随机 token，通过
- * `session/new` 的 `mcpServers: [{ type: "http", url, headers }]` 注册给
- * agent（ACP v1 1.4.0 的 `McpServerHttp` 形状，见 SDK types.gen.d.ts）。
+ * 该 server 只监听 127.0.0.1、端口随机、按对话作用域分配独立随机 token，通过
+ * `session/new` / `session/resume` 的 `mcpServers: [{ type: "http", url, headers }]`
+ * 注册给 agent（ACP v1 1.4.0 的 `McpServerHttp` 形状，见 SDK types.gen.d.ts）。
  * 不起任何子进程（不使用 child_process）。
  *
  * **park 机制**：`tools/call` 到达时不立即返回。桥把它登记为 pending
@@ -14,9 +14,11 @@
  * 回来时 `deliverResults` 才 resolve 对应的 MCP 响应，agent 在**同一个 ACP
  * prompt** 内继续产出。
  *
- * **多会话**：每个 MCP 会话（= 每条 ACP `session/new` 注册的连接）拥有独立的
- * Streamable HTTP transport 与 McpServer 实例，按 `mcp-session-id` 分发请求
- * （见 BridgeChannel 注释）；工具集合与 park 表仍是全桥共享的一份。
+ * **多对话作用域隔离**：同一 Worker 进程内可驻留多个 ACP 会话。每个对话
+ * (`owner`) 拥有独立的 `BridgeScope`（独立 Bearer token、独立授权代次、独立
+ * 工具目录与独立的 `mcp-session-id` HTTP 通道表）。新对话调用 `beginRound`
+ * 只初始化自己的作用域，不再轮换或关闭其他对话的通道；旧对话回到该 Worker
+ * 时只需 `activateRound` 切回活跃作用域即可无缝复用原 ACP 会话与 MCP 连接。
  *
  * 测试友好性：`attach(transport)` 接受任意 MCP Transport，因此测试用 SDK 自带
  * 的 `InMemoryTransport.createLinkedPair()` 在进程内直连，不占端口。
@@ -38,13 +40,13 @@ import { inspectToolArguments, renderToolSignature, safeKeyNames } from '../adap
 export const AGY_BRIDGE_ERROR = {
   /** 桥尚未 start/attach 就被要求提供 MCP 注册信息。 */
   NOT_LISTENING: 'AGY_BRIDGE_NOT_LISTENING',
-  /** HTTP 请求缺少或不匹配本桥的随机 token。 */
+  /** HTTP 请求缺少或不匹配本桥任意有效作用域的随机 token。 */
   UNAUTHORIZED: 'AGY_BRIDGE_UNAUTHORIZED',
-  /** tools/call 指向桥当前未发布的工具。 */
+  /** tools/call 指向桥当前未发布的工具，或来自非活跃作用域。 */
   UNKNOWN_TOOL: 'AGY_BRIDGE_UNKNOWN_TOOL',
   /** 桥已关闭后再交付 tool result。 */
   CLOSED: 'AGY_BRIDGE_CLOSED',
-  /** 请求携带的 mcp-session-id 不属于本桥的任何现存会话。 */
+  /** 请求携带的 mcp-session-id 不属于对应作用域的任何现存会话。 */
   UNKNOWN_SESSION: 'AGY_BRIDGE_UNKNOWN_SESSION',
   /** 桥已绑定一条 transport 后再次 attach。 */
   ALREADY_ATTACHED: 'AGY_BRIDGE_ALREADY_ATTACHED',
@@ -58,6 +60,11 @@ export const BRIDGE_MCP_SERVER_NAME = 'dsh-tools'
 export const BRIDGE_AUTH_HEADER = 'authorization'
 /** MCP Streamable HTTP 规范的会话头名（客户端 initialize 之后必须回带）。 */
 export const BRIDGE_SESSION_HEADER = 'mcp-session-id'
+
+/** 匿名/一次性回合使用的内部作用域键（对外 `owner` 仍表现为 undefined）。 */
+const DEFAULT_SCOPE_OWNER = '__default__'
+/** 单个 Worker 内保留的最大对话作用域数，与 adapter 会话复用上限一致。 */
+const MAX_SCOPES = 64
 
 /**
  * 常数时间比较 Bearer 头与桥 token。
@@ -124,32 +131,35 @@ interface HttpChannel extends BridgeChannel {
   transport: StreamableHTTPServerTransport
 }
 
+/** 单个对话在桥内的隔离作用域。 */
+interface BridgeScope {
+  readonly owner: string
+  token: string
+  generation: number
+  valid: boolean
+  tools: readonly ToolSchema[]
+  readonly sessions: Map<string, HttpChannel>
+}
+
 export interface McpToolBridgeOptions {
   /** 固定监听端口；缺省为 0（由内核随机分配）。 */
   port?: number
-  /** 固定 token（仅测试用）；缺省随机 32 字节 hex。 */
+  /** 固定 token（仅测试用，作用于默认作用域）；缺省随机 32 字节 hex。 */
   token?: string
-  /** 只包含目录工具名与固定别名，不记录参数值。 */
 }
 
 /**
- * 进程内 MCP 工具桥。一个 adapter 实例持有一个桥，跨 ACP 回合与 ACP 会话复用；
- * 每回合通过 `publishTools` 更新工具列表、`resetPending` 清空未回喂的 park。
- * 工具集合按**请求时**读取，因此所有 MCP 会话看到同一份当前工具。
+ * 进程内 MCP 工具桥。一个 adapter 实例持有一个桥，按对话作用域（`owner`）
+ * 隔离 token、工具目录与 HTTP 会话通道；跨对话切换回合互不失效。
  */
 export class McpToolBridge {
-  #token: string
-  #generation = 0
-  /** 当前授权代次归属的 ACP 会话 key；桥被另一个对话接管后，旧会话不能复用。 */
-  #owner: string | undefined
   readonly #requestedPort: number
+  readonly #scopes = new Map<string, BridgeScope>()
+  #activeOwner: string = DEFAULT_SCOPE_OWNER
   readonly #pending = new Map<string, PendingEntry>()
   readonly #listeners = new Set<(call: BridgeParkedCall) => void>()
-  /** HTTP 模式下按 mcp-session-id 索引的会话通道（每个 MCP/ACP 会话一条）。 */
-  readonly #sessions = new Map<string, HttpChannel>()
   /** attach() 注入的非 HTTP 通道（测试用 in-memory pair）。 */
   #attached: BridgeChannel | undefined
-  #tools: readonly ToolSchema[] = []
   #http: Server | undefined
   #bound = false
   #closed = false
@@ -159,13 +169,13 @@ export class McpToolBridge {
   #httpError: Error | undefined
 
   constructor(options: McpToolBridgeOptions = {}) {
-    this.#token = options.token ?? randomBytes(32).toString('hex')
     this.#requestedPort = options.port ?? 0
+    this.#getOrCreateScope(DEFAULT_SCOPE_OWNER, options.token)
   }
 
-  /** 本桥的随机访问 token（注册进 ACP mcpServers 的 header 值即 `Bearer ${token}`）。 */
+  /** 当前活跃作用域的随机访问 token（注册进 ACP mcpServers 的 header 值即 `Bearer ${token}`）。 */
   get token(): string {
-    return this.#token
+    return this.#activeScope().token
   }
 
   /** 桥的实际 MCP 端点；未 listen 时为 undefined。 */
@@ -192,69 +202,129 @@ export class McpToolBridge {
   }
 
   /** 发布本回合 DSH 交给 agent 的工具（tools/list 的数据源）。 */
-  publishTools(tools: readonly ToolSchema[]): void {
-    this.#tools = [...tools]
+  publishTools(tools: readonly ToolSchema[], owner?: string): void {
+    const scope = owner === undefined ? this.#activeScope() : this.#getOrCreateScope(owner)
+    scope.tools = [...tools]
   }
 
-  /** 当前桥授权代次归属的会话 key（未接管时为 undefined）。 */
+  /** 当前活跃作用域归属的会话 key（默认匿名作用域时为 undefined）。 */
   get owner(): string | undefined {
-    return this.#owner
+    return this.#activeOwner === DEFAULT_SCOPE_OWNER ? undefined : this.#activeOwner
+  }
+
+  /** 指定对话的作用域是否仍有效（token 未失效，原有 MCP 通道可直接复用）。 */
+  hasScope(owner: string): boolean {
+    return this.#scopes.get(owner)?.valid === true
   }
 
   /**
-   * 新 ACP 回合取得独立授权代次，旧连接不能把调用投递到新回合。
+   * 为新 ACP 会话（`session/new` / `session/resume`）准备独立授权代次。
    *
-   * `owner` 记录这次代次属于哪个 DSH 对话：桥被另一个对话接管后，前一个
-   * 对话的 ACP 会话不能再复用（它的 MCP 连接持有旧 token）。
+   * 只重置 `owner` 自己的作用域（递增代次、轮换 token、关闭该作用域的旧通道），
+   * **不影响同进程内其他对话的作用域与 MCP 通道**。未传 `owner` 时只重置默认作用域。
    */
   beginRound(tools: readonly ToolSchema[], owner?: string): void {
-    this.invalidateRound('已切换 ACP 回合')
-    this.publishTools(tools)
-    this.#owner = owner
-    // 上一回合的 MCP 会话通道已无用（新回合会新建 ACP 会话与连接），在这里
-    // 收掉以免按回合累积。**不能**放进 invalidateRound：回合失败/取消时
-    // resetPending 刚把错误结果结算给 agent，立即关闭 transport 会截断那个响应，
-    // MCP 客户端会一直等它。
-    this.#closeSessionChannels()
+    const targetOwner = owner ?? DEFAULT_SCOPE_OWNER
+    this.resetPending('已切换 ACP 回合')
+    const existing = this.#scopes.get(targetOwner)
+    if (existing) {
+      existing.generation += 1
+      existing.token = randomBytes(32).toString('hex')
+      existing.valid = true
+      existing.tools = [...tools]
+      // 上一回合属于同一作用域的旧通道已无用（即将新建/恢复 ACP 会话与连接），
+      // 在这里收掉以免累积。**不能**放进 invalidateRound：回合失败/取消时
+      // resetPending 刚把错误结果结算给 agent，立即关闭 transport 会截断响应。
+      this.#closeScopeChannels(existing)
+      this.#touchScope(existing)
+    } else {
+      const created = this.#getOrCreateScope(targetOwner)
+      created.tools = [...tools]
+    }
+    this.#activeOwner = targetOwner
   }
 
-  /** 撤销本回合目录、凭证和所有未完成调用；server 本身仍可用于下个回合。 */
-  invalidateRound(reason: string): void {
-    this.#generation += 1
-    this.#token = randomBytes(32).toString('hex')
-    this.#tools = []
-    this.#owner = undefined
-    this.resetPending(reason)
+  /**
+   * 复用同进程内已有 ACP 会话时，将活跃作用域切回 `owner` 并刷新工具目录。
+   * 不轮换 token、不关闭该作用域的已有 MCP HTTP 通道。
+   */
+  activateRound(tools: readonly ToolSchema[], owner: string): boolean {
+    const scope = this.#scopes.get(owner)
+    if (!scope || !scope.valid) return false
+    this.resetPending('已切换 ACP 回合')
+    scope.tools = [...tools]
+    this.#touchScope(scope)
+    this.#activeOwner = owner
+    return true
   }
 
-  /** 关闭已握手完成（已登记 mcp-session-id）的全部 MCP 会话通道。 */
-  #closeSessionChannels(): void {
-    for (const [sessionId, channel] of this.#sessions) {
-      this.#sessions.delete(sessionId)
+  /**
+   * 撤销指定作用域（默认当前活跃作用域）的目录、凭证与未完成调用；
+   * 桥本身以及其他对话的作用域不受影响。
+   */
+  invalidateRound(reason: string, owner?: string): void {
+    const targetOwner = owner ?? this.#activeOwner
+    const scope = this.#scopes.get(targetOwner)
+    if (scope) {
+      scope.generation += 1
+      scope.token = randomBytes(32).toString('hex')
+      scope.valid = false
+      scope.tools = []
+    }
+    if (targetOwner === this.#activeOwner) {
+      this.resetPending(reason)
+      if (targetOwner !== DEFAULT_SCOPE_OWNER) this.#activeOwner = DEFAULT_SCOPE_OWNER
+    }
+  }
+
+  /** 彻底释放某个对话的作用域（关闭其全部 HTTP 通道并摘除登记）。 */
+  releaseScope(owner: string): void {
+    if (owner === DEFAULT_SCOPE_OWNER) return
+    const scope = this.#scopes.get(owner)
+    if (!scope) return
+    scope.generation += 1
+    scope.valid = false
+    scope.tools = []
+    this.#closeScopeChannels(scope)
+    this.#scopes.delete(owner)
+    if (this.#activeOwner === owner) {
+      this.resetPending('对话作用域已释放')
+      this.#activeOwner = DEFAULT_SCOPE_OWNER
+    }
+  }
+
+  /** 关闭单个作用域下已登记的全部 MCP 会话通道。 */
+  #closeScopeChannels(scope: BridgeScope): void {
+    for (const [sessionId, channel] of scope.sessions) {
+      scope.sessions.delete(sessionId)
       void channel.transport.close().catch(() => undefined)
       void channel.server.close().catch(() => undefined)
     }
   }
 
-  /** 当前发布的工具名集合。 */
-  toolNames(): readonly string[] {
-    return this.#tools.map((tool) => tool.name)
+  /** 当前活跃作用域（或指定作用域）发布的工具名集合。 */
+  toolNames(owner?: string): readonly string[] {
+    const scope = owner === undefined ? this.#activeScope() : this.#scopes.get(owner)
+    return scope ? scope.tools.map((tool) => tool.name) : []
   }
 
-  /** 当前目录的只读快照，供权限请求转交 DSH 时匹配工具 schema。 */
-  toolSchemas(): readonly ToolSchema[] {
-    return [...this.#tools]
+  /** 当前活跃作用域（或指定作用域）的只读工具目录快照。 */
+  toolSchemas(owner?: string): readonly ToolSchema[] {
+    const scope = owner === undefined ? this.#activeScope() : this.#scopes.get(owner)
+    return scope ? [...scope.tools] : []
   }
 
-  /** ACP `session/new` 用的 mcpServers 条目；仅 127.0.0.1 loopback。 */
-  acpRegistration(): AcpMcpServer[] {
+  /** ACP `session/new` / `session/resume` 用的 mcpServers 条目；仅 127.0.0.1 loopback。 */
+  acpRegistration(owner?: string): AcpMcpServer[] {
     if (!this.#address) return []
+    const scope = owner === undefined ? this.#activeScope() : this.#scopes.get(owner)
+    if (!scope || !scope.valid) return []
     return [
       {
         type: 'http',
         name: BRIDGE_MCP_SERVER_NAME,
         url: this.#address,
-        headers: [{ name: BRIDGE_AUTH_HEADER, value: `Bearer ${this.#token}` }],
+        headers: [{ name: BRIDGE_AUTH_HEADER, value: `Bearer ${scope.token}` }],
       },
     ]
   }
@@ -302,7 +372,7 @@ export class McpToolBridge {
     if (this.#attached) {
       throw new Error(`${AGY_BRIDGE_ERROR.ALREADY_ATTACHED}: 桥已绑定一条 MCP transport，请先 close() 再重新 attach`)
     }
-    const server = this.#createServer()
+    const server = this.#createServer(this.#activeScope())
     const channel: BridgeChannel = { server, transport }
     this.#attached = channel
     transport.onclose = () => {
@@ -346,7 +416,7 @@ export class McpToolBridge {
     this.#bound = true
   }
 
-  /** 关闭 HTTP 监听、拒绝所有未回喂 park、关闭全部会话通道。幂等。 */
+  /** 关闭 HTTP 监听、拒绝所有未回喂 park、关闭全部作用域通道。幂等。 */
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
@@ -362,9 +432,13 @@ export class McpToolBridge {
         http.closeAllConnections?.()
       })
     }
-    // 所有会话通道（每个 MCP 会话一条）一并关闭，避免留下半开的 server。
-    const channels: BridgeChannel[] = [...this.#sessions.values()]
-    this.#sessions.clear()
+    const channels: BridgeChannel[] = []
+    for (const scope of this.#scopes.values()) {
+      channels.push(...scope.sessions.values())
+      scope.sessions.clear()
+      scope.valid = false
+      scope.tools = []
+    }
     if (this.#attached) {
       channels.push(this.#attached)
       this.#attached = undefined
@@ -375,9 +449,63 @@ export class McpToolBridge {
     this.#bound = false
   }
 
+  #activeScope(): BridgeScope {
+    return this.#scopes.get(this.#activeOwner) ?? this.#getOrCreateScope(DEFAULT_SCOPE_OWNER)
+  }
+
+  #getOrCreateScope(owner: string, initialToken?: string): BridgeScope {
+    const existing = this.#scopes.get(owner)
+    if (existing) {
+      this.#touchScope(existing)
+      return existing
+    }
+    const created: BridgeScope = {
+      owner,
+      token: initialToken ?? randomBytes(32).toString('hex'),
+      generation: 0,
+      valid: true,
+      tools: [],
+      sessions: new Map(),
+    }
+    this.#scopes.set(owner, created)
+    this.#evictOverflowScopes()
+    return created
+  }
+
+  #touchScope(scope: BridgeScope): void {
+    this.#scopes.delete(scope.owner)
+    this.#scopes.set(scope.owner, scope)
+  }
+
+  #evictOverflowScopes(): void {
+    while (this.#scopes.size > MAX_SCOPES) {
+      let victim: BridgeScope | undefined
+      for (const candidate of this.#scopes.values()) {
+        if (candidate.owner === DEFAULT_SCOPE_OWNER || candidate.owner === this.#activeOwner) continue
+        victim = candidate
+        break
+      }
+      if (!victim) break
+      victim.generation += 1
+      victim.valid = false
+      victim.tools = []
+      this.#closeScopeChannels(victim)
+      this.#scopes.delete(victim.owner)
+    }
+  }
+
+  #resolveScopeByAuth(header: string | string[] | undefined): BridgeScope | undefined {
+    let matched: BridgeScope | undefined
+    for (const scope of this.#scopes.values()) {
+      if (scope.valid && matchesBridgeToken(header, scope.token)) matched = scope
+    }
+    return matched
+  }
+
   async #handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // 鉴权先于任何 MCP 处理：随机 token 是唯一凭证，且地址只对 loopback 开放。
-    if (!matchesBridgeToken(req.headers[BRIDGE_AUTH_HEADER], this.#token)) {
+    // 鉴权先于任何 MCP 处理：随机 token 同时完成鉴权与作用域路由，且地址只对 loopback 开放。
+    const scope = this.#resolveScopeByAuth(req.headers[BRIDGE_AUTH_HEADER])
+    if (!scope) {
       res.statusCode = 401
       res.setHeader('content-type', 'application/json')
       res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: AGY_BRIDGE_ERROR.UNAUTHORIZED }, id: null }))
@@ -386,9 +514,9 @@ export class McpToolBridge {
     let channel: HttpChannel | undefined
     const sessionId = req.headers[BRIDGE_SESSION_HEADER]
     if (typeof sessionId === 'string' && sessionId.length > 0) {
-      channel = this.#sessions.get(sessionId)
+      channel = scope.sessions.get(sessionId)
       if (!channel) {
-        // 会话可能属于上一个桥实例，或已被 DELETE/close 清理；按 SDK 语义回 404。
+        // 会话可能属于上一个桥实例、别的作用域，或已被 DELETE/close 清理；按 SDK 语义回 404。
         res.statusCode = 404
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify({
@@ -400,8 +528,8 @@ export class McpToolBridge {
       }
     } else {
       // 无会话头 = 新客户端在做 initialize（其余无头请求由 transport 自己回 400）：
-      // 为它开一条独立通道，使每个 ACP 会话的 MCP Client 都能连上桥。
-      channel = await this.#createHttpChannel()
+      // 为它在该作用域下开一条独立通道，使每个 ACP 会话的 MCP Client 都能连上桥。
+      channel = await this.#createHttpChannel(scope)
     }
     try {
       await channel.transport.handleRequest(req, res)
@@ -413,7 +541,7 @@ export class McpToolBridge {
       }
     } finally {
       // 无 session 头却没能完成 initialize 的请求（畸形 JSON、失败的握手）不会被
-      // transport 登记进 #sessions；这里主动收掉，避免每次畸形请求都泄漏一条通道。
+      // transport 登记进 scope.sessions；这里主动收掉，避免每次畸形请求都泄漏一条通道。
       // 已生成 sessionId 的会话保留，供后续请求按 mcp-session-id 分发。
       if (!channel.transport.sessionId) {
         await channel.transport.close().catch(() => undefined)
@@ -421,14 +549,14 @@ export class McpToolBridge {
     }
   }
 
-  /** 新建一条在 127.0.0.1 上按会话隔离的 HTTP 通道（initialize 时登记会话 id）。 */
-  async #createHttpChannel(): Promise<HttpChannel> {
-    const server = this.#createServer()
+  /** 新建一条在 127.0.0.1 上按作用域和会话隔离的 HTTP 通道（initialize 时登记会话 id）。 */
+  async #createHttpChannel(scope: BridgeScope): Promise<HttpChannel> {
+    const server = this.#createServer(scope)
     let channel: HttpChannel | undefined
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId) => {
-        if (channel) this.#sessions.set(sessionId, channel)
+        if (channel) scope.sessions.set(sessionId, channel)
       },
     })
     channel = { server, transport }
@@ -436,7 +564,7 @@ export class McpToolBridge {
     // connect 之前挂好清理：会话关闭时从路由表摘除并关掉它自己的 server。
     transport.onclose = () => {
       const closedId = transport.sessionId
-      if (closedId && this.#sessions.get(closedId) === channel) this.#sessions.delete(closedId)
+      if (closedId && scope.sessions.get(closedId) === channel) scope.sessions.delete(closedId)
       void server.close().catch(() => undefined)
     }
     await server.connect(transport)
@@ -444,29 +572,39 @@ export class McpToolBridge {
   }
 
   /**
-   * 建一个会话级的 MCP server。低层 handler 在**请求时**才读当前发布的工具
+   * 建一个会话级的 MCP server。低层 handler 在**请求时**才读该作用域当前发布的工具
    * （工具集合每回合可变），因此刻意不走 McpServer.registerTool（它是
    * per-tool 静态注册、且同名会冲突）。
    */
-  #createServer(): McpServer {
-    const generation = this.#generation
+  #createServer(scope: BridgeScope): McpServer {
+    const generation = scope.generation
     const server = new McpServer({ name: BRIDGE_MCP_SERVER_NAME, version: '0.1.0' }, { capabilities: { tools: {} } })
-    server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: generation === this.#generation ? this.#mcpTools() : [] }))
-    server.server.setRequestHandler(CallToolRequestSchema, (request) => this.#parkCall(request.params.name, request.params.arguments, generation))
+    server.server.setRequestHandler(ListToolsRequestSchema, () => ({
+      tools: scope.valid && generation === scope.generation ? this.#mcpTools(scope) : [],
+    }))
+    server.server.setRequestHandler(CallToolRequestSchema, (request) =>
+      this.#parkCall(scope, request.params.name, request.params.arguments, generation),
+    )
     return server
   }
 
-  #mcpTools(): Tool[] {
-    return this.#tools.map((tool) => ({
+  #mcpTools(scope: BridgeScope): Tool[] {
+    return scope.tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.parameters as Tool['inputSchema'],
     }))
   }
 
-  #parkCall(name: string, args: Record<string, unknown> | undefined, generation: number): Promise<CallToolResult> {
-    // tools/list 不是授权凭证；每次调用都重新检查当前目录，拒绝撤销/未知工具。
-    if (this.#closed || generation !== this.#generation || !this.#tools.some((tool) => tool.name === name)) {
+  #parkCall(scope: BridgeScope, name: string, args: Record<string, unknown> | undefined, generation: number): Promise<CallToolResult> {
+    // tools/list 不是授权凭证；每次调用都重新检查当前活跃作用域与目录，拒绝撤销/非活跃/未知工具。
+    if (
+      this.#closed
+      || !scope.valid
+      || generation !== scope.generation
+      || scope.owner !== this.#activeOwner
+      || !scope.tools.some((tool) => tool.name === name)
+    ) {
       return Promise.resolve({
         content: [{ type: 'text', text: `${this.#closed ? AGY_BRIDGE_ERROR.CLOSED : AGY_BRIDGE_ERROR.UNKNOWN_TOOL}: ${name}` }],
         isError: true,
@@ -475,7 +613,7 @@ export class McpToolBridge {
     // 缺必填参数的调用不进 DSH 队列，
     // 这里只检查 required 键是否存在（不比 DSH 更严格），并把期望签名一并
     // 返回，模型可在同一个 ACP prompt 内立即改正重试。
-    const tool = this.#tools.find((item) => item.name === name)
+    const tool = scope.tools.find((item) => item.name === name)
     const { missing } = tool ? inspectToolArguments(tool, args ?? {}) : { missing: [] }
     if (tool && missing.length > 0) {
       return Promise.resolve({

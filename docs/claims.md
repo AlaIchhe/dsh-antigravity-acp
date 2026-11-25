@@ -39,8 +39,10 @@
 | 22 | `agy -p /usage` / `/credits` 输出格式 | `runtime/agy-cli.ts` | ✅ | 本机实跑日志 |
 | 23 | 同一会话的后续 prompt 保留上下文（插件据此只发增量） | `adapter/session-reuse.ts` | ✅ | 集成用例「第二次 prompt 记得第一次的暗号 ZEBRA-731」 |
 | 24 | 同账号 5 路并发（含长回答）不触发 429 | 无（实验结论） | ✅ | 2026-11-18 两轮探针：5/5 成功、零 429 |
-| 25 | `PromptResponse.usage` 是**本回合**内各次内部模型调用之和（非会话累计）；`totalTokens` = 本轮 Σ `usage_update.used` | `adapter/prompt-turn.ts` | ✅ | 2026-11-18 探针（4 轮）：单调用轮 total=used=8700/8779；3 次调用轮 total=27150=8925+9060+9165，而回合末上下文只有 9165；第 4 轮 total=9244 < 上一轮 27150（若为累计不可能） |
+| 25 | `PromptResponse.usage` 是**本回合**内各次内部模型调用之和（非会话累计）；`totalTokens` = 本轮 Σ `usage_update.used` | `adapter/prompt-turn.ts`、`adapter/usage-accounting.ts` | ✅ | 2026-11-18 与 2026-11-25 探针：单步 total=used=12305；3 次调用轮 total=39209=12803+12974+13432，末步上下文 13432 |
 | 26 | agy 对 MCP 工具声明 `mcp_dsh-tools_<后缀>_<短名>`，并在声明里附加必填 `toolSummary`；调用进 MCP 前这两项被剥离 | `adapter/tool-args.ts` | ✅ | 2026-11-18：agy 会话库里的工具声明含 `{"required":["toolSummary"],…}` 与 `mcp_dsh-tools_5406866c_*`；DSH `session-6642c5ed` 的 584 次 `tool/call` 参数里没有 `toolSummary` |
+| 27 | `PromptResponse.usage` 四桶互斥（`inputTokens + cachedReadTokens + cachedWriteTokens + outputTokens === totalTokens`），且 `outputTokens` 已包含 `thoughtTokens` | `adapter/usage-accounting.ts` | ✅ | 2026-11-25 真机探针：单步 12194+0+0+111=12305（thought=45≤111）；3 步工具轮 28148+10564+0+497=39209（thought=347≤497） |
+| 28 | 多步工具回合中 `usage_update` 在对应 MCP `tools/call` 之前到达（间隔约 1.4–1.6s） | `adapter/prompt-turn.ts`、`adapter/usage-accounting.ts` | ✅ | 2026-11-25 真机探针：`usage_update(12803)` +14842ms → `tools/call` +16420ms；`usage_update(12974)` +44856ms → `tools/call` +46304ms；`tests/real-usage-accounting.test.ts` |
 
 ## 优先验证顺序（按“错了会怎样”排序）
 
@@ -56,6 +58,7 @@
 
 ```bash
 AGY_REAL_ACP=1 npx vitest run tests/integration-real-agent.test.ts   # 全部真机断言
+AGY_REAL_ACP=1 npx vitest run tests/real-usage-accounting.test.ts    # 单步/多步用量与水位对账真机断言
 ```
 
 用例与断言的对应关系写在用例名里（上表“验证方式”列）；新增断言时同时补用例，

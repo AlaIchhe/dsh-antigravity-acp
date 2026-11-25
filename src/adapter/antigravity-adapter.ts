@@ -935,7 +935,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     if (tools.length > 0) {
       this.#bridge.beginRound(tools, key)
       if (!this.#bridge.listening) await this.#bridge.start()
-      mcpServers = this.#bridge.acpRegistration()
+      mcpServers = this.#bridge.acpRegistration(key)
     }
     if (!link.supportsResumeSession()) {
       // agent 不支持 resume 时，正确做法是**新建会话继续**，不是让对话失败。
@@ -964,7 +964,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     } catch (error) {
       this.#log?.warn(`antigravity-acp: 会话恢复失败（session/resume）session=${entry.sessionId}`, error)
       // 恢复失败可能仍有迟到回放：回收连接，然后把失败明确抛给宿主。
-      this.#bridge.invalidateRound('恢复失败')
+      this.#bridge.invalidateRound('恢复失败', key)
       this.#scheduleRecycle(link)
       await this.#settleRecycle()
       throwIfAborted(options.signal)
@@ -1004,56 +1004,81 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#sessionStore?.delete(key, this.#sessionOwner)
   }
 
-  /** 找到可复用的会话；记录失效时顺手丢弃（关闭对端会话，下一轮只能报错）。 */
-  #findReusableSession(options: GenerateOptions, key: string): ReusedSession | undefined {
+  /**
+   * 仅清理本 worker 内存中的会话句柄与桥作用域，**保留 SessionMapStore 映射**。
+   * 用于软失效（链接已关闭、桥作用域失效、会话已迁移）：交由后续 `session/resume` 接回。
+   */
+  #evictMemorySession(record: ReusedSession, reason: string, closeRemote: boolean): void {
+    if (this.#sessions.get(record.key) !== record) return
+    this.#sessions.delete(record.key)
+    this.#bridge.releaseScope(record.key)
+    this.#sessionModelValues.delete(record.sessionId)
+    this.#sessionModelDeclared.delete(record.sessionId)
+    this.#sessionThoughtValues.delete(record.sessionId)
+    this.#systemViaMeta.delete(record.sessionId)
+    this.#log?.info(`antigravity-acp: ${reason}`)
+    if (closeRemote) this.#closeSession(record.link, record.sessionId)
+  }
+
+  /**
+   * 查找可复用的内存会话，明确区分：
+   * - 命中复用：`{ reused }`；
+   * - 软失效（链接关闭 / 桥作用域失效 / 迁移）：仅清内存句柄、保留恢复映射，返回 `{}` 交由 `#resumeSession` 接回；
+   * - 可按新会话继续（压缩导致前缀变化 / 上一轮疑似异常中断）：清理映射并返回 `{ freshSession: true }`；
+   * - 硬失效（路由变化 / 输出篡改 / 非法增量）：销毁映射并返回 `{ unrecoverableReason }`，直接向用户透传真实原因。
+   */
+  #findReusableSession(options: GenerateOptions, key: string): {
+    reused?: ReusedSession
+    freshSession?: boolean
+    unrecoverableReason?: string
+  } {
     const record = this.#sessions.get(key)
-    if (!record) return undefined
+    if (!record) return {}
     if (this.#resumeSessions && this.#sessionStore && !this.#sessionStore.owns(key, this.#sessionOwner)) {
-      this.#dropSession(record, '会话已迁移到其他 worker')
-      return undefined
+      this.#evictMemorySession(record, '会话已迁移到其他 worker，释放本 worker 内存句柄', true)
+      return {}
     }
     // 进程没了：只丢掉内存记录，**保留磁盘映射**，交给 resume 接回原会话。
     if (record.link.closed) {
-      this.#sessions.delete(record.key)
-      this.#sessionModelValues.delete(record.sessionId)
-      this.#sessionModelDeclared.delete(record.sessionId)
-      this.#sessionThoughtValues.delete(record.sessionId)
-      this.#systemViaMeta.delete(record.sessionId)
-      this.#log?.info('antigravity-acp: ACP 链接已关闭，保留恢复映射，下一轮按 session/resume 接回')
-      return undefined
+      this.#evictMemorySession(record, 'ACP 链接已关闭，保留恢复映射，下一轮按 session/resume 接回', false)
+      return {}
+    }
+    // 用过工具的会话依赖自己作用域的 MCP 通道：作用域若被淘汰或作废，属于软失效，
+    // 关闭内存旧句柄但保留恢复映射，交由 `#resumeSession` 带着新 mcpServers 接回。
+    if (record.usesTools && !this.#bridge.hasScope(record.key)) {
+      this.#evictMemorySession(record, 'MCP 桥作用域已失效，保留恢复映射，按 session/resume 重新挂桥接回', true)
+      return {}
     }
     if (record.route !== this.#sessionRouteFingerprint(options)) {
       this.#dropSession(record, '模型、系统提示或工具目录已变化')
-      return undefined
-    }
-    // 用过工具的会话依赖桥的授权代次：桥被另一个对话接管后它的 MCP 连接
-    // 持有旧 token，沿用只会让工具调用被拒；直接重建。
-    if (record.usesTools && this.#bridge.owner !== record.key) {
-      this.#dropSession(record, 'MCP 桥已被其他对话接管')
-      return undefined
+      return { unrecoverableReason: '模型、系统提示或工具目录已变化' }
     }
     if (options.messages.length <= record.sentCount) {
       this.#dropSession(record, '没有严格追加的新输入')
-      return undefined
+      return { unrecoverableReason: '没有严格追加的新输入' }
     }
     if (!prefixMatches(options.messages, record.sentCount, record.sentHash)) {
-      this.#dropSession(record, '历史已不是已发送前缀的追加')
-      return undefined
+      this.#dropSession(record, '历史前缀已变化（压缩或映射不匹配），按新会话开始；历史不重放')
+      return { freshSession: true }
     }
     if (record.cancelled !== true && !outputMatches(options.messages.slice(record.sentCount), record.outputHash)) {
+      if (looksLikeInterruptedTurn(options.messages.slice(record.sentCount), record.outputHash)) {
+        this.#dropSession(record, `上一轮疑似异常中断（已发送=${record.sentCount} 条），丢弃旧映射并按新会话开始`)
+        return { freshSession: true }
+      }
       this.#dropSession(record, '上一轮输出已变化或来自其他会话')
-      return undefined
+      return { unrecoverableReason: '上一轮输出已变化或来自其他会话' }
     }
     // 新增部分若含工具结果，只能走 MCP 回喂，不能当 prompt 文本重发。
     if (options.messages.slice(record.sentCount).some((message) => message.role === 'tool')) {
       this.#dropSession(record, '新增消息包含工具结果')
-      return undefined
+      return { unrecoverableReason: '新增消息包含工具结果' }
     }
     if (incrementalMessages(options.messages, record.sentCount).length === 0) {
-      this.#dropSession(record, '没有可发送的增量，按完整历史重建')
-      return undefined
+      this.#dropSession(record, '没有可发送的增量')
+      return { unrecoverableReason: '没有可发送的增量' }
     }
-    return record
+    return { reused: record }
   }
 
   /** 记录一个刚建立会话 / 刚完成全量发送的 ACP 会话。 */
@@ -1133,6 +1158,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   #dropSession(record: ReusedSession, reason: string): void {
     if (this.#sessions.get(record.key) !== record) return
     this.#sessions.delete(record.key)
+    this.#bridge.releaseScope(record.key)
     this.#sessionStore?.delete(record.key, this.#sessionOwner)
     this.#sessionModelValues.delete(record.sessionId)
     this.#sessionModelDeclared.delete(record.sessionId)
@@ -1162,6 +1188,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     for (const record of [...this.#sessions.values()]) {
       if (link && record.link !== link) continue
       this.#sessions.delete(record.key)
+      this.#bridge.releaseScope(record.key)
       this.#sessionModelValues.delete(record.sessionId)
       this.#sessionModelDeclared.delete(record.sessionId)
       this.#sessionThoughtValues.delete(record.sessionId)
@@ -1383,7 +1410,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       if (tools.length > 0) {
         if (!this.#bridge.listening) await this.#bridge.start()
         check()
-        mcpServers = this.#bridge.acpRegistration()
+        mcpServers = this.#bridge.acpRegistration(owner)
       }
       // 官方 1.4.0 tool_filter.py / mcp_servers.py 的会话扩展：禁用内置工具
       // （仅关闭 ACP clientCapabilities 不够），直接向模型加载完整 MCP schema。
@@ -1414,7 +1441,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       return await withAbort(setup, options.signal)
     } catch (error) {
       if (options.signal?.aborted || this.#disposed) {
-        this.#bridge.invalidateRound('启动阶段取消')
+        this.#bridge.invalidateRound('启动阶段取消', owner)
         this.#cleanup = setup.catch(() => undefined).then(async () => {
           if (!link) return
           this.#unrecycledLink = link
@@ -1423,7 +1450,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         })
         void this.#cleanup.catch(() => undefined)
       } else {
-        this.#bridge.invalidateRound('ACP 回合准备失败')
+        this.#bridge.invalidateRound('ACP 回合准备失败', owner)
         if (link) this.#scheduleRecycle(link)
       }
       throwIfAborted(options.signal)
@@ -1445,15 +1472,22 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     this.#lifecycle?.beginRound(options.model)
     const key = reusableSessionKey(options)
     // 必须先检查旧 owner，再 claim；反过来会把刚接回的陈旧内存记录误认为仍归自己。
-    let reused = key === undefined ? undefined : this.#findReusableSession(options, key)
-    const entry = key !== undefined && this.#resumeSessions
-      ? await withAbort(this.#sessionStore?.claim(key, this.#sessionOwner) ?? Promise.resolve(undefined), options.signal) : undefined
+    const lookup = key === undefined ? {} : this.#findReusableSession(options, key)
+    let reused = lookup.reused
     // 有历史的普通聊天轮必须接上原 ACP 会话；接不上就让这一轮失败。
     // **没有重放路径**：任何形式的历史重灌都会消耗几十万 token、把模型带回旧任务，
     // 还会被上游按体积截断。一次性请求（标题/压缩）自带完整输入，不走这条路径。
     const hasPriorHistory = options.purpose === undefined
       && options.messages.some((message) => message.role === 'assistant' || message.role === 'tool')
-    if (!reused && hasPriorHistory) {
+    if (lookup.unrecoverableReason !== undefined && hasPriorHistory) {
+      throw new LlmError(
+        `无法接上原 ACP 会话（${lookup.unrecoverableReason}）。已禁用回退重放：请新开一个会话，或恢复该映射后再试。`,
+        AGY_ADAPTER_ERROR.SESSION_UNRECOVERABLE,
+      )
+    }
+    const entry = key !== undefined && this.#resumeSessions
+      ? await withAbort(this.#sessionStore?.claim(key, this.#sessionOwner) ?? Promise.resolve(undefined), options.signal) : undefined
+    if (!reused && !lookup.freshSession && hasPriorHistory) {
       if (key === undefined) {
         throw new LlmError(
           '这段历史没有可接续的 ACP 会话（缺少会话键）。已禁用回退重放：请新开会话。',
@@ -1466,7 +1500,9 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     let link: AgentLink
     let sessionId: string
     if (reused) {
-      // 复用：同一 ACP 会话已有原生历史，只发本轮新增消息。
+      // 复用：同一 ACP 会话已有原生历史，只发本轮新增消息；同时把 MCP 桥活跃作用域切回本对话。
+      if (tools.length > 0 && key !== undefined) this.#bridge.activateRound(tools, key)
+      else this.#bridge.resetPending('已切换 ACP 回合')
       link = reused.link
       sessionId = reused.sessionId
       this.#log?.info(
@@ -1505,7 +1541,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       },
       onTerminate: (reason, info) => {
         if (this.#disposed) {
-          this.#bridge.invalidateRound(reason)
+          this.#bridge.invalidateRound(reason, key)
           this.#dropSessionsForTurn(turn.sessionId, '卸载时终止未完成回合')
           this.#wakeAccessWaiters()
           return
@@ -1520,7 +1556,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
           if (own) own.cancelled = true
         }
         if (info?.clean !== true) {
-          this.#bridge.invalidateRound(reason)
+          this.#bridge.invalidateRound(reason, key)
           if (!cancelled) this.#dropSessionsForLink(link, '回合异常终止')
         }
         if (info?.clean === true) {
@@ -1579,7 +1615,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     } catch (error) {
       // prompt 还没发出去就失败（图片不可用 / 被取消 / 内容不支持）：刚建立的
       // ACP 会话与磁盘 claim 必须当场回收，不能只靠空闲回收兜底。
-      this.#bridge.invalidateRound('prompt 构造失败')
+      this.#bridge.invalidateRound('prompt 构造失败', key)
       this.#releaseTurnSubscription(turn)
       if (this.#turn === turn) this.#turn = undefined
       const ephemeral = this.#ephemeral.get(turn)
@@ -1645,7 +1681,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   }
 
   async *#runContinuation(turn: PromptTurn, options: GenerateOptions, tail: readonly RequestMessage[]): AsyncGenerator<StreamChunk> {
-    this.#bridge.publishTools(options.tools ?? [])
+    this.#bridge.publishTools(options.tools ?? [], reusableSessionKey(options))
     if (turn.terminated) {
       // 终止的回合不会再有生产者。必须**先于 resume()** 判定：resume 会把
       // producerDone 复位，之后 drainTurn 会因无人生产而永久挂起。

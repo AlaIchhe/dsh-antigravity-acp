@@ -32,6 +32,7 @@ import { describePermissionRequest } from './permission-diagnostic.js'
 import { parsePermissionHandoff } from './permission-handoff.js'
 import type { PermissionDiagnostic } from './permission-diagnostic.js'
 import { inspectToolArguments, safeKeyNames } from './tool-args.js'
+import { TurnUsageAccounting } from './usage-accounting.js'
 
 /** 本文件使用的原创错误码（AGY_* 体系，与 agent-link / mcp-bridge 同族）。 */
 export const AGY_TURN_ERROR = {
@@ -121,11 +122,10 @@ export class PromptTurn {
   #onNativeRefusal: PromptTurnOptions['onNativeRefusal']
   readonly #onPermissionDiagnostic: PromptTurnOptions['onPermissionDiagnostic']
   /**
-   * `usage_update.used`：当前上下文已用 token。回合结束作为 usage 样本上报，
-   * 是宿主上下文占用唯一的来源（`PromptResponse.usage` 是回合内多次内部调用的
-   * 求和，会按调用次数放大成数倍窗口，不能当占用）。
+   * 本回合的分步用量与上下文水位记账器：单步无工具回合精确直出 `PromptResponse.usage`，
+   * 多步工具回合在中间步上报实测水位、末步做差额对账与防爆环钳制。
    */
-  #observedUsage: TokenUsage | undefined
+  readonly #usage = new TurnUsageAccounting()
   #nextIndex = 0
   #open: OpenBlock | undefined
   #producerDone = false
@@ -194,7 +194,7 @@ export class PromptTurn {
    */
   noteUsage(usage: TokenUsage): void {
     if (this.#terminated || this.#promptSettled) return
-    this.#observedUsage = usage
+    this.#usage.noteObservedUsed(usage.inputTokens)
   }
 
   /** 把 session/update 交给当前回合（由 adapter 的稳定 handler 转发）。 */
@@ -326,7 +326,7 @@ export class PromptTurn {
     if (this.#parkTimer) clearTimeout(this.#parkTimer)
     const timer = setTimeout(() => {
       this.#parkTimer = undefined
-      this.finishRound()
+      this.finishRound(this.#usage.emitIntermediateStep())
     }, this.#parkSettleMs)
     timer.unref?.()
     this.#parkTimer = timer
@@ -433,12 +433,9 @@ export class PromptTurn {
       }, true)
       return
     }
-    // 只上报 `usage_update.used`（当前上下文占用）。ACP 的 `PromptResponse.usage`
-    // 是**本回合内所有内部模型调用之和**（2026-11-18 探针：3 次调用的 totalTokens
-    // 恰等于三条 usage_update.used 之和 27150，而回合末上下文只有 9165）。把它当
-    // 本轮 prompt 用量交给宿主会让上下文压力 = input + cacheRead + cacheWrite
-    // 按内部调用次数膨胀到窗口的数倍（0.1.52 观测到 360%/411% 就是这个和）。
-    this.finishRound(this.#observedUsage)
+    // 单步无工具回合直出真实 `PromptResponse.usage`；多步工具回合结合已出账的
+    // 中间步水位做差额对账，并在 K_acp > K_dsh 时钳制到末步实测 `usage_update.used`。
+    this.finishRound(this.#usage.reconcileFinalStep(response.usage ?? undefined))
   }
 
   #mapStopReason(stopReason: StopReason): LlmFailure | undefined {

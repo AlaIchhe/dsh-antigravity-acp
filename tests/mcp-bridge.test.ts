@@ -301,4 +301,43 @@ describe('MCP 桥多会话隔离', () => {
     // 不能因为前缀相同就放行（旧实现用严格相等，这里防止回归到 startsWith 之类）。
     expect(matchesBridgeToken(`Bearer ${token}x`, token)).toBe(false)
   })
+
+  it('多对话作用域隔离：对话 B 接管回合不破坏对话 A 的 token 与通道，切回对话 A 可无缝续用', async () => {
+    const bridge = makeBridge()
+    await bridge.start()
+
+    bridge.beginRound(TOOLS, 'session-a::chat')
+    const endpointA = endpointOf(bridge)
+    const clientA = await connectClient(endpointA, 'conv-a')
+    expect((await clientA.listTools()).tools.map((tool) => tool.name)).toEqual(['read_file'])
+
+    // 对话 B 开启新回合：拿到独立 token，且不关闭对话 A 的通道。
+    bridge.beginRound(TOOLS, 'session-b::chat')
+    const endpointB = endpointOf(bridge)
+    expect(endpointB.headers[BRIDGE_AUTH_HEADER]).not.toBe(endpointA.headers[BRIDGE_AUTH_HEADER])
+    expect(bridge.hasScope('session-a::chat')).toBe(true)
+    expect(bridge.hasScope('session-b::chat')).toBe(true)
+    const clientB = await connectClient(endpointB, 'conv-b')
+    expect((await clientB.listTools()).tools.map((tool) => tool.name)).toEqual(['read_file'])
+
+    // 对话 B 活跃期间，对话 A 若发来 tools/call 会被拒绝（防串扰），不产生 park。
+    const blockedA = await clientA.callTool({ name: 'read_file', arguments: { path: 'a.txt' } }, undefined, { timeout: 200 })
+    expect(blockedA.isError).toBe(true)
+    expect(bridge.pendingCallIds()).toEqual([])
+
+    // 仅作废对话 B 不影响对话 A 的作用域。
+    bridge.invalidateRound('B 失败', 'session-b::chat')
+    expect(bridge.hasScope('session-b::chat')).toBe(false)
+    expect(bridge.hasScope('session-a::chat')).toBe(true)
+
+    // 切回对话 A 活跃作用域：原 HTTP 连接仍可直接 tools/call 并正常回喂。
+    expect(bridge.activateRound(TOOLS, 'session-a::chat')).toBe(true)
+    let settledA: string | undefined
+    const callA = clientA.callTool({ name: 'read_file', arguments: { path: 'a.txt' } })
+    void callA.then((res) => { settledA = textOf(res) }, () => undefined)
+    await vi.waitFor(() => expect(bridge.pendingCallIds()).toHaveLength(1))
+    const [callId] = bridge.pendingCallIds() as [string]
+    await bridge.deliverResults([{ callId, text: 'A 的结果', isError: false }])
+    await vi.waitFor(() => expect(settledA).toBe('A 的结果'))
+  })
 })

@@ -4,6 +4,16 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.5.5 · 2026-11-25
+
+- **方案 A：MCP 桥按对话作用域多路复用，彻底消除跨对话抢桥导致的 `AGY_SESSION_UNRECOVERABLE`**。此前一个 Worker 只有一个全局 token 与 `owner`，当新对话复用空闲 Worker 调用 `beginRound()` 时会轮换全桥 token 并关闭旧通道，导致回到原对话时 `#findReusableSession` 误判「MCP 桥已被其他对话接管」并调用 `#dropSession` 关闭原 ACP 会话、删掉内存映射，紧接着落入 `#resumeSession` 报误导性的「磁盘上没有该会话的映射」。现在 `McpToolBridge` 按对话 `owner` 维护独立的 `BridgeScope`（独立 Bearer token、代次、工具目录与 HTTP 通道表），同 Worker 内多对话交替运行互不失效，切回旧对话只需 `activateRound` 恢复活跃作用域。
+- **区分软失效与硬失效，并透传真实错误原因**：链接关闭、桥作用域失效、会话迁移等软失效仅清理内存句柄、**保留 `SessionMapStore` 映射**，交由 `session/resume` 重新挂桥接回；路由/输出/增量不匹配等硬失效直接抛出包含真实原因的 `AGY_SESSION_UNRECOVERABLE`，不再落入 `#resumeSession` 报假错。
+- **修正 `SessionMapStore` 删除落盘语义**：`writeSessionMap` 新增显式 `deletedKeys` 参数，保证 `SessionMapStore.delete()` 同步从磁盘 `sessions.json` 移除目标键（同时仍按「谁新谁赢」合并其它键），消除「内存已删、磁盘残留」的语义分裂。
+- **恢复 DSH 用量、缓存读取/命中、思考 token 与 TPS 统计（同时防止多步工具回合爆上下文环）**：基于 2026-11-25 真机探针实测（确认 `PromptResponse.usage` 四桶互斥、`outputTokens` 已含 `thoughtTokens`、且 `usage_update` 先于 MCP `tools/call` 到达），新增 `src/adapter/usage-accounting.ts` 接入 `PromptTurn`：
+  - 单步无工具回合（`K = 1`）：零估算直出真实 `PromptResponse.usage`；
+  - 多步工具回合（`K > 1`）：中间步上报实测 `usage_update.used`（`outputTokens = 0`），末步承接整轮真实 `outputTokens` / `thoughtTokens`（规避 `reasoningTokens > outputTokens` 校验失败）并对输入三桶做差额对账；若发生 `K_acp > K_dsh` 导致残余输入超过末步实测水位 1.15×，按比例钳制到实测水位优先保上下文环不爆。
+  - 新增真机测试 `tests/real-usage-accounting.test.ts`（真实账号单步 + 多步工具回合全步通过 DSH `turn-usage` 严格校验）。
+
 ## 0.5.4 · 2026-11-22
 
 - **诊断：`AGY_SESSION_UNRECOVERABLE` 不再把两种成因报成同一句话**。`claim()` 返回空有两种完全不同的意思，处置方式相反：

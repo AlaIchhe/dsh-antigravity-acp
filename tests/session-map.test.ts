@@ -175,4 +175,26 @@ describe('共享 SessionMapStore 所有权与串行提交', () => {
     store.unclaim('chat', a)
     expect(store.owns('chat', b)).toBe(true)
   })
+
+  it('显式 delete 会同步从磁盘 sessions.json 移除，同时保留其它 store 写入的键', async () => {
+    const dir = await directory()
+    const first = createFileSessionMapStore(dir)
+    const second = createFileSessionMapStore(dir)
+    const a = Symbol(), b = Symbol()
+    try {
+      await first.claim('gone', a)
+      first.set('gone', a, entry(1))
+      await first.flush()
+      await second.claim('keep', b)
+      second.set('keep', b, entry(2))
+      await second.flush()
+
+      first.delete('gone', a)
+      await first.flush()
+      expect(await readSessionMap(dir)).toEqual({ keep: entry(2) })
+    } finally {
+      await first.close()
+      await second.close()
+    }
+  })
 })

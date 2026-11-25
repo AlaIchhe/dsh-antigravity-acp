@@ -87,12 +87,23 @@ export async function readSessionMap(cacheDir: string): Promise<Record<string, S
 /**
  * 写入会话映射。写入失败（只读缓存目录、磁盘满、文件被占用）静默忽略：
  * 恢复能力是优化，不是功能。
+ *
+ * `deletedKeys` 用于把显式删除同步到磁盘，避免「内存已删、磁盘残留」的语义分裂；
+ * 未在 `deletedKeys` 中的其他键仍按「读盘合并、谁新谁赢」保留。
  */
-export async function writeSessionMap(cacheDir: string, entries: Record<string, SessionMapEntry>): Promise<boolean> {
+export async function writeSessionMap(
+  cacheDir: string,
+  entries: Record<string, SessionMapEntry>,
+  deletedKeys?: ReadonlySet<string>,
+): Promise<boolean> {
   // 写前先读盘合并：没有跨进程锁之后，另一个 store 可能在这期间写过别的键。
-  // 合并规则是「谁新谁赢」，因此不会把别人的条目抹掉，也不会让旧数据盖住新数据。
+  // 合并规则是「显式删除先生效，其余键谁新谁赢」，既不会误删别的进程写入的键，
+  // 也能确保本 store 显式 delete 的键真正从磁盘消失。
   const onDisk = await readSessionMap(cacheDir).catch(() => ({} as Record<string, SessionMapEntry>))
   const merged: Record<string, SessionMapEntry> = { ...onDisk }
+  if (deletedKeys) {
+    for (const key of deletedKeys) delete merged[key]
+  }
   for (const [key, entry] of Object.entries(entries)) {
     const existing = merged[key]
     if (existing === undefined || entry.updatedAt >= existing.updatedAt) merged[key] = entry
@@ -147,9 +158,9 @@ export function createFileSessionMapStore(cacheDir: string, onError?: () => void
       loaded = true
       return readSessionMap(cacheDir)
     },
-    save: async entries => {
+    save: async (entries, deletedKeys) => {
       if (!loaded) throw new Error('Session map not loaded yet')
-      if (!await writeSessionMap(cacheDir, entries)) throw new Error('Session map unavailable')
+      if (!await writeSessionMap(cacheDir, entries, deletedKeys)) throw new Error('Session map unavailable')
     },
     onError,
   })
@@ -161,7 +172,7 @@ function isHash(value: unknown): value is string {
 
 export interface SessionMapStorage {
   load(): Promise<Record<string, SessionMapEntry>>
-  save(entries: Record<string, SessionMapEntry>): Promise<void> | void
+  save(entries: Record<string, SessionMapEntry>, deletedKeys?: ReadonlySet<string>): Promise<void> | void
   onError?(): void
   close?(): Promise<void>
 }
@@ -173,6 +184,8 @@ export interface SessionMapStorage {
  */
 export class SessionMapStore {
   readonly #owners = new Map<string, symbol>()
+  readonly #deleted = new Map<string, number>()
+  #deleteSeq = 0
   #entries: Record<string, SessionMapEntry> = {}
   #ready?: Promise<void>
   #writes: Promise<void> = Promise.resolve()
@@ -220,6 +233,7 @@ export class SessionMapStore {
 
   set(key: string, owner: symbol, entry: SessionMapEntry): void {
     if (!this.owns(key, owner)) return
+    this.#deleted.delete(key)
     this.#entries[key] = { ...entry }
     this.#entries = Object.fromEntries(Object.entries(this.#entries)
       .sort(([, a], [, b]) => b.updatedAt - a.updatedAt).slice(0, MAX_ENTRIES))
@@ -229,6 +243,7 @@ export class SessionMapStore {
   delete(key: string, owner: symbol): void {
     if (!this.owns(key, owner)) return
     delete this.#entries[key]
+    this.#deleted.set(key, ++this.#deleteSeq)
     this.#enqueue()
   }
 
@@ -258,8 +273,13 @@ export class SessionMapStore {
 
   #enqueue(): void {
     const snapshot = structuredClone(this.#entries)
+    const deletedSnapshot = new Map(this.#deleted)
+    const deletedKeys = deletedSnapshot.size > 0 ? new Set(deletedSnapshot.keys()) : undefined
     this.#writes = this.#writes.then(async () => {
-      await this.storage.save(snapshot)
+      await this.storage.save(snapshot, deletedKeys)
+      for (const [key, seq] of deletedSnapshot) {
+        if (this.#deleted.get(key) === seq) this.#deleted.delete(key)
+      }
       this.#errorReported = false
     }).catch(() => { this.#reportError() })
   }

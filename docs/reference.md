@@ -87,7 +87,7 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 
 1. 插件通过宿主 `ctx.subprocess` 以 stdio 启动官方 ACP server。
 2. 会话使用厂商扩展 `_meta.antigravity.enabledTools: []` 关闭内置工具，使用 `eagerMcpServers: ["dsh-tools"]` 提供当前 DSH 工具 schema。此扩展的默认适配基准是官方 server 1.4.0，不保证任意版本同样实现。
-3. 私有 MCP 桥仅绑定 `127.0.0.1`，新建带工具的 ACP 会话时轮换 token 与授权代次；同一会话复用时保留授权，目录/归属变化则丢弃该会话（后续回合报 `AGY_SESSION_UNRECOVERABLE`，需新开）。
+3. 私有 MCP 桥仅绑定 `127.0.0.1`，按对话作用域（`owner`）隔离独立随机 token、授权代次、工具目录与 HTTP 会话通道。同一 Worker 进程内切换对话不再互相轮换或关闭其他对话的通道；若某对话的作用域失效（软失效），保留恢复映射并走 `session/resume` 重新挂桥接回，而路由/历史不匹配等硬失效则直接透传真实原因。
 4. ACP 权限提示只对已识别私有桥请求选择 `allow_once`，不会自身产生 DSH 调用；真正的 `tools/call` 到桥后才挂起，并以 `tool-call` 交给 DSH。
 5. DSH 负责校验、审批、执行；工具结果按调用 ID 匹配，携带 `isError` 回填同一 ACP prompt。支持乱序结果与后续批次。
 
@@ -196,7 +196,7 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 
 | 限制 | 现状 | 绕过 / 处理 |
 |---|---|---|
-| 没有单轮 token 用量 | ACP 只给了会话累计的 `PromptResponse.usage` 和当前占用的 `usage_update.used/size`，没有「本轮 prompt 用量」。 | 占用用 `usage_update.used` 上报；累计值不冒充本轮用量，也不估算、不伪造计费数字；额度以官方客户端/额度药丸为准。 |
+| 多步工具回合的单步拆分 | ACP 只在回合末给出本轮各内部调用求和的 `PromptResponse.usage`，中途 `usage_update` 仅含 `used/size`、无缓存与输出细分。 | 单步无工具回合（K=1）直接上报真实 `PromptResponse.usage`（用量、缓存读取/命中、reasoning、TPS、上下文水位全准）；多步工具回合（K>1）在中间步上报实测水位、末步承接真实输出并按差额对账（超出末步水位 1.15× 时钳制防爆环）。 |
 | 工具参数非流式 | ACP 桥在工具被调用后才拿到完整参数，界面里工具调用一次性出现。 | 协议没有增量参数通道，暂无。 |
 | 标题 / 压缩走当前 provider | DSH 用当前模型生成标题、做压缩，各自新建一次 ACP 会话（约 3–20 秒、消耗额度）。 | 标题超时已收紧到 90 秒、压缩 10 分钟；可在 DSH 侧关闭自动标题或改用更便宜的 provider。 |
 | `temperature` / `stop` 不生效 | ACP v1 没有对应会话通道；插件记录警告并忽略，不再整单失败。 | 需要采样控制时使用官方 agent 自身的会话配置。 |
