@@ -30,6 +30,8 @@ export interface SessionMapEntry {
   route: string
   /** 最近一次成功发送的时间（毫秒）。 */
   updatedAt: number
+  /** 上一轮被用户取消并已由 agent 确认停止：允许下一轮跳过输出指纹与中断工具结果校验。 */
+  cancelled?: boolean
 }
 
 interface SessionMapFile {
@@ -76,6 +78,7 @@ export async function readSessionMap(cacheDir: string): Promise<Record<string, S
         outputHash: row.outputHash,
         route: row.route,
         updatedAt: typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) ? row.updatedAt : 0,
+        ...(row.cancelled === true ? { cancelled: true } : {}),
       }
     }
     return entries

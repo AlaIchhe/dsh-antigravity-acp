@@ -4,6 +4,15 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.5.6 · 2026-11-25
+
+- **修复：用户在 DSH 中断会话后再继续发送报 `AGY_SESSION_UNRECOVERABLE`，对齐 `agy` 中断续聊语义**。真机复现（2026-11-25 `session-b75e93d0`）：在带工具会话的续轮或首步点击中断后，下一轮发送直接报「磁盘上没有该会话的映射（可能已被清理）」。根因有四处叠加：
+  1. `onTerminate` 在用户取消时仍调用 `bridge.invalidateRound()` 作废了该对话的 MCP 作用域，导致下一轮被 `#findReusableSession` 软失效驱逐；现改为仅调 `bridge.resetPending()` 结算挂起调用，保留作用域与 token。
+  2. `#runContinuation` 的 `finally` 无视取消标记直接调用 `#dropSessionsForTurn()` 销毁会话；现仅在非取消的异常终止时才作废会话。
+  3. `#advanceSession` 显式区分 `aborted`，仅在非取消的完整交付后清除 `cancelled` 标记；`onPromptSettled` 收到 agent 的取消应答后将带 `cancelled: true` 的恢复点补写回 `sessions.json`，使空闲回收或重启后仍可通过 `session/resume` 接回。
+  4. 工具执行期间中断（未进续轮）时，允许并跳过上一轮遗留的 `role: 'tool'` 消息，只向原 ACP 会话发送用户新消息。
+- 新增回归测试 `tests/cancel-continue.test.ts`（覆盖 Step 1 中断、工具续轮 Step 2 中断、工具执行期间中断、取消确认后重启 `session/resume` 四条路径）。
+
 ## 0.5.5 · 2026-11-25
 
 - **方案 A：MCP 桥按对话作用域多路复用，彻底消除跨对话抢桥导致的 `AGY_SESSION_UNRECOVERABLE`**。此前一个 Worker 只有一个全局 token 与 `owner`，当新对话复用空闲 Worker 调用 `beginRound()` 时会轮换全桥 token 并关闭旧通道，导致回到原对话时 `#findReusableSession` 误判「MCP 桥已被其他对话接管」并调用 `#dropSession` 关闭原 ACP 会话、删掉内存映射，紧接着落入 `#resumeSession` 报误导性的「磁盘上没有该会话的映射」。现在 `McpToolBridge` 按对话 `owner` 维护独立的 `BridgeScope`（独立 Bearer token、代次、工具目录与 HTTP 通道表），同 Worker 内多对话交替运行互不失效，切回旧对话只需 `activateRound` 恢复活跃作用域。

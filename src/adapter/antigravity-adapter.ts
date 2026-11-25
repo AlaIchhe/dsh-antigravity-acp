@@ -903,7 +903,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       this.#log?.info('antigravity-acp: 历史前缀已变化（压缩或映射不匹配），按新会话开始；历史不重放')
       return undefined
     }
-    if (!outputMatches(options.messages.slice(entry.sentCount), entry.outputHash)) {
+    if (entry.cancelled !== true && !outputMatches(options.messages.slice(entry.sentCount), entry.outputHash)) {
       // 前缀已经校验过（上面那行），所以输出对不上只可能是「上一轮没记完」：
       // 进程在写回映射之前就死了（连接断开、网络崩溃、宿主重启）。这不是历史被
       // 改写，重放整段历史毫无必要——丢弃旧映射、按新会话开始即可，不该让用户
@@ -918,8 +918,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       }
       return fail('上一轮输出已变化或来自其他会话')
     }
-    if (options.messages.slice(entry.sentCount).some((message) => message.role === 'tool')) return fail('新增消息包含工具结果')
-    if (incrementalMessages(options.messages, entry.sentCount).length === 0) return fail('没有可发送的增量')
+    if (entry.cancelled !== true && options.messages.slice(entry.sentCount).some((message) => message.role === 'tool')) return fail('新增消息包含工具结果')
+    if (incrementalMessages(options.messages, entry.sentCount, { skipToolResults: entry.cancelled === true }).length === 0) return fail('没有可发送的增量')
     // 启动失败/取消时不能把 claim 留在本 worker 名下：条目内容本身没被否定
     // （只是这次没能起进程），下一个 worker 仍可以尝试接管它。
     let link: AgentLink
@@ -981,6 +981,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       outputHash: entry.outputHash,
       route: entry.route,
       usesTools: tools.length > 0,
+      ...(entry.cancelled === true ? { cancelled: true } : {}),
     }
     this.#sessions.set(key, record)
     this.#log?.info(`antigravity-acp: 已恢复 ACP 会话 session=${entry.sessionId} 已发送消息=${entry.sentCount}`)
@@ -1069,12 +1070,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       this.#dropSession(record, '上一轮输出已变化或来自其他会话')
       return { unrecoverableReason: '上一轮输出已变化或来自其他会话' }
     }
-    // 新增部分若含工具结果，只能走 MCP 回喂，不能当 prompt 文本重发。
-    if (options.messages.slice(record.sentCount).some((message) => message.role === 'tool')) {
+    // 新增部分若含工具结果，只能走 MCP 回喂，不能当 prompt 文本重发；
+    // 但上一轮被用户取消时，DSH 可能残留被中断工具的 tool 结果，按 agy 语义忽略并续发新用户输入。
+    if (record.cancelled !== true && options.messages.slice(record.sentCount).some((message) => message.role === 'tool')) {
       this.#dropSession(record, '新增消息包含工具结果')
       return { unrecoverableReason: '新增消息包含工具结果' }
     }
-    if (incrementalMessages(options.messages, record.sentCount).length === 0) {
+    if (incrementalMessages(options.messages, record.sentCount, { skipToolResults: record.cancelled === true }).length === 0) {
       this.#dropSession(record, '没有可发送的增量')
       return { unrecoverableReason: '没有可发送的增量' }
     }
@@ -1096,20 +1098,38 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     return record
   }
 
+  /** 把已 settle 的会话游标写入磁盘映射（含已确认取消的会话）。 */
+  #persistSession(record: ReusedSession): void {
+    this.#sessionStore?.set(record.key, this.#sessionOwner, {
+      sessionId: record.sessionId,
+      cwd: this.#cwd,
+      sentCount: record.sentCount,
+      sentHash: record.sentHash,
+      outputHash: record.outputHash ?? outputHash([]),
+      route: record.route,
+      updatedAt: Date.now(),
+      ...(record.cancelled === true ? { cancelled: true } : {}),
+    })
+  }
+
   /** 在 finish 对外可见之前提交输入与实际交付输出，消费者可立即 return。 */
-  #advanceSession(record: ReusedSession, options: GenerateOptions, blocks: readonly ContentBlock[], settled: boolean): void {
+  #advanceSession(
+    record: ReusedSession,
+    options: GenerateOptions,
+    blocks: readonly ContentBlock[],
+    settled: boolean,
+    aborted = false,
+  ): void {
     if (this.#sessions.get(record.key) !== record) return
     record.sentCount = options.messages.length
     record.sentHash = prefixHash(options.messages)
     record.outputHash = outputHash(blocks)
-    // 取消标记只豁免一轮输出指纹校验：本轮已完整交付后，后续回合重新按指纹验证。
-    if (settled) record.cancelled = false
+    // 取消标记只豁免一轮输出指纹校验：仅在非取消的完整交付后清除。
+    if (aborted) record.cancelled = true
+    else if (settled) record.cancelled = false
     this.#sessions.delete(record.key)
     this.#sessions.set(record.key, record)
-    if (settled) this.#sessionStore?.set(record.key, this.#sessionOwner, {
-      sessionId: record.sessionId, cwd: this.#cwd, sentCount: record.sentCount,
-      sentHash: record.sentHash, outputHash: record.outputHash, route: record.route, updatedAt: Date.now(),
-    })
+    if (settled) this.#persistSession(record)
     else this.#sessionStore?.delete(record.key, this.#sessionOwner)
   }
 
@@ -1532,6 +1552,11 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       // 标题生成与压缩这类一次性请求的调用方只消费 chunk，不会回喂工具结果。
       oneShot: options.purpose !== undefined,
       onPromptSettled: (settledTurn, response) => {
+        if (response) {
+          // 取消已被 agent 应答：会话在 agent 侧已稳定落盘，补写恢复映射以便后续可 resume。
+          const own = [...this.#sessions.values()].find((item) => item.sessionId === settledTurn.sessionId)
+          if (own?.cancelled === true) this.#persistSession(own)
+        }
         if (this.#cancelGrace?.turn === settledTurn) {
           // 只要 prompt 有应答（不论 stopReason），agent 就已经结束本轮；白名单
           // 只会把未验证的 stopReason 当成“没应答”而多回收一次进程。
@@ -1553,11 +1578,19 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         const cancelled = info?.aborted === true && turn.promptStarted
         if (cancelled) {
           const own = [...this.#sessions.values()].find((item) => item.sessionId === turn.sessionId)
-          if (own) own.cancelled = true
+          if (own) {
+            own.cancelled = true
+            if (turn.promptSettled) this.#persistSession(own)
+          }
         }
         if (info?.clean !== true) {
-          this.#bridge.invalidateRound(reason, key)
-          if (!cancelled) this.#dropSessionsForLink(link, '回合异常终止')
+          if (cancelled) {
+            // 用户取消保留会话与 MCP 作用域（与 agy 行为一致）：只结算挂起调用，不轮换 token。
+            this.#bridge.resetPending(reason)
+          } else {
+            this.#bridge.invalidateRound(reason, key)
+            this.#dropSessionsForLink(link, '回合异常终止')
+          }
         }
         if (info?.clean === true) {
           // prompt 已正常应答的干净失败（refusal / 空回复等）：agent 状态自洽，
@@ -1610,7 +1643,10 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       // system 已经通过 session/new 的 meta 交给 agent 时，prompt 里不再重复包装。
       const systemBlock = this.#systemViaMeta.has(sessionId) ? undefined : options.system
       content = reused
-        ? await buildPromptDeltaWithImages(incrementalMessages(options.messages, reused.sentCount), this.#imageOptions(options.signal))
+        ? await buildPromptDeltaWithImages(
+            incrementalMessages(options.messages, reused.sentCount, { skipToolResults: reused.cancelled === true }),
+            this.#imageOptions(options.signal),
+          )
         : await buildPromptWithImages(systemBlock, options.messages, tools, this.#imageOptions(options.signal))
     } catch (error) {
       // prompt 还没发出去就失败（图片不可用 / 被取消 / 内容不支持）：刚建立的
@@ -1655,7 +1691,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         if (chunk.type === 'block-end') emitted.push(structuredClone(chunk.block))
         if (chunk.type === 'finish') {
           finish = chunk.reason.kind
-          if (record) this.#advanceSession(record, options, emitted, turn.promptSettled)
+          if (record) this.#advanceSession(record, options, emitted, turn.promptSettled, chunk.reason.kind === 'aborted')
         }
         if (chunks === 0) this.#log?.info(`antigravity-acp: 回合首块到达（type=${chunk.type}）`)
         if (chunk.type !== 'finish') this.#lifecycle?.firstOutput(chunk.type === 'block-end' && chunk.block.type === 'tool-call')
@@ -1722,7 +1758,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         if (chunk.type === 'finish') {
           const key = reusableSessionKey(options)
           const record = key === undefined ? undefined : this.#sessions.get(key)
-          if (record?.sessionId === turn.sessionId) this.#advanceSession(record, options, emitted, turn.promptSettled)
+          if (record?.sessionId === turn.sessionId) this.#advanceSession(record, options, emitted, turn.promptSettled, chunk.reason.kind === 'aborted')
         }
         if (chunk.type !== 'finish') this.#lifecycle?.firstOutput(chunk.type === 'block-end' && chunk.block.type === 'tool-call')
         else this.#lifecycle?.finish(chunk.reason.kind)
@@ -1730,8 +1766,11 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       }
     } finally {
       // 续轮带来的 assistant/tool 消息已经在 ACP 会话里体现过：成功时推进游标，
-      // 让下一次用户轮只发送真正的新消息；回合被终止则作废该会话。
-      if (turn.terminated) this.#dropSessionsForTurn(turn.sessionId, '续轮目标回合已终止')
+      // 让下一次用户轮只发送真正的新消息；仅非取消的异常终止才作废该会话。
+      const current = [...this.#sessions.values()].find((item) => item.sessionId === turn.sessionId)
+      if (turn.terminated && current?.cancelled !== true) {
+        this.#dropSessionsForTurn(turn.sessionId, '续轮目标回合已终止')
+      }
       this.#releaseTurnSubscriptionIfClosed(turn)
     }
   }

@@ -8,9 +8,11 @@ export function reusableSessionKey(options: Pick<GenerateOptions, 'sessionId' | 
   return `${options.sessionId}::chat`
 }
 
-/** assistant 只有通过 outputMatches 验证后才可跳过；其它角色都是要发的增量。 */
-export function shouldSendIncrement(message: RequestMessage): boolean {
-  return message.role !== 'assistant'
+/** assistant 只有通过 outputMatches 验证后才可跳过；中断后遗留的 tool 结果同样不重发。 */
+export function shouldSendIncrement(message: RequestMessage, skipToolResults = false): boolean {
+  if (message.role === 'assistant') return false
+  if (skipToolResults && message.role === 'tool') return false
+  return true
 }
 
 /**
@@ -23,7 +25,11 @@ export function shouldSendIncrement(message: RequestMessage): boolean {
  * 这样就不需要判断「这条是宿主注入还是用户输入」：注入块只要发过一次，之后
  * 同 id 的重复出现自然被跳过；没见过的 id 一律发送。
  */
-export function incrementalMessages(messages: readonly RequestMessage[], sentCount: number): RequestMessage[] {
+export function incrementalMessages(
+  messages: readonly RequestMessage[],
+  sentCount: number,
+  options?: { skipToolResults?: boolean },
+): RequestMessage[] {
   const seen = new Set<string>()
   for (const message of messages.slice(0, sentCount)) {
     const id = messageId(message)
@@ -32,7 +38,7 @@ export function incrementalMessages(messages: readonly RequestMessage[], sentCou
   const result: RequestMessage[] = []
   for (const [index, message] of messages.entries()) {
     if (index < sentCount) continue
-    if (!shouldSendIncrement(message)) continue
+    if (!shouldSendIncrement(message, options?.skipToolResults === true)) continue
     const id = messageId(message)
     // 没有 id 的消息无法证明已发送，保守重发。
     if (id !== '' && seen.has(id)) continue
