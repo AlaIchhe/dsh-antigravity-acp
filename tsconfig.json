@@ -14,5 +14,5 @@
     "noEmit": true
   },
   "include": ["src", "tests", "vitest.config.ts"],
-  "exclude": ["src/client.js"]
+  "exclude": ["src/client"]
 }

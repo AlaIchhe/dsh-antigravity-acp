@@ -11,7 +11,7 @@
  * （生产路径经宿主注入的 ctx.subprocess，测试路径注入 fake 双向流）。
  */
 import { readFileSync } from 'node:fs'
-import { dirname, delimiter } from 'node:path'
+import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Writable, Readable } from 'node:stream'
 import { PROTOCOL_VERSION, ndJsonStream } from '@agentclientprotocol/sdk'
@@ -43,9 +43,8 @@ import type {
   Stream,
 } from '@agentclientprotocol/sdk'
 import type { SubprocessHandle, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { ambientProxyEnv, buildProxyEnv } from '../runtime/proxy-env.js'
-import type { ProxySettings } from '../runtime/proxy-env.js'
-import { isolatedHomeEnv } from '../runtime/isolated-home.js'
+import type { ProxySettings } from '../runtime/proxy.js'
+import { buildSubprocessEnv } from '../runtime/process-env.js'
 
 /** 本包原创协议层错误码（AGY_* 前缀命名体系）。 */
 export const AGY_LINK_ERROR = {
@@ -134,16 +133,29 @@ export interface AgentLinkOptions {
   closeTimeoutMs?: number
 }
 
+/** 在途请求的活跃超时控制器：用于长耗时流式 RPC（如 session/prompt）按进展续期与等待工具期间暂停。 */
+export interface RequestTimerControl {
+  /** 收到对端进展时重置超时计时（暂停期间无操作）。 */
+  touch(): void
+  /** 等待宿主执行工具期间暂停超时计时。 */
+  pause(): void
+  /** 工具结果回喂对端后恢复超时计时并从头起算。 */
+  resume(): void
+}
+
 export interface AgentLinkRequestOptions {
   timeoutMs?: number
   signal?: AbortSignal
+  /** 请求登记后立即同步回调，提供活跃续期/暂停控制器。 */
+  onTimerControl?: (control: RequestTimerControl) => void
 }
 
 interface PendingEntry {
   resolve: (value: unknown) => void
   reject: (error: unknown) => void
-  timer: ReturnType<typeof setTimeout>
+  timer: ReturnType<typeof setTimeout> | undefined
   method: string
+  paused: boolean
 }
 
 /** 官方 personal OAuth 认证方法 id（ACP v1 规范约定的固定值）。 */
@@ -413,15 +425,51 @@ export class AgentLink {
     }
     const id: JsonRpcId = this.#nextId++
     const timeoutMs = options.timeoutMs ?? this.#requestTimeoutMs
+    let timerControl: RequestTimerControl | undefined
     const pending = new Promise<Response>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const onTimeout = (): void => {
+        const current = this.#pending.get(id)
+        if (!current) return
+        current.timer = undefined
         this.#pending.delete(id)
         // 协作式取消：JSON-RPC 标准的 $/cancel_request 通知（尽力而为）。
         void this.#write({ jsonrpc: '2.0', method: '$/cancel_request', params: { requestId: id } }).catch(() => undefined)
         reject(new AgentLinkError(AGY_LINK_ERROR.REQUEST_TIMEOUT, `ACP 请求超时（${timeoutMs}ms）: ${method}`))
-      }, timeoutMs)
-      this.#pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer, method })
+      }
+      const entry: PendingEntry = {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+        timer: setTimeout(onTimeout, timeoutMs),
+        method,
+        paused: false,
+      }
+      this.#pending.set(id, entry)
+      const arm = (): void => {
+        if (!this.#pending.has(id)) return
+        if (entry.timer !== undefined) clearTimeout(entry.timer)
+        entry.timer = setTimeout(onTimeout, timeoutMs)
+      }
+      timerControl = {
+        touch: () => {
+          if (entry.paused || !this.#pending.has(id)) return
+          arm()
+        },
+        pause: () => {
+          if (!this.#pending.has(id)) return
+          entry.paused = true
+          if (entry.timer !== undefined) {
+            clearTimeout(entry.timer)
+            entry.timer = undefined
+          }
+        },
+        resume: () => {
+          if (!this.#pending.has(id)) return
+          entry.paused = false
+          arm()
+        },
+      }
     })
+    if (timerControl) options.onTimerControl?.(timerControl)
     // 写失败路径不会 await 这个 promise：先挂一个 no-op 处理器，保证任何时序下
     // 它的 rejection 都不会变成 unhandledRejection（那会终止宿主进程）。
     // 正常路径仍用 `await pending` 取到同一 rejection，语义不变。
@@ -710,58 +758,15 @@ export function agentStreamFromSubprocess(handle: SubprocessHandle): Stream {
   return ndJsonStream(stdinWeb, stdoutWeb)
 }
 
-/**
- * PyInstaller 冻结的官方 exe 需要可写 TEMP。DSH subprocess 会 scrub 父环境，
- * 只显式传入的键会保留；若不转发 TMP/TEMP，bootloader 报
- * `[PYI-…:ERROR] Could not create temporary directory!` 后立刻退出。
- */
+/** 委托统一子进程环境构造（供 ACP server 使用）。 */
 export function officialAgentEnv(options: {
   binaryDir: string
   tmpDir: string
-  /** 出网代理；留空则不注入任何代理变量（官方进程直连）。 */
   proxy?: ProxySettings | undefined
-  /** 隔离账号的 HOME；省略时沿用宿主真实 HOME（系统账号）。 */
   homeDir?: string
   parent?: NodeJS.ProcessEnv
 }): NodeJS.ProcessEnv {
-  const parent = options.parent ?? process.env
-  const pathPrefix = `${options.binaryDir}${delimiter}`
-  const parentPath = parent.PATH ?? ''
-  const env: NodeJS.ProcessEnv = {
-    PATH: parentPath.startsWith(pathPrefix) ? parentPath : `${pathPrefix}${parentPath}`,
-    TEMP: options.tmpDir,
-    TMP: options.tmpDir,
-    TMPDIR: options.tmpDir,
-  }
-  const forward = [
-    'USERPROFILE',
-    'HOME',
-    'HOMEDRIVE',
-    'HOMEPATH',
-    'LOCALAPPDATA',
-    'APPDATA',
-    'USERNAME',
-    'USERDOMAIN',
-    'SystemRoot',
-    'SYSTEMROOT',
-    'windir',
-    'WINDIR',
-    'ComSpec',
-    'COMSPEC',
-    'PATHEXT',
-    'SystemDrive',
-  ] as const
-  for (const key of forward) {
-    const value = parent[key]
-    if (value) env[key] = value
-  }
-  if (!env.SystemRoot && process.platform === 'win32') env.SystemRoot = 'C:\\Windows'
-  // 账号隔离必须覆盖上面转发的 HOME / USERPROFILE 等键；顺序不能反。
-  if (options.homeDir) Object.assign(env, isolatedHomeEnv(options.homeDir))
-  // 代理放在最后合并：用户配置优先；未配置时转发宿主自身的代理环境，避免出现
-  // 「宿主走代理、官方进程直连」的分裂路由（本机直连 Google 不通）。
-  Object.assign(env, options.proxy ? buildProxyEnv(options.proxy) : ambientProxyEnv(parent))
-  return env
+  return buildSubprocessEnv(options)
 }
 
 /** 经 ctx.subprocess 启动官方 ACP server（本文件不触碰 child_process）。 */

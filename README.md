@@ -2,58 +2,50 @@
 
 [![Publish package](https://github.com/AlaIchhe/dsh-antigravity-acp/actions/workflows/publish.yml/badge.svg)](https://github.com/AlaIchhe/dsh-antigravity-acp/actions/workflows/publish.yml)
 
-在 [DeepSeek Harness](https://github.com/deepseek-ai/dsh) 里接入 Google 官方 **Antigravity ACP agent**：
-用 DSH 的界面选模型、发任务，工具调用仍由 DSH 审批和执行。
+在 [DeepSeek Harness](https://github.com/deepseek-ai/dsh) 里接入 Google 官方 **Antigravity ACP agent**（v1.0）：
+用 DSH 的界面选模型、调思考强度、管理多账号与额度，工具调用仍经私有 loopback MCP 桥回到 DSH 审批和执行。
 
 > 基于 [KouzakiUmi/dsh-antigravity-acp](https://github.com/KouzakiUmi/dsh-antigravity-acp)（MIT）的独立分支，
 > 2026-11-17 起由 `AlaIchhe` 维护。上游原文见 [README.upstream.md](./README.upstream.md)；
 > 原作者如认为本分支不妥，提 [issue](https://github.com/AlaIchhe/dsh-antigravity-acp/issues) 即可，我会归档该仓库。
 
-## 功能
+## 核心能力（v1.0）
 
-- **官方 agent，不是转发 API**：走 ACP 协议驱动官方 `agy` 二进制，账号、额度、模型目录都来自官方
-- **工具留在 DSH**：agent 的工具调用经私有 MCP 桥回到 DSH，由 DSH 校验、审批、执行
-- **模型选择器直连**：Gemini 4 Argon / Hydrogen、Claude Opus 5.5、Sonnet 5.5 等家族一行；思考强度由 agent 声明，在 DSH 的思考强度菜单里选后写入官方 `thought_level`
-- **多账号**：设置页里直接浏览器登录多个 Antigravity 账号，各自隔离 HOME；一键切换当前账号，额度按账号查看
-- **额度可见**：按额度组显示窗口、剩余百分比与重置时间
+- **按账号共享常驻 ACP 进程（方案 A）**：同一账号下的多个并发对话共享一条官方 ACP stdio 进程，按 `sessionId` 多路复用；切换账号或重新登录后自动回收旧进程。
+- **真正并发的私有 MCP 桥**：每个 DSH 对话拥有独立 Bearer token、工具目录、挂起队列与监听器；工具执行、审批与沙箱完全留在 DSH。
+- **原生模型目录与思考强度**：观测 ACP 1.5+ `category === 'model'` 与 `thought_level`（并集只读 `agy models` 家族清单）；设置页通过 `hiddenModels` 控制选择器显示/隐藏。
+- **跨进程会话恢复与活跃续期**：映射持久化在 `sessions.json`（v3），重启后通过 `session/resume` 接回；`promptTimeoutMs` 按无活动超时计时，长任务多步工具循环不会被误杀。
+- **多账号与实时额度**：支持系统账号（只读导入本机 CLI 登录态）与浏览器 OAuth 隔离账号（含无头主机手动粘贴回调）；套餐额度默认走 Cloud Code Assist HTTP，开启 `cliQuotaEnabled` 后切至 `agy -p /usage` 与 `/credits`。
+- **类型安全的 RPC 与 TSX 客户端**：Host 与 Client 共享 `src/shared/rpc-contract.ts` 定义的 `remote.antigravity` 9 方法强类型契约，客户端经 rolldown 打包至 `dist/client.js`（零 `node:*` 依赖）。
 
 ## 安装
 
 ```bash
 # 从 GitHub 安装
 dsh plugin --profile <profile> add github:AlaIchhe/dsh-antigravity-acp
-# 或从 npm 安装（包名与上游不同，见 docs/reference.md）
+# 或从 npm 安装
 dsh plugin --profile <profile> add dsh-bundle-antigravity-acp
 ```
 
-安装后重载 DSH 服务，在「设置 → Antigravity ACP」里点 **连接 / 登录 ACP** 完成授权。
+安装后重载 DSH 服务，在「设置 → Antigravity ACP」里完成账号登录或使用本机 CLI 登录态即可开始对话。
 
 ## 使用
 
-1. **登录**：设置页 →「账号」→「添加账号」，在浏览器里完成 Google 授权即可；也可以直接使用本机官方 CLI 的登录态（系统账号）。多账号之间互不覆盖，点「使用此账号」切换当前账号。
-2. **选模型**：对话里打开模型选择器，选 `Antigravity (ACP)` 下的模型家族。
-3. **调强度**：思考强度由官方 agent 声明（例如 Hydrogen 多一档 Extra），在 DSH 的思考强度菜单里选即可；插件把选择写入官方 `thought_level` 配置项，不再靠模型 ID 后缀。
-4. **看额度**：每个账号卡片里点「拉取额度」，或直接看输入框旁的额度药丸（跟随当前账号）。
+1. **账号**：设置页 →「账号」→ 使用本机「主账号（系统登录）」或点击「新增账号登录」完成 Google 授权（无头主机可直接粘贴回调地址）。多账号各自隔离 HOME，一键切换。
+2. **模型**：在 DSH 模型选择器中选择 `Antigravity (ACP)` 下的模型家族；可在设置页「模型」标签里切换显示/隐藏。
+3. **思考强度**：在 DSH 的思考强度菜单中选择 agent 声明的档位（例如 Hydrogen 的 `xhigh`），写入官方 `thought_level` 配置项。
+4. **额度**：账号卡片自动展示各模型组剩余额度与倒计时；对话输入框旁的额度药丸跟随当前账号与当前模型。
 
-配置项、边界与排障见 [docs/reference.md](docs/reference.md) 与 [docs/configuration.md](docs/configuration.md)。
+详细技术边界、配置项与排障见 [docs/reference.md](docs/reference.md)、[docs/configuration.md](docs/configuration.md)、[docs/development.md](docs/development.md) 与 [docs/changelog.md](docs/changelog.md)。
 
-## 本分支的改动
-
-只修了两处上游行为问题，其余与上游一致：
-
-| 问题 | 处理 |
-|---|---|
-| 官方 1.5.x 给 Hydrogen 加了 `-xhigh` 档，上游正则不认，被折叠成独立家族 | 识别 `xhigh` 用于折叠旧目录；档位改由 agent 的 `thought_level` 选项声明后，`xhigh` 按 agent 的真实选项进入菜单 |
-| 上下文占用锚点缺失，投影只增不减，一直显示 100% | 用 `usage_update.used` 作为回合用量样本兜底 |
-
-详见 [CHANGELOG](docs/changelog.md)。
-
-## 开发
+## 开发与验证
 
 ```bash
 npm ci
-npx tsc --noEmit     # 类型检查
-npx vitest run       # 47 个文件 / 846 项测试
+npm run typecheck   # 宿主 + 客户端双 tsconfig 类型检查
+npm run build       # 构建 dist/ 与 dist/client.js（rolldown）
+npm test            # 离线单元测试与回归套件（vitest）
+npm run check       # 顺序执行 typecheck → build → test
 ```
 
 ## 许可

@@ -4,6 +4,29 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.0.0-rc.1 · 2026-11-26（预发版：方案 A 全量破坏性重构 + 活跃续期超时）
+
+### 破坏性变更
+
+- **进程模型改为方案 A（按账号共享常驻 ACP 进程）**：移除 `ConversationWorkers` 进程池与 `SessionMapStore` 的 `symbol` 跨 worker 所有权机制，改为单一 `AcpRuntimeManager`（按 `(accountId, revision)` 管理共享进程）+ 多作用域真正并发的 `McpToolBridge`（每个对话独立 Bearer token、`pending` 队列与 `onParked` 监听器）+ `AntigravityAcpAdapter` 按 `sessionId` 精准多路复用。
+- **配置面破坏性精简（`src/settings.ts`）**：移除 `proxyBypass` 与 `modelOverrides`（`enabled/name/target`）；模型显示控制简化为 `hiddenModels: string[]`；修正 `cliQuotaEnabled` 文案与实现一致（开启后仅走 `agy` CLI，找不到 CLI 时明确报错不回落 HTTP）。
+- **RPC 契约统一重命名（`src/shared/rpc-contract.ts`）**：`remote.agyQuota` 拆分为强类型、领域清晰的 `remote.antigravity`（`readQuota` / `listModels` / `listAccounts` / `startAccountLogin` / `submitAccountCallback` / `cancelAccountLogin` / `activateAccount` / `removeAccount` / `installCli`），Host 与 Client 共用同一份严格 codec；删除废弃的 `SettingsControl`（`warmup` / ACP 交互式 `login`）及死 `stale / staleReason` 分支。
+- **不再兼容无 `thought_level` 的旧版 agent（< ACP 1.5）与 `server-default` 占位 ID**；缓存格式升级至 v3（`sessions.json` 与 `catalog.json`）。
+
+### 核心重构与缺陷修复
+
+- **拆解 2,273 行 `AntigravityAcpAdapter` 上帝类** 为 8 个职责单一的模块（`src/session/{adapter,catalog-store,model-router,session-coordinator,session-reuse,session-store,transcript,turn-runner,usage-accounting,permission,tool-args}.ts`），`src/index.ts` 从 813 行精简至 ~215 行纯装配根。
+- **统一凭据与认证域（`src/auth/`）**：抽离 `oauth-client.ts` / `token-store.ts` / `code-assist.ts`，斩断 `credentials → quota` 反向依赖，移除扫描 200MB 二进制正则抠 OAuth client 的历史代码（统一使用 `@cortexkit/antigravity-auth-core` 或环境变量覆盖）。
+- **统一原子写与子进程环境**：抽离 `src/storage/atomic-json.ts`（取代 4 份重复实现）、`src/runtime/process-env.ts`（合并 `isolatedHomeEnv` / `officialAgentEnv` / `cliEnv`）、`src/runtime/proxy.ts` 与 `src/runtime/abort.ts`；清理 `src/runtime/binary.ts` 中所有自动下载死导入与过期代码。
+- **重写 Web Client（TSX + rolldown 打包）**：将 1,048 行无类型手写 `src/client.js` 重写为模块化 TypeScript + JSX（`src/client/*.tsx` + `src/shared/*.ts`），由 `scripts/build-client.mjs` 打包输出 `dist/client.js` 并校验零 `node:*` 依赖。
+- **活跃续期超时（`AgentLink` + `PromptTurn`）**：将 `promptTimeoutMs` 从「整轮固定墙钟上限」改为**无活动超时**——每次收到 `session/update`、权限询问或 MCP 工具调用自动续期，并在等待宿主执行工具期间暂停计时，彻底解决超过 30 分钟的长任务多步工具循环被误杀的问题。
+- **方案 A 故障隔离与取消续聊闭环**：单条会话异常终止时若共享链路上仍有其它并发对话运行中，仅 `session/close` 故障会话而不误杀共享进程；修复取消宽限期定时器管理，以及取消/干净失败（如 `AGY_UPSTREAM_ERROR_NOTICE`）后 `SessionCoordinator` 保留并落盘 `cancelled: true` 以便直接续聊。
+- **修复现役与客户端细节缺陷**：
+  1. 修复 `readSessionMap` 漏读 `routeVersion` 导致进程重启后所有会话映射被判陈旧并丢弃重开的 Bug；
+  2. 修复 `ContinuationState` 仍将 `tools` 纳入指纹导致回合中途动态解锁工具（如 `bcdp_*`）打断工具续轮的 Bug；
+  3. 统一内存复用与磁盘恢复的校验逻辑（`SessionCoordinator.evaluateRecordContinuity`），明确区分 `reuse / resume / reset-fresh / unrecoverable`，消除“注释宣称不重放但实际回落重放”的语义分裂；
+  4. 修复设置页 `SettingsCard` 闭包持有旧 `baseline`、`AgYQuotaPill` 切模时优先读旧 `requestedModel`、以及手动提交回调完成后未清空输入并刷新额度药丸的细节问题。
+
 ## 0.5.7 · 2026-11-26
 
 - **修复：宿主中途新增工具会让已有 ACP 会话整轮报废（`AGY_SESSION_UNRECOVERABLE`）**。2026-11-26 真机（`session-a1c4ea7a`，模型 `gemini-4-carbon`）：另一个会话调了两次 `bcdp_*`，`dsh-browser-cdp` 的 lazy 注入把 28 个工具注册进**进程全局**工具面，本会话第 2 步的路由指纹随之变化，直接判「工具目录已变化」并报废对话。根因是工具被塞进了路由指纹，而 ACP 的语义里工具面在 `session/new` 就固定了：签名只在第一轮 prompt 里发一次、复用轮只发增量，宿主后来加的工具这个 agent 根本调不到。现在 `routeFingerprint` 只覆盖 provider / 模型 / 思考强度 / 官方映射 / system，工具目录改用 `toolsDigest` **只做诊断**（复用轮变化时记一条日志，说明新工具从下一个新会话开始可用）。

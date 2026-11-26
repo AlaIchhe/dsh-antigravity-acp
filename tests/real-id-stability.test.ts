@@ -17,7 +17,7 @@ import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { createAssistantMessage, createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, RequestMessage, ToolCallBlock } from '@deepseek-ai/dsh-llm'
-import { messageValue, stable } from '../src/adapter/continuation-state.js'
+import { messageValue, stableJson as stable } from '../src/session/session-reuse.js'
 
 const ENABLED = process.env.AGY_REAL_ACP === '1'
 

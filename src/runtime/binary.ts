@@ -1,42 +1,23 @@
 /**
- * 官方 Antigravity ACP server 二进制的解析与获取。
+ * 官方 Antigravity ACP server 二进制定位与临时运行目录管理（v1.0 精简版）。
  *
- * 解析顺序：config.binaryPath → 环境变量 AGY_ACP_BIN → 缓存目录中已下载
- * 版本 → 自动下载到缓存。所有副作用集中在文件底部的过程函数；纯函数
- * （URL 拼接、URL 校验、zip 条目校验、可执行文件挑选、缓存路径）单独导出，
- * 便于单元测试。
+ * 解析顺序：config.binaryPath → 环境变量 AGY_ACP_BIN → 缓存目录中已安装的对应版本。
+ * 不执行自动下载，找不到直接报 AGY_BINARY_MISSING。
  */
-import { createWriteStream } from 'node:fs'
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { access, chmod, mkdir, readdir, rm } from 'node:fs/promises'
 import { homedir as osHomedir, tmpdir } from 'node:os'
-import { dirname, join, normalize, resolve, sep, win32 } from 'node:path'
-import { Readable, Transform } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
+import { join, resolve } from 'node:path'
 
-/** 默认下载的官方 server 版本（可经 config.acpVersion 配置）。 */
 export const DEFAULT_ACP_SERVER_VERSION = '1.4.0'
-/** 数据缓存（模型清单等**非可执行**产物）在 DSH home 下的相对位置。 */
 export const CACHE_SUBPATH = ['cache', 'antigravity-acp'] as const
-/** 可执行文件安装根目录的目录名。 */
 export const INSTALL_DIR_NAME = 'dsh-antigravity-host'
-/** 覆盖可执行文件安装根目录的环境变量名。 */
 export const INSTALL_ROOT_ENV = 'AGY_ACP_HOME'
 
-/**
- * 本包原创错误码体系（AGY_*）。与协议层的 AGY_LAUNCH_FAILED 等共用前缀，
- * 便于在日志中区分归属。
- */
 export const AGY_BINARY_ERROR = {
-  /** 配置值不合法（当前用于 acpVersion 格式校验）。 */
-  BLOCKED_URL: 'AGY_DOWNLOAD_BLOCKED',
-  /** 解压目录里找不到可执行文件等结构异常。 */
+  INVALID_VERSION: 'AGY_INVALID_VERSION',
   ARCHIVE_LAYOUT: 'AGY_ARCHIVE_LAYOUT',
-  /** 所有解析顺序都未找到二进制且未启用自动下载。 */
   BINARY_MISSING: 'AGY_BINARY_MISSING',
-  /** 当前平台/架构无法映射出已知的下载坐标。 */
   PLATFORM_UNSUPPORTED: 'AGY_PLATFORM_UNSUPPORTED',
-  /** 可执行文件落在 Low 强制完整性目录：进程会被降权，官方 server 必然挂死。 */
   LOW_INTEGRITY: 'AGY_BINARY_LOW_INTEGRITY',
 } as const
 
@@ -53,12 +34,8 @@ export class AgyBinaryError extends Error {
 
 export type AcpPlatform = 'windows' | 'darwin' | 'linux'
 export type AcpArch = 'x86_64' | 'aarch64'
-/** posix = darwin / linux（可执行文件挑选规则一致）。 */
 export type ExecutableFlavor = 'windows' | 'posix'
 
-/** 发行布局取自官方 ACP registry 的 antigravity-acp/agent.json（1.4.1）。
- * 默认版本仍是 1.4.0；该表描述命名与入口，不宣称旧版所有平台均已实机验证。
- */
 export const ACP_DISTRIBUTIONS = {
   windows: { directory: 'windows', executable: 'agy_acp_server.exe', defaultArgs: [] },
   darwin: { directory: 'macos', executable: 'agy_acp_server.par', defaultArgs: [] },
@@ -69,16 +46,68 @@ export function defaultAgentArgs(platform: NodeJS.Platform = process.platform): 
   return platform === 'linux' ? [...ACP_DISTRIBUTIONS.linux.defaultArgs] : []
 }
 
+export function mapNodePlatform(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): { platform: AcpPlatform; arch: AcpArch } {
+  const mappedPlatform: AcpPlatform | undefined =
+    platform === 'win32' ? 'windows' : platform === 'darwin' ? 'darwin' : platform === 'linux' ? 'linux' : undefined
+  const mappedArch: AcpArch | undefined =
+    arch === 'x64' ? 'x86_64' : arch === 'arm64' ? 'aarch64' : undefined
+  if (!mappedPlatform || !mappedArch) {
+    throw new AgyBinaryError(
+      AGY_BINARY_ERROR.PLATFORM_UNSUPPORTED,
+      `当前平台/架构不受支持（platform=${platform}, arch=${arch}）`,
+    )
+  }
+  return { platform: mappedPlatform, arch: mappedArch }
+}
 
+/** 校验版本字符串，防止路径穿越。 */
+export function assertValidVersion(version: string): string {
+  const trimmed = version.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(trimmed) || trimmed.includes('..')) {
+    throw new AgyBinaryError(AGY_BINARY_ERROR.INVALID_VERSION, `acpVersion 格式不合法: ${version}`)
+  }
+  return trimmed
+}
 
-
-
+/** 数据缓存目录（模型目录缓存、会话映射等非可执行文件）。 */
+export function resolveCacheDir(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  home: string = osHomedir(),
+): string {
+  const dshHome = env.DSH_HOME?.trim() || join(home, '.dsh')
+  return join(dshHome, ...CACHE_SUBPATH)
+}
 
 /**
- * 从已校验的相对条目列表里挑出 ACP server 可执行文件。
- * 优先只接受官方入口名，兼容旧版 hyphen 拼写。挑选必须确定性：取路径深度最小、
- * 同深度取字典序最小。找不到抛 AGY_ARCHIVE_LAYOUT。
+ * 可执行文件安装根目录（刻意避开 Windows 上带 Low 完整性标签的 `$DSH_HOME`）。
  */
+export function resolveInstallRoot(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home: string = osHomedir(),
+): string {
+  const override = env[INSTALL_ROOT_ENV]?.trim()
+  if (override) return resolve(override)
+  if (platform === 'win32') {
+    const localAppData = env.LOCALAPPDATA?.trim() || join(home, 'AppData', 'Local')
+    return join(localAppData, INSTALL_DIR_NAME)
+  }
+  if (platform === 'darwin') {
+    return join(home, 'Library', 'Application Support', INSTALL_DIR_NAME)
+  }
+  const xdgData = env.XDG_DATA_HOME?.trim() || join(home, '.local', 'share')
+  return join(xdgData, INSTALL_DIR_NAME)
+}
+
+export function versionCachePaths(installRoot: string, version: string): { versionDir: string; extractDir: string } {
+  const safeVersion = assertValidVersion(version)
+  const versionDir = join(installRoot, safeVersion)
+  return { versionDir, extractDir: join(versionDir, `extract-${safeVersion}`) }
+}
+
 export function pickExecutablePath(entries: readonly string[], flavor: ExecutableFlavor): string {
   const candidates = entries.filter((entry) => {
     if (entry.endsWith('/')) return false
@@ -89,183 +118,40 @@ export function pickExecutablePath(entries: readonly string[], flavor: Executabl
   if (candidates.length === 0) {
     throw new AgyBinaryError(
       AGY_BINARY_ERROR.ARCHIVE_LAYOUT,
-      `zip 内未找到 ACP server 可执行文件（flavor=${flavor}，条目数=${entries.length}）`,
+      `目录内未找到 ACP server 可执行文件（flavor=${flavor}，条目数=${entries.length}）`,
     )
   }
   const depth = (entry: string): number => entry.split('/').length
-  return candidates
-    .slice()
-    .sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : a > b ? 1 : 0))
-    .at(0)!
+  return candidates.slice().sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : a > b ? 1 : 0))[0]!
 }
 
-/** 解压目标子目录名（限定在版本缓存目录内）。 */
-export function extractDirName(version: string): string {
-  return `extract-${version}`
+export interface RuntimeDirectory {
+  root: string
+  tmpDir: string
 }
 
-/**
- * 解析缓存根目录（**只放数据，不放可执行文件**）。优先 $DSH_HOME（宿主注入的
- * 环境变量）；缺失时回退到用户 home 下的 `.dsh`（与 DSH 默认 home 布局一致，
- * 注释性回退而非承诺）；两者都不可用则退到系统临时目录，保证本插件在无
- * DSH_HOME 的开发环境也能运行。
- *
- * 注意：目录树可能带 Low 强制完整性标签，因此**可执行文件绝不能装在这里**，
- * 见 {@link resolveInstallRoot}。
- */
-export function resolveCacheDir(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  homedir: () => string = osHomedir,
-): string {
-  const dshHome = env.DSH_HOME
-  if (dshHome && dshHome.trim().length > 0) {
-    return join(dshHome, ...CACHE_SUBPATH)
-  }
-  try {
-    return join(homedir(), '.dsh', ...CACHE_SUBPATH)
-  } catch {
-    return join(tmpdir(), 'dsh-antigravity-cache')
-  }
+export async function createRuntimeDirectory(baseDir = tmpdir()): Promise<RuntimeDirectory> {
+  const root = join(baseDir, `agy-acp-run-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  const tmpDir = join(root, 'tmp')
+  await mkdir(tmpDir, { recursive: true, mode: 0o700 })
+  return { root, tmpDir }
 }
 
-/**
- * 解析**可执行文件**安装根目录——刻意不放在 `$DSH_HOME` 之下。
- *
- * ## 为什么必须离开 DSH home
- *
- * DSH 把 `$DSH_HOME`（默认 `~/.dsh`）整棵树显式标成 **Low 强制完整性**
- * （`icacls` 可见 `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`，属沙箱地基），
- * 新建文件一律继承该标签；而 Windows 在创建进程时**会采用映像文件的强制完整性
- * 标签**。于是装在 `~/.dsh` 下的官方 exe 只能以 LOW 运行，受 MIC「禁止向上写」
- * 约束，写不进中等完整性的 `~/.gemini/antigravity-acp/`——官方 server 保存凭据用的
- * `tempfile.NamedTemporaryFile` 会因此在 `PermissionError` 上无限重试，
- * `session/new` 永不返回（2026-10-16 实测定位，详见 `integrity.ts`）。
- *
- * 因此安装根默认取用户级应用数据目录（Windows: `%LOCALAPPDATA%`；
- * POSIX: `$XDG_CACHE_HOME` 或 `~/.cache`），它们不在 Low 标签树内。
- * 可用 `AGY_ACP_HOME` 或配置项 `binaryPath` 覆盖。
- */
-export function resolveInstallRoot(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  platform: NodeJS.Platform = process.platform,
-  homedir: () => string = osHomedir,
-): string {
-  const override = env[INSTALL_ROOT_ENV]
-  if (override && override.trim().length > 0) return override.trim()
-  if (platform === 'win32') {
-    const localAppData = env.LOCALAPPDATA?.trim()
-    if (localAppData) return win32.join(localAppData, INSTALL_DIR_NAME)
-    const profile = env.USERPROFILE?.trim()
-    if (profile) return win32.join(profile, 'AppData', 'Local', INSTALL_DIR_NAME)
-    return win32.join(tmpdir(), INSTALL_DIR_NAME)
-  }
-  const xdgCache = env.XDG_CACHE_HOME?.trim()
-  if (xdgCache) return join(xdgCache, INSTALL_DIR_NAME)
-  try {
-    return join(homedir(), '.cache', INSTALL_DIR_NAME)
-  } catch {
-    return join(tmpdir(), INSTALL_DIR_NAME)
-  }
-}
-
-/** 版本缓存目录与其解压子目录。 */
-export function versionCachePaths(cacheDir: string, version: string): { versionDir: string; extractDir: string } {
-  if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new AgyBinaryError(AGY_BINARY_ERROR.BLOCKED_URL, 'ACP 版本号格式无效')
-  }
-  const versionDir = join(cacheDir, version)
-  return { versionDir, extractDir: join(versionDir, extractDirName(version)) }
-}
-
-/** 运行代码与可执行文件同属用户级安装根，禁止放回 Low 标签的数据缓存树。 */
-export function resolveRuntimeRoot(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  platform: NodeJS.Platform = process.platform,
-  homedir: () => string = osHomedir,
-): string {
-  return join(resolveInstallRoot(env, platform, homedir), 'runtime')
-}
-
-/** 一次启动独占的临时目录：只用于给官方进程一个可写 TEMP。 */
-export interface RuntimeDirectory { path: string }
-
-/**
- * 创建一次启动独占的临时目录。
- *
- * 不再写 owner 文件、不再做 pid 存活探测：进程生命周期交给 `ctx.subprocess`
- * 的 `terminate()` / `waitForExit()`（provider 证明整个进程范围静默），这里
- * 只负责给 PyInstaller 一个可写 TEMP，退出后由调用方删除。
- */
-export async function createRuntimeDirectory(options: { root?: string } = {}): Promise<RuntimeDirectory> {
-  const requestedRoot = resolve(options.root ?? resolveRuntimeRoot())
-  await mkdir(requestedRoot, { recursive: true, mode: 0o700 })
-  return { path: await mkdtemp(join(requestedRoot, 'instance-')) }
-}
-
-/** 删除本次启动的临时目录；调用方应已通过 waitForExit 确认进程退出。 */
 export async function releaseRuntimeDirectory(directory: RuntimeDirectory): Promise<void> {
-  await rm(directory.path, { recursive: true, force: true, maxRetries: 2 })
+  await rm(directory.root, { recursive: true, force: true })
 }
-
-export function mapNodePlatform(platform: NodeJS.Platform, arch: string): { platform: AcpPlatform; arch: AcpArch } {
-  const mappedPlatform: AcpPlatform | undefined =
-    platform === 'win32' ? 'windows' : platform === 'darwin' ? 'darwin' : platform === 'linux' ? 'linux' : undefined
-  const mappedArch: AcpArch | undefined = arch === 'x64' ? 'x86_64' : arch === 'arm64' ? 'aarch64' : undefined
-  if (!mappedPlatform || !mappedArch) {
-    throw new AgyBinaryError(
-      AGY_BINARY_ERROR.PLATFORM_UNSUPPORTED,
-      `未知平台组合 ${platform}/${arch}；请用 binaryPath 或 AGY_ACP_BIN 手动指定二进制`,
-    )
-  }
-  return { platform: mappedPlatform, arch: mappedArch }
-}
-
-/** posix 解压产物补执行位。 */
-export async function ensureExecutable(file: string, flavor: ExecutableFlavor): Promise<void> {
-  if (flavor === 'posix') {
-    await chmod(file, 0o755)
-  } else {
-    // windows 无需额外操作；存在性检查交给调用方。
-    await access(file)
-  }
-}
-
-/** 解压上限；默认取文件顶部常量，测试可注入小值验证守卫本身。 */
-export interface ExtractLimits {
-  maxEntries?: number
-  maxTotalBytes?: number
-  maxEntryBytes?: number
-}
-
 
 export interface AgentBinaryResolution {
-  /** 可直接交给 ctx.subprocess 的可执行文件路径。 */
   executablePath: string
-  /** 命中来源：手动配置 / 环境变量 / 缓存 / 自动下载。 */
-  source: 'config' | 'env' | 'cache' | 'download'
-  /** 下载缓存中的版本号（手动路径时为 undefined）。 */
+  source: 'config' | 'env' | 'cache'
   version?: string
-  /** 官方未提供校验和，这里永远如实为 false，不得伪造为 true。 */
-  checksumVerified: false
 }
 
-/** 可注入的 fetch 形状。 */
-export type FetchLike = (
-  url: string,
-  init?: RequestInit,
-) => Promise<Response>
-
 export interface AgentBinaryOptions {
-  /** 用户显式配置的二进制路径，最高优先级。 */
   binaryPath?: string
-  /** 目标版本（默认 1.4.0）。 */
   version?: string
-  fetchImpl?: FetchLike
-  signal?: AbortSignal
   env?: Readonly<Record<string, string | undefined>>
-  /** 安装根目录覆盖；默认 {@link resolveInstallRoot}（**不是** DSH home）。 */
   cacheDir?: string
-  /** 平台覆写供离线发行表测试；正常调用使用 process.platform/arch。 */
   platform?: NodeJS.Platform
   arch?: string
 }
@@ -281,7 +167,6 @@ async function fileExists(path: string): Promise<boolean> {
 
 async function findExtractedExecutable(extractDir: string, flavor: ExecutableFlavor): Promise<string | undefined> {
   if (!(await fileExists(extractDir))) return undefined
-  // 扫描解压目录（浅层递归足够：官方 zip 最多一层目录）。
   const walk = async (dir: string, prefix: string): Promise<string[]> => {
     const items = await readdir(dir, { withFileTypes: true })
     const files: string[] = []
@@ -294,53 +179,45 @@ async function findExtractedExecutable(extractDir: string, flavor: ExecutableFla
   }
   const entries = await walk(extractDir, '')
   try {
-    const relative = pickExecutablePath(entries, flavor)
-    return join(extractDir, relative)
+    return join(extractDir, pickExecutablePath(entries, flavor))
   } catch {
     return undefined
   }
 }
 
-/**
- * 完整解析顺序。下载阶段：先落 `<versionDir>/agy-acp-server.zip.tmp`，
- * 成功后原子重命名，失败清理临时残留；解压先在临时目录进行，全部成功
- * 后重命名进 extract 目录，保证缓存状态始终自洽。
- */
 export async function ensureAgentBinary(options: AgentBinaryOptions = {}): Promise<AgentBinaryResolution> {
   const env = options.env ?? process.env
   const version = options.version ?? DEFAULT_ACP_SERVER_VERSION
-  // 安装根目录取用户级应用数据目录，**不是** DSH home：后者带 Low 完整性标签，
-  // 会把进程降成 LOW 并导致 session/new 静默挂死（见 resolveInstallRoot 注释）。
-  const cacheDir = options.cacheDir ?? resolveInstallRoot(env)
+  const platform = options.platform ?? process.platform
+  const installRoot = options.cacheDir ?? resolveInstallRoot(env, platform)
+
   if (options.binaryPath && options.binaryPath.trim().length > 0) {
-    if (!(await fileExists(options.binaryPath))) {
-      throw new AgyBinaryError(AGY_BINARY_ERROR.BINARY_MISSING, `config.binaryPath 不存在: ${options.binaryPath}`)
+    const candidate = options.binaryPath.trim()
+    if (!(await fileExists(candidate))) {
+      throw new AgyBinaryError(AGY_BINARY_ERROR.BINARY_MISSING, `config.binaryPath 不存在: ${candidate}`)
     }
-    return { executablePath: resolve(options.binaryPath), source: 'config', checksumVerified: false }
+    return { executablePath: resolve(candidate), source: 'config' }
   }
 
-  const envPath = env.AGY_ACP_BIN
-  if (envPath && envPath.trim().length > 0) {
+  const envPath = env.AGY_ACP_BIN?.trim()
+  if (envPath) {
     if (!(await fileExists(envPath))) {
       throw new AgyBinaryError(AGY_BINARY_ERROR.BINARY_MISSING, `环境变量 AGY_ACP_BIN 指向的文件不存在: ${envPath}`)
     }
-    return { executablePath: resolve(envPath), source: 'env', checksumVerified: false }
+    return { executablePath: resolve(envPath), source: 'env' }
   }
 
-  const { platform, arch } = mapNodePlatform(options.platform ?? process.platform, options.arch ?? process.arch)
-  const flavor: ExecutableFlavor = platform === 'windows' ? 'windows' : 'posix'
-
-  const { versionDir, extractDir } = versionCachePaths(cacheDir, version)
+  const mapped = mapNodePlatform(platform, options.arch ?? process.arch)
+  const flavor: ExecutableFlavor = mapped.platform === 'windows' ? 'windows' : 'posix'
+  const { extractDir } = versionCachePaths(installRoot, version)
   const cached = await findExtractedExecutable(extractDir, flavor)
   if (cached) {
-    await ensureExecutable(cached, flavor)
-    return { executablePath: cached, source: 'cache', version, checksumVerified: false }
+    if (flavor === 'posix') await chmod(cached, 0o755).catch(() => undefined)
+    return { executablePath: cached, source: 'cache', version }
   }
 
-  // 没有自动下载：本地找不到就报错，由用户显式配置 binaryPath / AGY_ACP_BIN
-  // 或把官方二进制放进缓存目录。
   throw new AgyBinaryError(
     AGY_BINARY_ERROR.BINARY_MISSING,
-    `未找到 ACP server 二进制（binaryPath 未配置、AGY_ACP_BIN 未设置、缓存无 ${version} 版本）。本插件不再自动下载。`,
+    `未找到 ACP server 二进制（binaryPath 未配置、AGY_ACP_BIN 未设置、缓存无 ${version} 版本）。`,
   )
 }

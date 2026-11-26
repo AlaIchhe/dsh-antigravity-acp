@@ -39,6 +39,9 @@ jobs:
         run: npm run check
 
       - name: Publish to npm with provenance
-        run: npm publish --provenance --access public
+        run: |
+          DIST_TAG=$(node -e "const v=require('./package.json').version; const m=v.match(/-([a-zA-Z0-9]+)/); console.log(m ? m[1] : 'latest')")
+          echo "Publishing with npm dist-tag: $DIST_TAG"
+          npm publish --provenance --access public --tag "$DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,9 +1,8 @@
 /**
- * 多账号管理器：持久化账号列表、真实 HOME 的系统账号、隔离账号的 OAuth 登录、
- * 当前账号切换与删除。
+ * 多账号管理器：系统账号（真实 HOME 只读导入）+ 隔离账号（独立 HOME + OAuth 登录）。
  *
- * 并发口径：同一时间只允许一条登录流程；账号切换/删除不打断已在进行的 ACP 回合，
- * 但下一次建立连接时会按当前账号重新准备凭据（见 index.ts 的 ensureAcpRuntime）。
+ * v1.0 直接暴露清晰领域方法（startLogin / submitCallback / cancelLogin / activate / remove），
+ * 不再经过字符串 action 联合分发，统一依赖 `src/auth/`。
  */
 import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { mkdir, rename, rm } from 'node:fs/promises'
@@ -11,51 +10,51 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import {
-  OAUTH_CALLBACK_PATH,
-  exchangeCode,
-  fallbackLoginClient,
-  fetchUserEmail,
-  generatePkce,
   buildAuthorizeUrl,
   CallbackRejected,
+  exchangeCode,
+  fetchUserEmail,
+  generatePkce,
+  OAUTH_CALLBACK_PATH,
   parseManualCallback,
+  resolveOAuthClient,
   startCallbackListener,
-  writeCliTokenFile,
-} from './oauth.js'
-import type { CallbackListener, OAuthClientMeta, TokenSet } from './oauth.js'
+} from '../auth/oauth-client.js'
+import type { CallbackListener, OAuthClientMeta, TokenSet } from '../auth/oauth-client.js'
+import { ACP_HOME_SUBPATH, ACP_TOKEN_FILENAME, CLI_TOKEN_SUBPATH, writeAcpCredentialFiles, writeCliTokenFile } from '../auth/token-store.js'
 import { accountDirFor, isValidAccountId, loadAccountsFile, saveAccountsFile } from './store.js'
 import type { AccountsFile } from './store.js'
 import {
   SYSTEM_ACCOUNT_ALIAS,
   SYSTEM_ACCOUNT_ID,
-  type AccountAdminRequest,
   type AccountAuthView,
   type AccountRecord,
   type AccountView,
-  type AccountsSnapshot,
   type ResolvedAccount,
 } from './types.js'
 
+export interface AccountsSnapshot {
+  accounts: AccountView[]
+  activeAccountId: string
+  auth: AccountAuthView
+}
+
+export interface AccountActionResult {
+  snapshot: AccountsSnapshot
+  message: string
+}
+
 export interface AccountsManagerOptions {
-  /** 账号根目录；默认见 resolveAccountsDir()。 */
   baseDir: string
-  /** 真实 HOME（系统账号与默认 CLI 登录态所在）。 */
   homeDir?: string
   now?: () => number
   randomId?: () => string
-  /** OAuth 授权码换 token 用的 fetch（生产传插件代理 fetch）。 */
   fetchImpl?: typeof fetch
-  /** 解析官方 OAuth client；失败时回落到已审计的内嵌一对。 */
-  resolveClient?: () => Promise<OAuthClientMeta | undefined>
-  /** 把刚拿到的登录态写成 ACP server 需要的两份文件（生产用 writeAcpCredentialFiles）。 */
+  resolveClient?: () => OAuthClientMeta
   writeCredentials?: (input: { home: string; client: OAuthClientMeta; tokens: TokenSet }) => Promise<void>
-  /** 打开默认浏览器；返回是否成功（失败时客户端仍可点授权链接）。 */
   openBrowser?: (url: string) => Promise<boolean>
-  /** 登录等待上限（毫秒）。 */
   loginTimeoutMs?: number
-  /** 本机回调端口；默认 51121（官方 Antigravity client 注册的回调），测试可传 0。 */
   loginPort?: number
-  /** 账号列表或当前账号变化后调用（index.ts 用来通知目录刷新）。 */
   onChange?: () => void
   log?: { info(message: string): void; warn(message: string, error?: unknown): void }
 }
@@ -64,9 +63,7 @@ interface LoginTarget {
   kind: 'add' | 'relogin'
   id: string
   alias?: string
-  /** 新增账号的暂存 HOME；成功后才 rename 成正式目录。 */
   staging?: string
-  /** 重新登录的目标账号目录。 */
   home: string
 }
 
@@ -75,407 +72,304 @@ interface ActiveLogin {
   verifier: string
   redirectUri: string
   listener: CallbackListener
-  /** 手动提交回调地址：无头主机上浏览器在本机之外，回调送不回来。 */
   submit(raw: string): void
   cancel(): void
 }
 
-export interface AccountActionResult {
-  snapshot: AccountsSnapshot
-  message: string
-}
+const AUTH_TERMINAL_RESET_MS = 15_000
 
-/** 账号管理器。所有 token / HOME 细节只在 Host 侧，客户端只看 AccountView。 */
 export class AccountsManager {
   private file: AccountsFile
   private auth: AccountAuthView = { phase: 'idle' }
   private login: ActiveLogin | undefined
   private authReset?: ReturnType<typeof setTimeout>
   private disposed = false
-  /** 每个账号的登录态代际；重新登录成功后递增，只影响该账号的链路。 */
   private readonly revisions = new Map<string, number>()
-  /** 本进程见过的账号 id；保存时用来保留其它 Host 新增的记录。 */
   private readonly knownIds = new Set<string>()
   private readonly baseDir: string
   private readonly homeDir: string
   private readonly now: () => number
   private readonly randomId: () => string
   private readonly fetchImpl: typeof fetch
-  private readonly writeCredentials: AccountsManagerOptions['writeCredentials']
+  private readonly resolveClient: () => OAuthClientMeta
+  private readonly writeCredentials: NonNullable<AccountsManagerOptions['writeCredentials']>
   private readonly openBrowser: AccountsManagerOptions['openBrowser']
-  private readonly resolveClient: AccountsManagerOptions['resolveClient']
   private readonly loginTimeoutMs: number
   private readonly loginPort: number | undefined
-  private readonly onChange: AccountsManagerOptions['onChange']
+  private readonly onChange: (() => void) | undefined
   private readonly log: AccountsManagerOptions['log']
 
   constructor(options: AccountsManagerOptions) {
     this.baseDir = options.baseDir
     this.homeDir = options.homeDir ?? homedir()
     this.now = options.now ?? Date.now
-    this.randomId = options.randomId ?? (() => `${this.now()}_${randomBytes(4).toString('hex')}`)
-    this.fetchImpl = options.fetchImpl ?? fetch
-    this.writeCredentials = options.writeCredentials
+    this.randomId = options.randomId ?? (() => `acc_${this.now()}_${randomBytes(4).toString('hex')}`)
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch
+    this.resolveClient = options.resolveClient ?? (() => resolveOAuthClient())
+    this.writeCredentials = options.writeCredentials ?? (async ({ home, client, tokens }) => {
+      await writeAcpCredentialFiles(home, client, {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        ...(tokens.expiresAt === undefined ? {} : { expiry: new Date(tokens.expiresAt).toISOString() }),
+      })
+    })
     this.openBrowser = options.openBrowser
-    this.resolveClient = options.resolveClient
     this.loginTimeoutMs = options.loginTimeoutMs ?? 300_000
     this.loginPort = options.loginPort
     this.onChange = options.onChange
     this.log = options.log
     this.file = loadAccountsFile(this.baseDir)
-    for (const record of this.file.accounts) this.knownIds.add(record.id)
-    // 中断的登录会留下 staging_*；它们不属于任何已提交账号，启动时清掉即可。
-    try {
-      for (const entry of readdirSync(this.baseDir)) {
-        if (!entry.startsWith('staging_')) continue
-        rmSync(join(this.baseDir, entry), { recursive: true, force: true })
-      }
-    } catch {
-      // 目录不存在 / 不可读不影响账号列表；登录时会按需创建。
-    }
-    if (!this.activeRecordId()) {
-      this.file.activeAccountId = SYSTEM_ACCOUNT_ID
-      this.persist()
-    }
-    this.auth = { phase: 'idle' }
+    for (const row of this.file.accounts) this.knownIds.add(row.id)
+    this.cleanupStagingDirs()
   }
 
-  /** 客户端可见的快照：账号列表 + 当前账号 + 登录流程。 */
   snapshot(): AccountsSnapshot {
+    this.syncFromDisk()
     const activeId = this.activeRecordId()
-    const accounts: AccountView[] = [this.systemView(activeId), ...this.file.accounts.map((record) => this.viewOf(record, activeId))]
+    const system: AccountView = {
+      id: SYSTEM_ACCOUNT_ID,
+      alias: SYSTEM_ACCOUNT_ALIAS,
+      system: true,
+      active: activeId === SYSTEM_ACCOUNT_ID,
+      ready: this.tokenExists(this.homeDir, false),
+      createdAt: 0,
+    }
+    const isolated: AccountView[] = this.file.accounts.map((row) => ({
+      id: row.id,
+      alias: row.alias,
+      ...(row.email ? { email: row.email } : {}),
+      system: false,
+      active: activeId === row.id,
+      ready: row.dir ? this.tokenExists(row.dir, true) : false,
+      createdAt: row.createdAt,
+      ...(row.lastUsedAt === undefined ? {} : { lastUsedAt: row.lastUsedAt }),
+    }))
     return {
-      accounts,
+      accounts: [system, ...isolated],
       activeAccountId: activeId,
       auth: { ...this.auth },
     }
   }
 
-  /** 当前账号（ACP / CLI 子进程使用的 HOME）。 */
   active(): ResolvedAccount {
+    this.syncFromDisk()
     const id = this.activeRecordId()
+    return this.resolve(id) ?? this.systemResolved()
+  }
+
+  resolve(id: string): ResolvedAccount | undefined {
+    this.syncFromDisk()
     if (id === SYSTEM_ACCOUNT_ID) return this.systemResolved()
-    const record = this.file.accounts.find((row) => row.id === id)
-    return record ? this.resolvedOf(record) : this.systemResolved()
-  }
-
-  /** 按 id 解析账号；系统账号或未知 id 返回 undefined / 系统账号。 */
-  resolve(id?: string): ResolvedAccount | undefined {
-    if (!id || id === SYSTEM_ACCOUNT_ID) return this.systemResolved()
-    const record = this.file.accounts.find((row) => row.id === id)
-    return record ? this.resolvedOf(record) : undefined
-  }
-
-  /** 面板动作入口。 */
-  async handle(request: AccountAdminRequest): Promise<AccountActionResult> {
-    switch (request.action) {
-      case 'add-account':
-        return this.beginAdd(request.alias)
-      case 'cancel-add':
-        return this.cancelLogin()
-      case 'activate':
-        return this.activate(request.id)
-      case 'remove':
-        return this.remove(request.id)
-      case 'relogin':
-        return this.beginRelogin(request.id)
-      case 'submit-callback':
-        return this.submitCallback(request.callbackUrl)
-      default:
-        throw new Error('不支持的账号操作')
+    const found = this.file.accounts.find((row) => row.id === id)
+    if (!found || !found.dir) return undefined
+    return {
+      id: found.id,
+      alias: found.alias,
+      system: false,
+      home: found.dir,
+      dir: found.dir,
+      revision: this.revisions.get(found.id) ?? 0,
     }
   }
 
-  /** 登录流程结束后由面板轮询取走的状态；调用方不需要主动查询。 */
-  authState(): AccountAuthView {
-    return { ...this.auth }
+  async startLogin(input: { mode: 'add' | 'relogin'; id?: string; alias?: string }): Promise<AccountActionResult> {
+    if (this.disposed) throw new Error('账号服务已卸载')
+    if (this.login) {
+      throw new Error('已有一条登录流程在进行中；请先完成或取消当前登录')
+    }
+    let target: LoginTarget
+    if (input.mode === 'relogin') {
+      const id = input.id?.trim() ?? ''
+      if (id === SYSTEM_ACCOUNT_ID) throw new Error('系统账号使用本机官方 CLI 登录态，请在终端执行 agy 登录')
+      const record = this.file.accounts.find((row) => row.id === id)
+      if (!record || !record.dir) throw new Error('账号不存在或已删除')
+      target = { kind: 'relogin', id: record.id, alias: record.alias, home: record.dir }
+    } else {
+      const id = this.randomId()
+      if (!isValidAccountId(id)) throw new Error('生成的账号标识不合法')
+      const finalDir = accountDirFor(this.baseDir, id)
+      const staging = join(this.baseDir, `.staging-${id}`)
+      const alias = input.alias?.trim().slice(0, 80) || undefined
+      target = { kind: 'add', id, ...(alias ? { alias } : {}), staging, home: finalDir }
+    }
+
+    this.setAuth({ phase: 'preparing', message: '正在准备授权流程…', accountId: target.id, startedAt: this.now() })
+    const pkce = generatePkce()
+    const state = randomBytes(16).toString('hex')
+    const client = this.resolveClient()
+
+    let listener: CallbackListener
+    try {
+      listener = await startCallbackListener({
+        expectedState: state,
+        ...(this.loginPort === undefined ? {} : { port: this.loginPort }),
+        timeoutMs: this.loginTimeoutMs,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.setAuth({ phase: 'failed', message: `无法启动本机授权回调监听：${message}`, accountId: target.id })
+      throw new Error(`无法启动本机授权回调监听：${message}`)
+    }
+
+    const redirectUri = `http://localhost:${listener.port}${OAUTH_CALLBACK_PATH}`
+    const authUrl = buildAuthorizeUrl({ clientId: client.clientId, challenge: pkce.challenge, state, redirectUri })
+
+    let manualResolve!: (code: string) => void
+    const manualPromise = new Promise<{ code: string; state: string }>((resolve) => {
+      manualResolve = (code) => resolve({ code, state })
+    })
+
+    const active: ActiveLogin = {
+      target,
+      verifier: pkce.verifier,
+      redirectUri,
+      listener,
+      submit: (raw: string) => {
+        const parsed = parseManualCallback(raw, state)
+        if (!parsed.ok) throw new Error(parsed.reason)
+        manualResolve(parsed.code)
+      },
+      cancel: () => {
+        listener.cancel('登录已取消')
+      },
+    }
+    this.login = active
+
+    const opened = await this.openBrowser?.(authUrl).catch(() => false)
+    this.setAuth({
+      phase: 'waiting',
+      message: opened
+        ? '已打开浏览器，请在页面中完成 Google 授权…'
+        : '请点击授权链接在浏览器中完成登录；无头主机可直接粘贴回调地址',
+      authUrl,
+      accountId: target.id,
+      startedAt: this.auth.startedAt,
+    })
+
+    void this.finishLogin(active, client, Promise.race([listener.result, manualPromise]))
+    return {
+      snapshot: this.snapshot(),
+      message: this.auth.message ?? '等待浏览器授权…',
+    }
+  }
+
+  submitCallback(callbackUrl: string): AccountActionResult {
+    if (!this.login) throw new Error('当前没有等待中的登录流程')
+    this.login.submit(callbackUrl)
+    return { snapshot: this.snapshot(), message: '已收到回调地址，正在完成登录…' }
+  }
+
+  async cancelLogin(): Promise<AccountActionResult> {
+    const active = this.login
+    if (!active) return { snapshot: this.snapshot(), message: '当前没有进行中的登录' }
+    this.login = undefined
+    active.cancel()
+    await active.listener.close().catch(() => undefined)
+    if (active.target.staging) void rm(active.target.staging, { recursive: true, force: true }).catch(() => undefined)
+    this.setAuth({ phase: 'cancelled', message: '已取消登录', accountId: active.target.id })
+    return { snapshot: this.snapshot(), message: '已取消登录' }
+  }
+
+  activate(id: string): AccountActionResult {
+    this.syncFromDisk()
+    if (id !== SYSTEM_ACCOUNT_ID) {
+      const record = this.file.accounts.find((row) => row.id === id)
+      if (!record) throw new Error('账号不存在或已删除')
+      record.lastUsedAt = this.now()
+    }
+    this.file.activeAccountId = id
+    this.persist()
+    this.onChange?.()
+    return { snapshot: this.snapshot(), message: '已切换当前账号（将在下次连接时生效）' }
+  }
+
+  async remove(id: string): Promise<AccountActionResult> {
+    if (id === SYSTEM_ACCOUNT_ID) throw new Error('系统账号不可删除')
+    this.syncFromDisk()
+    const index = this.file.accounts.findIndex((row) => row.id === id)
+    if (index < 0) throw new Error('账号不存在或已删除')
+    const [removed] = this.file.accounts.splice(index, 1)
+    if (this.file.activeAccountId === id) {
+      this.file.activeAccountId = SYSTEM_ACCOUNT_ID
+    }
+    this.persist()
+    this.revisions.delete(id)
+    if (removed?.dir) {
+      await rm(removed.dir, { recursive: true, force: true }).catch(() => undefined)
+    }
+    this.onChange?.()
+    return { snapshot: this.snapshot(), message: `已删除账号「${removed?.alias ?? id}」` }
   }
 
   async dispose(): Promise<void> {
     this.disposed = true
-    const pending = this.login?.target
-    this.login?.cancel()
+    if (this.authReset) { clearTimeout(this.authReset); this.authReset = undefined }
+    const active = this.login
     this.login = undefined
-    if (pending?.staging) void rm(pending.staging, { recursive: true, force: true }).catch(() => undefined)
-    if (this.authReset !== undefined) clearTimeout(this.authReset)
-    this.authReset = undefined
-  }
-
-  // ---- 账号视图 ----
-
-  private systemResolved(): ResolvedAccount {
-    return { id: SYSTEM_ACCOUNT_ID, alias: SYSTEM_ACCOUNT_ALIAS, system: true, home: this.homeDir, revision: 0 }
-  }
-
-  private resolvedOf(record: AccountRecord): ResolvedAccount {
-    return {
-      id: record.id,
-      alias: record.alias,
-      system: false,
-      home: record.dir as string,
-      dir: record.dir,
-      revision: this.revisions.get(record.id) ?? 0,
+    if (active) {
+      active.cancel()
+      await active.listener.close().catch(() => undefined)
+      if (active.target.staging) await rm(active.target.staging, { recursive: true, force: true }).catch(() => undefined)
     }
   }
 
-  private systemView(activeId: string): AccountView {
-    const home = this.homeDir
-    return {
-      id: SYSTEM_ACCOUNT_ID,
-      alias: SYSTEM_ACCOUNT_ALIAS,
-      system: true,
-      active: activeId === SYSTEM_ACCOUNT_ID,
-      ready: this.tokenExists(home, false),
-      createdAt: 0,
-    }
-  }
+  /* ── 内部方法 ────────────────────────────────────────────────────── */
 
-  private viewOf(record: AccountRecord, activeId: string): AccountView {
-    return {
-      id: record.id,
-      alias: record.alias,
-      ...(record.email ? { email: record.email } : {}),
-      system: false,
-      active: activeId === record.id,
-      ready: this.tokenExists(record.dir as string, true),
-      createdAt: record.createdAt,
-      ...(record.lastUsedAt === undefined ? {} : { lastUsedAt: record.lastUsedAt }),
-    }
-  }
-
-  /** 只读检查登录态文件是否存在；不解析 token，避免把清单轮询变成磁盘热路径。 */
-  private tokenExists(home: string, isolated: boolean): boolean {
-    if (!isolated && !existsSync(home)) return false
-    return existsSync(join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'))
-      || existsSync(join(home, '.gemini', 'antigravity-acp', 'acp_token.json'))
-  }
-
-  private activeRecordId(): string {
-    const id = this.file.activeAccountId
-    if (id === SYSTEM_ACCOUNT_ID) return SYSTEM_ACCOUNT_ID
-    if (typeof id === 'string' && this.file.accounts.some((row) => row.id === id)) return id
-    return SYSTEM_ACCOUNT_ID
-  }
-
-  private persist(): void {
+  private async finishLogin(
+    active: ActiveLogin,
+    client: OAuthClientMeta,
+    callbackPromise: Promise<{ code: string; state: string }>,
+  ): Promise<void> {
+    const { target, verifier, redirectUri } = active
     try {
-      saveAccountsFile(this.baseDir, this.file, this.knownIds)
-    } catch (error) {
-      this.log?.warn?.('antigravity-acp: 账号列表保存失败', error)
-    }
-  }
+      const callback = await callbackPromise
+      await active.listener.close().catch(() => undefined)
+      if (this.login !== active || this.disposed) return
 
-  // ---- 切换 / 删除 ----
-
-  private activate(id?: string): AccountActionResult {
-    const target = id === SYSTEM_ACCOUNT_ID
-      ? this.systemResolved()
-      : this.file.accounts.find((row) => row.id === id)
-    if (!target) throw new Error('要切换的账号不存在')
-    this.file.activeAccountId = id === SYSTEM_ACCOUNT_ID ? SYSTEM_ACCOUNT_ID : target.id
-    if (id !== SYSTEM_ACCOUNT_ID && 'lastUsedAt' in target) target.lastUsedAt = this.now()
-    this.persist()
-    this.onChange?.()
-    const name = id === SYSTEM_ACCOUNT_ID ? SYSTEM_ACCOUNT_ALIAS : (target as AccountRecord).alias
-    return { snapshot: this.snapshot(), message: `已切换到「${name}」；新建连接将使用该账号` }
-  }
-
-  private async remove(id?: string): Promise<AccountActionResult> {
-    if (id === SYSTEM_ACCOUNT_ID) throw new Error('系统账号不能删除')
-    const index = this.file.accounts.findIndex((row) => row.id === id)
-    if (index < 0) throw new Error('要删除的账号不存在')
-    const record = this.file.accounts[index] as AccountRecord
-    const wasActive = this.activeRecordId() === record.id
-    if (this.login?.target.id === record.id) this.cancelLogin()
-    this.file.accounts.splice(index, 1)
-    if (wasActive) this.file.activeAccountId = SYSTEM_ACCOUNT_ID
-    this.persist()
-    // 只删除本插件在账号根目录下创建的目录；store 加载时已校验包含性。
-    if (record.dir && existsSync(record.dir)) {
-      await rm(record.dir, { recursive: true, force: true }).catch((error) => {
-        this.log?.warn?.('antigravity-acp: 删除账号目录失败', error)
-      })
-    }
-    this.onChange?.()
-    return {
-      snapshot: this.snapshot(),
-      message: wasActive ? `已删除「${record.alias}」；当前账号回到系统账号` : `已删除「${record.alias}」`,
-    }
-  }
-
-  // ---- 登录 ----
-
-  private beginAdd(alias?: string): AccountActionResult {
-    this.assertNoLogin()
-    const id = `acc_${this.randomId()}`
-    if (!isValidAccountId(id)) throw new Error('无法生成合法的账号 id')
-    const staging = accountDirFor(this.baseDir, `staging_${id}`)
-    const finalDir = accountDirFor(this.baseDir, id)
-    const target: LoginTarget = {
-      kind: 'add',
-      id,
-      ...(alias?.trim() ? { alias: alias.trim().slice(0, 80) } : {}),
-      staging,
-      home: staging,
-    }
-    void this.runLogin(target, finalDir)
-    return { snapshot: this.snapshot(), message: '正在准备浏览器授权…' }
-  }
-
-  private beginRelogin(id?: string): AccountActionResult {
-    this.assertNoLogin()
-    if (id === SYSTEM_ACCOUNT_ID) {
-      throw new Error('系统账号使用本机官方 CLI 的登录态，请在官方 agy 中登录后重新导入，本面板不会改写它')
-    }
-    const record = this.file.accounts.find((row) => row.id === id)
-    if (!record) throw new Error('要登录的账号不存在')
-    const target: LoginTarget = { kind: 'relogin', id: record.id, home: record.dir as string }
-    void this.runLogin(target)
-    return { snapshot: this.snapshot(), message: '正在准备浏览器授权…' }
-  }
-
-  /** 登录流程从 `preparing` 起就占用唯一槽位：listener 建立前的 await 窗口也不能被第二次点击穿进来。 */
-  private assertNoLogin(): void {
-    if (this.login || ['preparing', 'waiting', 'exchanging'].includes(this.auth.phase)) {
-      throw new Error('已有登录流程正在进行，请先完成或取消')
-    }
-  }
-
-  /**
-   * 提交用户粘贴回来的回调地址。
-   *
-   * 无头主机上浏览器不在本机，`http://localhost:51121/oauth-callback?code=…`
-   * 打不开，但地址栏里的 URL 是完整的。这里把它交给等待中的登录流程，
-   * 校验 state 后走与监听器完全相同的换码路径。
-   *
-   * @param raw - 完整回调地址；为空或不可解析时返回可读错误，不打断流程。
-   * @returns 结果快照与提示。
-   */
-  private submitCallback(raw: string | undefined): AccountActionResult {
-    if (this.login === undefined) {
-      return { snapshot: this.snapshot(), message: '当前没有进行中的登录流程' }
-    }
-    if (typeof raw !== 'string' || raw.trim() === '') {
-      return { snapshot: this.snapshot(), message: '请粘贴浏览器地址栏里的完整回调地址' }
-    }
-    // 先本地判一次，能立刻把「地址不对」反馈给用户；真正的等待由登录流程接住。
-    this.login.submit(raw)
-    return { snapshot: this.snapshot(), message: '已提交回调地址，正在换取登录态…' }
-  }
-
-  private cancelLogin(): AccountActionResult {
-    if (!this.login) return { snapshot: this.snapshot(), message: '当前没有进行中的登录流程' }
-    this.login.cancel()
-    const target = this.login.target
-    this.login = undefined
-    this.setAuth({ phase: 'cancelled', message: '已取消登录' })
-    if (target.staging) void rm(target.staging, { recursive: true, force: true }).catch(() => undefined)
-    this.onChange?.()
-    return { snapshot: this.snapshot(), message: '已取消登录' }
-  }
-
-  private setAuth(auth: AccountAuthView): void {
-    this.auth = auth
-    if (this.authReset !== undefined) clearTimeout(this.authReset)
-    this.authReset = undefined
-    if (auth.phase === 'done' || auth.phase === 'failed' || auth.phase === 'cancelled') {
-      this.authReset = setTimeout(() => {
-        if (this.auth.phase === auth.phase) this.auth = { phase: 'idle' }
-      }, auth.phase === 'done' ? 20_000 : 60_000)
-      this.authReset.unref?.()
-    }
-  }
-
-  private async runLogin(target: LoginTarget, finalDir?: string): Promise<void> {
-    try {
-      this.setAuth({ phase: 'preparing', message: '正在准备浏览器授权…', accountId: target.id })
-      const client = (await this.resolveClient?.().catch(() => undefined)) ?? fallbackLoginClient()
-      const { verifier, challenge } = generatePkce()
-      const state = randomBytes(16).toString('hex')
-      let listener: CallbackListener
-      try {
-        listener = await startCallbackListener({ port: this.loginPort, timeoutMs: this.loginTimeoutMs, expectedState: state })
-      } catch (error) {
-        const code = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code) : ''
-        if (code === 'EADDRINUSE') {
-          throw new Error('本机登录回调端口 51121 已被占用；请关闭占用该端口的程序（可能是另一个 DSH 或官方登录窗口）后重试')
-        }
-        throw error
-      }
-      if (this.disposed) {
-        await listener.close()
-        return
-      }
-      // 授权链接与换码使用同一个 redirect_uri；生产端口固定 51121，测试可让系统分配。
-      const redirectUri = `http://localhost:${listener.port}${OAUTH_CALLBACK_PATH}`
-      const authUrl = buildAuthorizeUrl({ clientId: client.clientId, challenge, state, redirectUri })
-      // 监听器与手动提交是同一件事的两条来路：谁先到用谁。手动提交走
-      // parseManualCallback 校验 state，与监听器完全同规则，之后共用换码流程。
-      let settleManual!: (value: { code: string }) => void
-      let rejectManual!: (reason: Error) => void
-      const manual = new Promise<{ code: string }>((resolve, reject) => {
-        settleManual = resolve
-        rejectManual = reject
-      })
-      // 手动分支失败不能变成未处理的 rejection：只在真的用到时才抛出。
-      manual.catch(() => undefined)
-      this.login = {
-        target,
-        verifier,
-        redirectUri,
-        listener,
-        submit: (raw: string) => {
-          const outcome = parseManualCallback(raw, state)
-          if (outcome.ok) settleManual({ code: outcome.code })
-          else rejectManual(new CallbackRejected(outcome.reason))
-        },
-        cancel: () => {
-          listener.cancel('已取消登录')
-        },
-      }
-      this.setAuth({ phase: 'waiting', authUrl, message: '等待浏览器授权…', accountId: target.id, startedAt: this.now() })
-      const opened = await this.openBrowser?.(authUrl).catch(() => false)
-      if (opened === false) {
-        this.log?.warn?.('antigravity-acp: 未能自动打开浏览器，请在面板中点击授权链接')
-      }
-      let callback
-      try {
-        // 谁先给出授权码就用谁：本机浏览器回调，或用户从别处粘回来的地址。
-        callback = await Promise.race([listener.result, manual])
-      } catch (error) {
-        if (this.auth.phase === 'cancelled') return
-        throw error
-      }
-      if (this.login?.target.id !== target.id) return
       this.setAuth({ phase: 'exchanging', message: '已收到授权，正在换取登录态…', accountId: target.id, startedAt: this.auth.startedAt })
-      const tokens = await exchangeCode({ code: callback.code, verifier, client, fetchImpl: this.fetchImpl, redirectUri: this.login?.redirectUri })
-      // 换码期间用户可能点了取消：不再落地 token，也不提交账号。
-      if (this.login?.target.id !== target.id) {
+      const tokens = await exchangeCode({
+        code: callback.code,
+        verifier,
+        client,
+        fetchImpl: this.fetchImpl,
+        redirectUri,
+        now: this.now,
+      })
+      if (this.login !== active || this.disposed) {
         if (target.staging) void rm(target.staging, { recursive: true, force: true }).catch(() => undefined)
         return
       }
-      if (!tokens.refreshToken) throw new Error('Google 未返回 refresh_token；请重新授权并确认 consent')
+      if (!tokens.refreshToken) {
+        throw new Error('Google 未返回 refresh_token；请重新授权并确认 consent')
+      }
       const email = await fetchUserEmail(tokens.accessToken, this.fetchImpl)
-      // 新增账号先写到暂存 HOME，拿到 token 后整体改名；登录态文件与 ACP 文件
-      // 都落在最终目录里，避免客户端看到「账号存在但 HOME 指向暂存目录」。
+
       let tokenHome = target.staging ?? target.home
       await mkdir(join(tokenHome, '.gemini'), { recursive: true })
       await writeCliTokenFile(tokenHome, tokens)
+
       if (target.kind === 'add') {
-        const dir = finalDir as string
-        await rm(dir, { recursive: true, force: true }).catch(() => undefined)
-        await mkdir(join(this.baseDir), { recursive: true })
-        await rename(target.staging as string, dir)
-        tokenHome = dir
+        await rm(target.home, { recursive: true, force: true }).catch(() => undefined)
+        await mkdir(this.baseDir, { recursive: true })
+        await rename(target.staging as string, target.home)
+        tokenHome = target.home
       }
-      const prepared = await this.prepareCredentials(tokenHome, client, tokens)
-      if (this.login?.target.id !== target.id) {
+
+      let credNote: string | undefined
+      try {
+        await this.writeCredentials({ home: tokenHome, client, tokens })
+      } catch (error) {
+        credNote = error instanceof Error ? error.message : String(error)
+      }
+
+      if (this.login !== active || this.disposed) {
         if (target.kind === 'add') void rm(tokenHome, { recursive: true, force: true }).catch(() => undefined)
         return
       }
+
       let autoActivated = false
       if (target.kind === 'add') {
-        autoActivated = await this.commitNewAccount(target, tokenHome, email)
+        autoActivated = this.commitNewAccount(target, tokenHome, email)
       } else {
         const record = this.file.accounts.find((row) => row.id === target.id)
         if (record) {
@@ -485,33 +379,27 @@ export class AccountsManager {
       }
       this.revisions.set(target.id, (this.revisions.get(target.id) ?? 0) + 1)
       this.login = undefined
-      const doneMessage = prepared.ready
-        ? (autoActivated ? '登录成功，已切换到该账号' : '登录成功；点「使用此账号」切换')
-        : `登录成功，但 ACP 登录态写入失败：${prepared.note ?? '未知原因'}`
+      const doneMessage = credNote
+        ? `登录成功，但 ACP 登录态写入失败：${credNote}`
+        : autoActivated
+          ? '登录成功，已切换到该账号'
+          : '登录成功；点「使用此账号」切换'
       this.setAuth({ phase: 'done', message: doneMessage, accountId: target.id })
       this.onChange?.()
     } catch (error) {
-      this.login = undefined
+      if (this.login === active) this.login = undefined
+      await active.listener.close().catch(() => undefined)
+      if (target.staging) void rm(target.staging, { recursive: true, force: true }).catch(() => undefined)
       if (this.disposed) return
+      if (error instanceof CallbackRejected && error.message === '登录已取消') return
       const message = error instanceof Error ? error.message : String(error)
       this.setAuth({ phase: 'failed', message, accountId: target.id })
-      if (target.staging) void rm(target.staging, { recursive: true, force: true }).catch(() => undefined)
       this.log?.warn?.('antigravity-acp: 账号登录失败', error)
     }
   }
 
-  /** 把刚拿到的登录态写成 ACP server 需要的两个文件；未注入时视为成功。 */
-  private async prepareCredentials(home: string, client: OAuthClientMeta, tokens: TokenSet): Promise<{ ready: boolean; note?: string }> {
-    if (!this.writeCredentials) return { ready: true }
-    try {
-      await this.writeCredentials({ home, client, tokens })
-      return { ready: true }
-    } catch (error) {
-      return { ready: false, note: error instanceof Error ? error.message : String(error) }
-    }
-  }
-
-  private async commitNewAccount(target: LoginTarget, dir: string, email: string | undefined): Promise<boolean> {
+  private commitNewAccount(target: LoginTarget, dir: string, email: string | undefined): boolean {
+    this.syncFromDisk()
     const count = this.file.accounts.length + 2
     const record: AccountRecord = {
       id: target.id,
@@ -522,16 +410,73 @@ export class AccountsManager {
     }
     this.file.accounts.push(record)
     this.knownIds.add(record.id)
-    // 原来的当前账号没有可用登录态时，新账号自动成为当前账号；否则保持用户选择。
     const activeId = this.activeRecordId()
     const activeReady = activeId === SYSTEM_ACCOUNT_ID
       ? this.tokenExists(this.homeDir, false)
-      : this.tokenExists(this.file.accounts.find((row) => row.id === activeId)?.dir as string, true)
+      : this.tokenExists(this.file.accounts.find((row) => row.id === activeId)?.dir ?? '', true)
     if (!activeReady) {
       this.file.activeAccountId = record.id
       record.lastUsedAt = this.now()
     }
     this.persist()
     return !activeReady
+  }
+
+  private setAuth(next: AccountAuthView): void {
+    this.auth = next
+    if (this.authReset) { clearTimeout(this.authReset); this.authReset = undefined }
+    if (next.phase === 'done' || next.phase === 'cancelled') {
+      this.authReset = setTimeout(() => {
+        if (this.auth === next) this.auth = { phase: 'idle' }
+      }, AUTH_TERMINAL_RESET_MS)
+      this.authReset.unref?.()
+    }
+  }
+
+  private syncFromDisk(): void {
+    try {
+      const latest = loadAccountsFile(this.baseDir)
+      this.file = latest
+      for (const row of latest.accounts) this.knownIds.add(row.id)
+    } catch {
+      // 保留内存快照，避免瞬时读盘失败打断运行。
+    }
+  }
+
+  private persist(): void {
+    saveAccountsFile(this.baseDir, this.file, this.knownIds)
+  }
+
+  private activeRecordId(): string {
+    const id = this.file.activeAccountId
+    if (id && id !== SYSTEM_ACCOUNT_ID && this.file.accounts.some((row) => row.id === id)) return id
+    return SYSTEM_ACCOUNT_ID
+  }
+
+  private systemResolved(): ResolvedAccount {
+    return {
+      id: SYSTEM_ACCOUNT_ID,
+      alias: SYSTEM_ACCOUNT_ALIAS,
+      system: true,
+      home: this.homeDir,
+      revision: this.revisions.get(SYSTEM_ACCOUNT_ID) ?? 0,
+    }
+  }
+
+  private tokenExists(home: string, checkAcpToken: boolean): boolean {
+    if (!home) return false
+    if (existsSync(join(home, ...CLI_TOKEN_SUBPATH))) return true
+    return checkAcpToken && existsSync(join(home, ...ACP_HOME_SUBPATH, ACP_TOKEN_FILENAME))
+  }
+
+  private cleanupStagingDirs(): void {
+    try {
+      if (!existsSync(this.baseDir)) return
+      for (const name of readdirSync(this.baseDir)) {
+        if (name.startsWith('.staging-')) {
+          rmSync(join(this.baseDir, name), { recursive: true, force: true })
+        }
+      }
+    } catch { /* 清理失败不影响启动 */ }
   }
 }

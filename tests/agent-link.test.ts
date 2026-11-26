@@ -673,3 +673,80 @@ describe('ACP 单帧上限', () => {
     expect((failure as AgentLinkError).code).toBe(AGY_LINK_ERROR.PROTOCOL_VIOLATION)
   })
 })
+
+describe('AgentLink 活跃续期超时（onTimerControl）', () => {
+  it('touch 续期与 pause/resume 暂停能让长耗时请求超过初始 timeoutMs 仍正常返回', async () => {
+    let resolveServer!: () => void
+    const serverReady = new Promise<void>((r) => { resolveServer = r })
+    let reqId: number | string | null | undefined
+    let respond!: (value: unknown) => void
+    const stream: Stream = {
+      writable: new WritableStream<AnyMessage>({
+        write(msg) {
+          if ('method' in msg && 'id' in msg && msg.method === 'session/prompt') {
+            reqId = msg.id
+            resolveServer()
+          }
+        },
+      }),
+      readable: new ReadableStream<AnyMessage>({
+        start(controller) {
+          respond = (result) => {
+            controller.enqueue({ jsonrpc: '2.0', id: reqId!, result })
+            controller.close()
+          }
+        },
+      }),
+    }
+
+    const link = new AgentLink({ stream, requestTimeoutMs: 60 })
+    link.start()
+    try {
+      let control: { touch(): void; pause(): void; resume(): void } | undefined
+      const pending = link.request<{ stopReason: string }>('session/prompt', {}, {
+        timeoutMs: 60,
+        onTimerControl: (c) => { control = c },
+      })
+      await serverReady
+      expect(control).toBeDefined()
+
+      // 连续 touch 超过 60ms（累计 90ms）不超时
+      await new Promise((r) => setTimeout(r, 35))
+      control!.touch()
+      await new Promise((r) => setTimeout(r, 35))
+      control!.touch()
+      // pause 后等待远超 60ms（100ms）也不超时
+      control!.pause()
+      await new Promise((r) => setTimeout(r, 100))
+      control!.resume()
+      await new Promise((r) => setTimeout(r, 20))
+
+      respond({ stopReason: 'end_turn' })
+      await expect(pending).resolves.toEqual({ stopReason: 'end_turn' })
+    } finally {
+      await link.close()
+    }
+  })
+
+  it('无活动且未暂停时仍在 timeoutMs 后报 AGY_REQUEST_TIMEOUT', async () => {
+    const stream: Stream = {
+      writable: new WritableStream<AnyMessage>({ write() { /* keep open */ } }),
+      readable: new ReadableStream<AnyMessage>({ start() { /* silent */ } }),
+    }
+    const link = new AgentLink({ stream, requestTimeoutMs: 40 })
+    link.start()
+    try {
+      let control: { touch(): void; pause(): void; resume(): void } | undefined
+      const pending = link.request('session/prompt', {}, {
+        timeoutMs: 40,
+        onTimerControl: (c) => { control = c },
+      })
+      control!.pause()
+      await new Promise((r) => setTimeout(r, 60))
+      control!.resume()
+      await expect(pending).rejects.toMatchObject({ code: AGY_LINK_ERROR.REQUEST_TIMEOUT })
+    } finally {
+      await link.close()
+    }
+  })
+})
