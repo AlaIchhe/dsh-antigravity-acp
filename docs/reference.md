@@ -93,9 +93,9 @@ ACP 连接在首次聊天时按需建立，不提供手动连接 / 预热入口�
 
 桥可按 schema 修正常见、无歧义的参数别名，如 `path` / `AbsolutePath` → `file_path`、`CommandLine` → `command`。不覆盖已有字段，不猜多目标映射，不换算超时单位，不编造缺失说明。缺必填键时返回 `AGY_BRIDGE_INVALID_ARGUMENTS` 与正确签名，不进入 DSH；字段类型与取值仍由 DSH 校验。
 
-续轮会校验模型、思考强度、system、工具 schema、历史前缀与上轮实际输出。变更后取消旧 prompt，并让这一轮报 `AGY_SESSION_UNRECOVERABLE`（不按新历史重放）。宿主注入块（`time-context` / `runtime-context` / 目录 / 指令，即 `source.form` 为 `snapshot`/`catalog`/`instructions`/`recall` 的 user 消息）不参与前缀比较，也不阻挡续轮：它们由 pre-step 在请求生成时追加，位置与数量不由模型决定。真实用户消息、压缩检查点与模型选择记录仍按普通历史校验。`finish(tool-calls)` 只封住当前 DSH 输出，不代表官方 prompt 已结束；封口后到达的内容留给续轮。
+续轮会校验模型、思考强度、system、历史前缀与上轮实际输出。变更后取消旧 prompt，并让这一轮报 `AGY_SESSION_UNRECOVERABLE`（不按新历史重放）。**工具目录不参与校验**：agent 的工具面在 `session/new` 握手时固定（签名只在第一轮 prompt 里发一次，复用轮只发增量），宿主中途新增工具对已有会话没有实际影响，因此只在复用轮记一条诊断日志；新工具从下一个新会话开始可用。宿主注入块（`time-context` / `runtime-context` / 目录 / 指令，即 `source.form` 为 `snapshot`/`catalog`/`instructions`/`recall` 的 user 消息）不参与前缀比较，也不阻挡续轮：它们由 pre-step 在请求生成时追加，位置与数量不由模型决定。真实用户消息、压缩检查点与模型选择记录仍按普通历史校验。`finish(tool-calls)` 只封住当前 DSH 输出，不代表官方 prompt 已结束；封口后到达的内容留给续轮。
 
-普通用户回合默认复用 ACP session，校验输入前缀和上一步实际输出，只发增量；编辑回答、外部 provider 的额外输出或路由变化会让这一轮报 `AGY_SESSION_UNRECOVERABLE`（不重放）。选模（`session/set_config_option`）只在**本会话自己**声明过 model 选择器、且当前值已经是目标值时短路：新会话省略 `configOptions` 时不会拿别的会话的 `currentValue` 短路，否则新会话会静默跑在 agent 默认模型上。`resumeSessions` 开启跨进程恢复（默认开启），恢复后校正模型；文本历史信封不等同于模型 API 的原生角色消息。上游 `end_turn` 没有可见文本或工具调用时返回 `AGY_EMPTY_RESPONSE`，仅思考或进度通知不算成功。
+普通用户回合默认复用 ACP session，校验输入前缀和上一步实际输出，只发增量；编辑回答、外部 provider 的额外输出或路由变化（模型 / 思考强度 / system）会让这一轮报 `AGY_SESSION_UNRECOVERABLE`（不重放）。选模（`session/set_config_option`）只在**本会话自己**声明过 model 选择器、且当前值已经是目标值时短路：新会话省略 `configOptions` 时不会拿别的会话的 `currentValue` 短路，否则新会话会静默跑在 agent 默认模型上。`resumeSessions` 开启跨进程恢复（默认开启），恢复后校正模型；文本历史信封不等同于模型 API 的原生角色消息。上游 `end_turn` 没有可见文本或工具调用时返回 `AGY_EMPTY_RESPONSE`，仅思考或进度通知不算成功。
 
 ACP fs / terminal 与未知原生权限请求始终拒绝并记录，但不因拒绝次数终止整个对话，模型仍可改用 DSH 工具。已识别私有桥调用的 `kind` 仅用于展示；权限提示参数只供诊断，不因缺失或包装差异阻断，真正执行仍取自后续 `tools/call`。协议能力与权限拒绝**不是操作系统沙箱**，不证明官方二进制只能执行被协议观察到的操作。
 
@@ -220,6 +220,7 @@ onefile 临时展开使用用户级根目录内独立的 `runtime/instance-*`，
 | `AGY_IMAGE_UNAVAILABLE` / `AGY_INVALID_IMAGE` | 附件服务 / image capability 不在场，或附件引用不一致 | 重新连接检查能力与附件；不要将文字描述误当已发送图片像素。 |
 | `AGY_BRIDGE_INVALID_ARGUMENTS` | 参数别名修正后仍缺必填键 | 按错误中签名补齐；模糊别名不由桥猜测。 |
 | `AGY_EMPTY_RESPONSE` | 上游结束时没有可见文本或工具调用 | 查看结束原因与 Host 日志；不把仅思考、进度或空白当成功。 |
+| `AGY_UPSTREAM_ERROR_NOTICE` | 官方 agent 用 `end_turn` + 一条 `⚠ <CODE> (code NNN): <detail>` 文本收尾，ACP 层没有 error 信号（实测 `agy` 1.5.17 对上游 429 就是这样） | 本轮按失败处理，不再记成成功回复。这类 429 往往是**内容被上游静默拒绝**而不是额度耗尽：先检查本轮注入的指令（工作区 `AGENTS.md`、skill）是否含越狱模板指纹（例如 `[MODE: UNRESTRICTED SANDBOX — STABLE]`），改掉后重试；确认与内容无关时再看额度。 |
 | 额度 / Credits 不完整 | CLI 未登录、旧版本缺字段、HTTP 产品授权不足或网络失败 | 分别查看额度与 Credits 状态，检查 `agyCliPath`；ACP 登录不等于 CLI 登录。 |
 | 药丸完全消失 | 未选择本 provider，或 Client / remote 未装载 | 先确认选中 `antigravity-acp`、Host 与 Client 同版本；开发时核对 `$mount` 与依赖，避免让贡献型 remote 等待自身。 |
 | 运行目录积累 | 被强杀后残留 | 插件不再自动回收历史目录（不再做 pid 探测）；停止相关进程后人工删除。 |

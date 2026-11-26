@@ -40,7 +40,7 @@ import type { ImageReader } from './image-content.js'
 import { AGY_TURN_ERROR, PromptTurn } from './prompt-turn.js'
 import type { AcpLifecycle } from '../runtime/lifecycle.js'
 import { ContinuationState } from './continuation-state.js'
-import { incrementalMessages, looksLikeInterruptedTurn, outputHash, outputMatches, prefixHash, prefixMatches, reusableSessionKey, routeFingerprint } from './session-reuse.js'
+import { incrementalMessages, looksLikeInterruptedTurn, outputHash, outputMatches, prefixHash, prefixMatches, reusableSessionKey, routeFingerprint, toolsDigest } from './session-reuse.js'
 import { SessionMapStore } from '../runtime/session-map.js'
 import type { SessionMapEntry } from '../runtime/session-map.js'
 import type { ModelOverride } from '../settings.js'
@@ -184,9 +184,24 @@ interface ReusedSession {
   outputHash?: string
   /** 该会话是否注册过 MCP 工具；只有这类会话依赖桥的 token 归属。 */
   usesTools: boolean
+  /**
+   * 建会话时 DSH 交给 agent 的工具目录指纹。**只做诊断**：之后 DSH 侧新增工具
+   * 不会改变会话有效性（agent 侧的工具面在握手时就固定了），只在复用轮记一条
+   * 日志，避免把「宿主偷偷换了工具面」这种事实彻底静默掉。
+   */
+  toolsDigest?: string
+  /** 记录时的路由指纹方案版本（见 `ROUTE_FINGERPRINT_VERSION`）。 */
+  routeVersion: number
   /** 上一轮被用户取消（没有交付输出）：允许下一轮直接续，不要求输出指纹匹配。 */
   cancelled?: boolean
 }
+
+/**
+ * 路由指纹方案版本。**改了指纹的组成就必须提升**（0.5.7 把工具目录移出指纹，
+ * 由 1 提升到 2）：旧映射届时按「陈旧」软失效——新开一个 ACP 会话并把历史重放
+ * 一次，而不是让用户看到误导性的「模型或系统提示已变化」。
+ */
+const ROUTE_FINGERPRINT_VERSION = 2
 
 /*
  * 关于失败重试：**刻意不 override `providerRetryPolicy`**。
@@ -894,7 +909,15 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       return fail(state === 'no-entry' ? '磁盘上没有该会话的映射（可能已被清理）' : '没有可用的会话映射')
     }
     if (entry.cwd !== this.#cwd) return fail('会话工作目录与当前不一致')
-    if (entry.route !== this.#sessionRouteFingerprint(options)) return fail('模型、系统提示或工具目录已变化')
+    if (entry.routeVersion !== ROUTE_FINGERPRINT_VERSION) {
+      // 旧方案写下的映射：指纹算法变了，比出来的差异说明不了路由被改过。
+      // 按陈旧映射软失效（丢弃映射、新开 ACP 会话、历史重放一次），
+      // 不要把一次算法升级报成「模型或系统提示已变化」。
+      this.#sessionStore?.delete(key, this.#sessionOwner)
+      this.#log?.info('antigravity-acp: 会话映射来自旧的路由指纹方案，按新会话开始；历史重放一次')
+      return undefined
+    }
+    if (entry.route !== this.#sessionRouteFingerprint(options)) return fail('模型或系统提示已变化')
     if (options.messages.length <= entry.sentCount) return fail('没有新增消息')
     if (!prefixMatches(options.messages, entry.sentCount, entry.sentHash)) {
       // 前缀变了只有两种真实成因：压缩检查点替换了早期历史，或映射与当前会话
@@ -980,6 +1003,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       sentHash: entry.sentHash,
       outputHash: entry.outputHash,
       route: entry.route,
+      routeVersion: entry.routeVersion ?? ROUTE_FINGERPRINT_VERSION,
       usesTools: tools.length > 0,
       ...(entry.cancelled === true ? { cancelled: true } : {}),
     }
@@ -1051,8 +1075,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       return {}
     }
     if (record.route !== this.#sessionRouteFingerprint(options)) {
-      this.#dropSession(record, '模型、系统提示或工具目录已变化')
-      return { unrecoverableReason: '模型、系统提示或工具目录已变化' }
+      this.#dropSession(record, '模型或系统提示已变化')
+      return { unrecoverableReason: '模型或系统提示已变化' }
     }
     if (options.messages.length <= record.sentCount) {
       this.#dropSession(record, '没有严格追加的新输入')
@@ -1080,6 +1104,17 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       this.#dropSession(record, '没有可发送的增量')
       return { unrecoverableReason: '没有可发送的增量' }
     }
+    const currentTools = toolsDigest(options.tools)
+    if (record.toolsDigest !== undefined && record.toolsDigest !== currentTools) {
+      // 只记诊断，不判失效：agent 侧的工具面在 session/new 握手时就固定了
+      // （签名只在第一轮 prompt 里发一次，复用轮只发增量），宿主中途新增工具
+      // 对已有会话没有任何实际影响。真正需要重建会话的是模型 / system 变化。
+      this.#log?.info(
+        `antigravity-acp: 工具目录已变化，本轮仍复用原 ACP 会话`
+          + `（创建时 ${record.toolsDigest.slice(0, 8)} → 本轮 ${currentTools.slice(0, 8)}，`
+          + `本轮工具数=${options.tools?.length ?? 0}）；新工具从下一个新会话开始可用`,
+      )
+    }
     return { reused: record }
   }
 
@@ -1093,6 +1128,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       sentHash: prefixHash(options.messages),
       route: this.#sessionRouteFingerprint(options),
       usesTools: (options.tools?.length ?? 0) > 0,
+      toolsDigest: toolsDigest(options.tools),
+      routeVersion: ROUTE_FINGERPRINT_VERSION,
     }
     this.#sessions.set(key, record)
     return record
@@ -1107,9 +1144,24 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       sentHash: record.sentHash,
       outputHash: record.outputHash ?? outputHash([]),
       route: record.route,
+      routeVersion: record.routeVersion,
       updatedAt: Date.now(),
       ...(record.cancelled === true ? { cancelled: true } : {}),
     })
+  }
+
+  /**
+   * 这一轮的 finish 是否应记为「未交付」。
+   *
+   * 用户取消本来就这样处理；`AGY_UPSTREAM_ERROR_NOTICE` 同理——官方 agent 用
+   * `end_turn` + 一条文本通告收尾，回合里没有任何真实产出。若按已交付记账
+   * （sentCount + outputHash），下一轮会因为宿主历史里没有那段通告文本而被判成
+   * 「上一轮输出已变化或来自其他会话」，整条对话报废。记成 cancelled 既保留 ACP
+   * 会话与 MCP 作用域，也让下一轮跳过输出指纹校验、只发送新增消息。
+   */
+  #isUndeliveredRound(reason: Extract<StreamChunk, { type: 'finish' }>['reason']): boolean {
+    if (reason.kind === 'aborted') return true
+    return reason.kind === 'error' && reason.failure?.code === AGY_TURN_ERROR.UPSTREAM_ERROR_NOTICE
   }
 
   /** 在 finish 对外可见之前提交输入与实际交付输出，消费者可立即 return。 */
@@ -1691,7 +1743,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         if (chunk.type === 'block-end') emitted.push(structuredClone(chunk.block))
         if (chunk.type === 'finish') {
           finish = chunk.reason.kind
-          if (record) this.#advanceSession(record, options, emitted, turn.promptSettled, chunk.reason.kind === 'aborted')
+          if (record) this.#advanceSession(record, options, emitted, turn.promptSettled, this.#isUndeliveredRound(chunk.reason))
         }
         if (chunks === 0) this.#log?.info(`antigravity-acp: 回合首块到达（type=${chunk.type}）`)
         if (chunk.type !== 'finish') this.#lifecycle?.firstOutput(chunk.type === 'block-end' && chunk.block.type === 'tool-call')
@@ -1758,7 +1810,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         if (chunk.type === 'finish') {
           const key = reusableSessionKey(options)
           const record = key === undefined ? undefined : this.#sessions.get(key)
-          if (record?.sessionId === turn.sessionId) this.#advanceSession(record, options, emitted, turn.promptSettled, chunk.reason.kind === 'aborted')
+          if (record?.sessionId === turn.sessionId) this.#advanceSession(record, options, emitted, turn.promptSettled, this.#isUndeliveredRound(chunk.reason))
         }
         if (chunk.type !== 'finish') this.#lifecycle?.firstOutput(chunk.type === 'block-end' && chunk.block.type === 'tool-call')
         else this.#lifecycle?.finish(chunk.reason.kind)

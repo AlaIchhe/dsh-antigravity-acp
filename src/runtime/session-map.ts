@@ -26,8 +26,14 @@ export interface SessionMapEntry {
   sentHash: string
   /** 上一步实际交付的 assistant blocks 指纹；恢复时必须与 DSH 新增历史一致。 */
   outputHash: string
-  /** 路由指纹：模型、思考强度、系统提示与工具目录。 */
+  /** 路由指纹：模型、思考强度与系统提示（工具目录不参与，见 `routeFingerprint`）。 */
   route: string
+  /**
+   * 路由指纹的方案版本。指纹组成一旦变化就要提升它：旧条目按「陈旧映射」
+   * 软失效（新开 ACP 会话并重放一次历史），而不是让用户看到一条误导性的
+   * 「模型或系统提示已变化」。缺省（旧文件）= 上一代方案。
+   */
+  routeVersion?: number
   /** 最近一次成功发送的时间（毫秒）。 */
   updatedAt: number
   /** 上一轮被用户取消并已由 agent 确认停止：允许下一轮跳过输出指纹与中断工具结果校验。 */

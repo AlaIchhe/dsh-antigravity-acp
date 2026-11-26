@@ -89,8 +89,26 @@ export function outputMatches(fresh: readonly RequestMessage[], expected: string
   return outputHash(blocks) === expected
 }
 
+/**
+ * 路由指纹：**只**覆盖 ACP agent 在 `session/new` 时就已固化、之后无法再改的东西
+ * ——provider、模型、思考强度、官方映射覆盖项与 system 提示。
+ *
+ * **工具目录刻意不参与**（0.5.7 起）。理由是真机语义而非偏好：
+ * - 工具签名在**第一轮 prompt** 里以 `<dsh-tool-signatures>` 一次性交给 agent，
+ *   复用会话只发增量（`buildPromptDeltaWithImages`），不会再发一次；
+ * - agent 的 MCP 工具目录也在握手时确定，之后 DSH 侧再加工具它也调不到。
+ *   所以「宿主中途新增工具」对已有 ACP 会话**没有任何实际影响**。
+ *
+ * 把工具塞进指纹的代价是：任何插件在别的会话里动态注册工具（例如
+ * `dsh-browser-cdp` 的 lazy 注入，它的注册面是进程全局的），都会让本会话在
+ * 下一轮被判成「工具目录已变化」，整轮报废且没有回退路径。2026-11-26 真机
+ * 事故（`session-a1c4ea7a`）就是这样：另一个会话调了两次 `bcdp_*`，28 个
+ * bcdp 工具被全局注册，本会话第 2 步直接 `AGY_SESSION_UNRECOVERABLE`。
+ *
+ * 工具目录的变化不再判死会话，而是记一条诊断日志（`toolsDigest`）。
+ */
 export function routeFingerprint(
-  options: Pick<GenerateOptions, 'provider' | 'model' | 'reasoningEffort' | 'system' | 'tools'>,
+  options: Pick<GenerateOptions, 'provider' | 'model' | 'reasoningEffort' | 'system'>,
   override?: { target?: string; effort?: string },
 ): string {
   return createHash('sha256').update(stable({
@@ -98,8 +116,17 @@ export function routeFingerprint(
     // 公开模型 ID 不变时，设置页的官方映射或默认档位仍可能改变实际路由。
     override,
     system: options.system ?? '',
-    tools: [...(options.tools ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
   })).digest('hex')
+}
+
+/**
+ * 工具目录指纹：只用于诊断（这一轮 DSH 交给 agent 的工具是否与建会话时不同）。
+ * 不参与路由判定——见 `routeFingerprint` 的说明。
+ */
+export function toolsDigest(tools: GenerateOptions['tools'] | undefined): string {
+  return createHash('sha256').update(stable(
+    [...(tools ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
+  )).digest('hex')
 }
 
 /**

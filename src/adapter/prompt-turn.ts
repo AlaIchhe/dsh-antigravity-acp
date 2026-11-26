@@ -48,6 +48,12 @@ export const AGY_TURN_ERROR = {
   NO_PENDING_TOOL_CALL: 'AGY_NO_PENDING_TOOL_CALL',
   /** 官方宣告 end_turn，但没有可见文本/工具调用；不能冒充成功。 */
   EMPTY_RESPONSE: 'AGY_EMPTY_RESPONSE',
+  /**
+   * 官方宣告 end_turn，但正文只是一条上游错误通告（`⚠ <CODE> (code NNN): <detail>`）。
+   * 官方 CLI 1.5.17 实测会把 429 这类上游错误当普通文本返回，若不识别就会被
+   * 记成一次成功回复——用户看到的是一句怪话，而不是失败。
+   */
+  UPSTREAM_ERROR_NOTICE: 'AGY_UPSTREAM_ERROR_NOTICE',
 } as const
 
 /** 未分类的意外状态（link 关闭、agent 异常取消等）在此码下归一。 */
@@ -139,6 +145,10 @@ export class PromptTurn {
   #abortCleanup: (() => void) | undefined
   #terminated = false
   #hasOutput = false
+  /** 本回合已产出的 text 块原文，用于识别「上游错误被当成正文」。 */
+  readonly #textParts: string[] = []
+  /** 本回合是否出现过工具调用；出现过就不再按「纯错误通告」判定。 */
+  #toolCallSeen = false
   readonly #permissionIds = new Set<string>()
   readonly #onBridgePermission: PromptTurnOptions['onBridgePermission']
   readonly #onArgumentIssues: PromptTurnOptions['onArgumentIssues']
@@ -433,6 +443,16 @@ export class PromptTurn {
       }, true)
       return
     }
+    if (response.stopReason === 'end_turn') {
+      // 正文只有一条上游错误通告：官方 agent 把上游失败写成了普通文本（end_turn），
+      // 不识别就会把它当成一次成功回复。回合里出现过工具调用时不判——那时正文
+      // 里的通告是真·回复的一部分。
+      const notice = describeUpstreamErrorNotice(this.#textParts.join(''), this.#toolCallSeen)
+      if (notice !== undefined) {
+        this.#fail({ code: AGY_TURN_ERROR.UPSTREAM_ERROR_NOTICE, message: notice }, true)
+        return
+      }
+    }
     // 单步无工具回合直出真实 `PromptResponse.usage`；多步工具回合结合已出账的
     // 中间步水位做差额对账，并在 K_acp > K_dsh 时钳制到末步实测 `usage_update.used`。
     this.finishRound(this.#usage.reconcileFinalStep(response.usage ?? undefined))
@@ -522,6 +542,12 @@ export class PromptTurn {
         this.#onConfigOptions?.(configUpdate.configOptions)
         return
       }
+      case 'tool_call':
+      case 'tool_call_update':
+        // 通告本身不进 DSH 输出通道（真正的调用由桥 park 后 #emitToolCallBlock 产出），
+        // 但要记住本轮出现过工具调用，供「上游错误被当正文」的判定排除误伤。
+        this.#toolCallSeen = true
+        return
       default:
         // 其余 update（plan / tool_call / usage_update / mode / compaction …）
         // 是进度或遥测信息，DSH StreamChunk 词表无对应表达；内容只存在于上面
@@ -537,6 +563,7 @@ export class PromptTurn {
     }
     const text = renderContentText(content)
     if (text === undefined) return
+    if (blockType === 'text') this.#textParts.push(text)
     if (blockType === 'text' && text.trim().length > 0) this.#hasOutput = true
     if (this.#open && (this.#open.blockType !== blockType || this.#open.messageId !== messageId)) {
       this.closeOpenBlock()
@@ -553,6 +580,7 @@ export class PromptTurn {
 
   #emitToolCallBlock(call: BridgeParkedCall): void {
     this.#hasOutput = true
+    this.#toolCallSeen = true
     this.closeOpenBlock()
     const index = this.#nextIndex++
     this.#push({ type: 'block-start', index, blockType: 'tool-call' })
@@ -594,6 +622,33 @@ export class PromptTurn {
     signal.addEventListener('abort', onAbort, { once: true })
     this.#abortCleanup = () => signal.removeEventListener('abort', onAbort)
   }
+}
+
+/**
+ * 识别「上游错误被 agent 当作正文返回」的回合。
+ *
+ * 官方 CLI 1.5.17 实测：上游失败（例如 429）会以 `end_turn` + 一条
+ * `⚠ <CODE> (code NNN): <detail>` 文本收尾——binary 里的模板就是
+ * `end_turn\n⚠ %s\n`，ACP 层面没有任何 error 信号。若把这种正文当成功回复，
+ * 宿主会记 `completed`：GUI 没有失败横幅、IM 按成功投递，失败既不显示也没有
+ * 重试入口。
+ *
+ * 判定刻意收窄：正文必须**只有**这条通告，且本轮没有出现过工具调用——否则
+ * 正文里的通告可能只是真·回复的一部分。
+ *
+ * @returns 可读的失败描述；不是这种形态时返回 undefined。
+ */
+export function describeUpstreamErrorNotice(text: string, toolCallSeen: boolean): string | undefined {
+  if (toolCallSeen) return undefined
+  const match = /^\s*⚠\s+([A-Z][A-Z0-9_]*)\s+\(code\s+(\d{3})\)\s*:\s*([^\n]*?)\s*$/.exec(text)
+  if (match === null) return undefined
+  const status = match[1] ?? ''
+  const code = match[2] ?? ''
+  const rawDetail = match[3] ?? ''
+  const detail = rawDetail.length > 200 ? `${rawDetail.slice(0, 200)}…` : rawDetail
+  return `上游以 ${status} (HTTP ${code}) 结束了本轮，正文只有这条通告：${detail}`
+    + ' 上游失败被 agent 当成正文返回，本轮没有任何产出；这类 429 也可能是内容被上游拒绝（不一定是额度），'
+    + '先检查本轮注入的指令（工作区 AGENTS.md / skill）再重试'
 }
 
 function readErrorCode(error: unknown): string {

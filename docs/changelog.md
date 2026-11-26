@@ -4,6 +4,17 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 0.5.7 · 2026-11-26
+
+- **修复：宿主中途新增工具会让已有 ACP 会话整轮报废（`AGY_SESSION_UNRECOVERABLE`）**。2026-11-26 真机（`session-a1c4ea7a`，模型 `gemini-4-carbon`）：另一个会话调了两次 `bcdp_*`，`dsh-browser-cdp` 的 lazy 注入把 28 个工具注册进**进程全局**工具面，本会话第 2 步的路由指纹随之变化，直接判「工具目录已变化」并报废对话。根因是工具被塞进了路由指纹，而 ACP 的语义里工具面在 `session/new` 就固定了：签名只在第一轮 prompt 里发一次、复用轮只发增量，宿主后来加的工具这个 agent 根本调不到。现在 `routeFingerprint` 只覆盖 provider / 模型 / 思考强度 / 官方映射 / system，工具目录改用 `toolsDigest` **只做诊断**（复用轮变化时记一条日志，说明新工具从下一个新会话开始可用）。
+- **升级路径：旧映射不会被误报成路由变化**。路由指纹方案版本落在映射里（`routeVersion`，本次由 1 提升到 2）；读到旧版本条目时按「陈旧映射」软失效——丢弃映射、新开会话并把历史重放一次，而不是让用户看到一条假的「模型或系统提示已变化」。回归用例：`tests/multi-session-bridge.test.ts`「旧版映射（没有 routeVersion）按陈旧处理」。
+- **新增回归测试**：`tests/multi-session-bridge.test.ts` 增加「宿主中途新增工具不再让已有会话报废」——同一会话第二轮多出两个 `bcdp_*` 工具时仍复用原 ACP 会话（`session/resumed` 均为空、`session/new` 只发生一次）。
+- **文案与文档同步**：硬失效原因从「模型、系统提示或工具目录已变化」改为「模型或系统提示已变化」；`docs/reference.md`、`docs/configuration.md`、`docs/claims.md`（#31）与 `src/runtime/session-map.ts` 注释一并更新。
+- **修复：上游失败被官方 agent 写成正文时，回合被记成「成功回复」**。2026-11-26 真机（`session-e3421f85`，IM 触发）：`agy` 对上游 429 连试 8 次后，用 `end_turn` + 一条 `⚠ RESOURCE_EXHAUSTED (code 429): …` 文本收尾，ACP 层没有任何 error 信号，插件把它当正文透传，宿主据此记 `completed`——GUI 没有失败横幅、IM 按成功投递，用户看到的是一句怪话且没有重试入口。现在 `PromptTurn` 在 `end_turn` 时校验「正文是否只有这条上游错误通告且本轮没有工具调用」，命中即按失败收尾（新错误码 `AGY_UPSTREAM_ERROR_NOTICE`，措辞里点明「这类 429 也可能是内容被上游拒绝，不一定是额度」）。
+- **配套：该轮按「未交付」记账**。适配器把 `AGY_UPSTREAM_ERROR_NOTICE` 与用户取消同等对待（`cancelled`），保留 ACP 会话与 MCP 作用域、跳过输出指纹校验；否则下一轮会因为宿主历史里没有那段通告文本被判成「上一轮输出已变化或来自其他会话」，整条对话报废。
+- **登记：上游对越狱模板指纹返回 429（不是额度、并发或模型问题）**。同账号交替探针（2026-11-26）：`[MODE: UNRESTRICTED SANDBOX — STABLE]`（35 B）→ 8 次重试全 429；`[MODE: HELPFUL SANDBOX — STABLE]`（61 B）、`[MODE: UNRESTRICTED SANDBOX]`（29 B）、`UNRESTRICTED SANDBOX — STABLE`（32 B）、中性 41 KB → 全部正常；Hydrogen 与 Carbon 都触发。`docs/claims.md` 新增 #29 / #30，`docs/reference.md` 排障表新增该错误码的处置建议。
+- 新增回归测试 `tests/upstream-notice.test.ts`（8 例）：通告形态识别、正文含其它文字不判、出现过工具调用不判、长原文截断，以及 `PromptTurn` 收尾的两条（纯通告 → 失败；正常正文 → 仍成功）。
+
 ## 0.5.6 · 2026-11-25
 
 - **修复：用户在 DSH 中断会话后再继续发送报 `AGY_SESSION_UNRECOVERABLE`，对齐 `agy` 中断续聊语义**。真机复现（2026-11-25 `session-b75e93d0`）：在带工具会话的续轮或首步点击中断后，下一轮发送直接报「磁盘上没有该会话的映射（可能已被清理）」。根因有四处叠加：

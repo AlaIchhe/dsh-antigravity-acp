@@ -43,6 +43,9 @@
 | 26 | agy 对 MCP 工具声明 `mcp_dsh-tools_<后缀>_<短名>`，并在声明里附加必填 `toolSummary`；调用进 MCP 前这两项被剥离 | `adapter/tool-args.ts` | ✅ | 2026-11-18：agy 会话库里的工具声明含 `{"required":["toolSummary"],…}` 与 `mcp_dsh-tools_5406866c_*`；DSH `session-6642c5ed` 的 584 次 `tool/call` 参数里没有 `toolSummary` |
 | 27 | `PromptResponse.usage` 四桶互斥（`inputTokens + cachedReadTokens + cachedWriteTokens + outputTokens === totalTokens`），且 `outputTokens` 已包含 `thoughtTokens` | `adapter/usage-accounting.ts` | ✅ | 2026-11-25 真机探针：单步 12194+0+0+111=12305（thought=45≤111）；3 步工具轮 28148+10564+0+497=39209（thought=347≤497） |
 | 28 | 多步工具回合中 `usage_update` 在对应 MCP `tools/call` 之前到达（间隔约 1.4–1.6s） | `adapter/prompt-turn.ts`、`adapter/usage-accounting.ts` | ✅ | 2026-11-25 真机探针：`usage_update(12803)` +14842ms → `tools/call` +16420ms；`usage_update(12974)` +44856ms → `tools/call` +46304ms；`tests/real-usage-accounting.test.ts` |
+| 29 | 上游对含越狱模板指纹的提示词返回 `RESOURCE_EXHAUSTED (HTTP 429)`，而不是 safety refusal；与账号额度、并发、模型无关 | 无（上游行为，插件只登记不下判断） | ✅ | 2026-11-26 本机探针矩阵（同账号交替发送）：`[MODE: UNRESTRICTED SANDBOX — STABLE]` 35 B → 8 次重试全 429；`[MODE: HELPFUL SANDBOX — STABLE]` 61 B、`[MODE: UNRESTRICTED SANDBOX]` 29 B、`UNRESTRICTED SANDBOX — STABLE` 32 B、中性 41 KB → 正常。Hydrogen / Carbon 都触发；当时额度 82%/83%、同分钟换模型可出流 |
+| 30 | 官方 agent 把上游失败写成 `end_turn` + `⚠ <CODE> (code NNN): <detail>` 文本，ACP 层没有 error 信号（binary 内模板为 `end_turn\n⚠ %s\n`） | `adapter/prompt-turn.ts`（`describeUpstreamErrorNotice`） | ✅ | 2026-11-26 真机：`session-e3421f85` 的 8 次上游 429 最终以该文本收尾并 `stopReason=end_turn`，宿主记 `completed`；`agy` 1.5.17 binary 内可见同一模板 |
+| 31 | 复用轮只发增量，工具签名只在第一轮 prompt 里发一次；agent 的 MCP 工具面在 `session/new` 握手时确定，宿主中途新增工具对已有会话没有实际影响 | `adapter/prompt-transcript.ts`（`buildPromptContent` 一次注入）、`adapter/image-content.ts`（`buildPromptDeltaWithImages` 只发增量）、`adapter/session-reuse.ts`（指纹不含 tools） | 🟡 | 插件侧行为由 `tests/multi-session-bridge.test.ts`「宿主中途新增工具不再让已有会话报废」锁定；官方 agent 是否会在长回合中重新 `tools/list` 未做真机确认（`AGY_REAL_ACP` 可升级为 ✅） |
 
 ## 优先验证顺序（按“错了会怎样”排序）
 

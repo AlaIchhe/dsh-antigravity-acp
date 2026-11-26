@@ -160,6 +160,7 @@ node scripts/preview-ui.mjs
 
 - `tests/real-id-stability.test.ts`：扫描 1125 条真实 message、14 种 `source.kind`，确认每条都有 `id`、UUID 形态、**单个会话内全部唯一**（60 个会话逐一检查）。曾误判为「跨会话有重复 id」，实为跨会话不共享 id 空间的正常现象。
 - `tests/real-injection-regression.test.ts`：工具循环中途注入，续轮正常。
+- `tests/upstream-notice.test.ts`：官方 agent 把上游失败写成 `end_turn` + `⚠ <CODE> (code NNN): <detail>` 文本时，`PromptTurn` 必须按失败收尾（`AGY_UPSTREAM_ERROR_NOTICE`）而不是记成成功；含「正文还有别的文字不判」「出现过工具调用不判」两条防误伤。真机侧证据见 `docs/claims.md` #29 / #30。
 - `tests/real-restart-resume.test.ts`：销毁 adapter 后新建实例 + 同一 `sessions.json` 恢复成功（`已恢复 ACP 会话 … 已发送消息=1`，`finish=stop`）。**这是 id 纳入指纹后最危险的路径**，必须真机验证——离线用例无法覆盖跨进程。
 
 **一次被实验否定的中途修改**：第一次跑恢复实验失败，报「历史不是已发送前缀的追加」。排查后确认不是 DSH 的问题，而是实验脚本重建历史时**新造了消息对象**（新 id），与 DSH「从日志原样返回同一条消息」的真实行为不符。修正脚本后通过。这条记录保留，因为「同 id 才算同一条消息」正是本次改动的核心前提。
