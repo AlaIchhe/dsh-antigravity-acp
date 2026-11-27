@@ -4,7 +4,7 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
-## 未发布（基于 1.0.0-rc.1）
+## 1.0.0-rc.2 · 2026-11-27（预发版：修复同会话多段工具调用导致对话报废）
 
 - **修复：同一 ACP 会话里出现第二段工具调用时整轮报废（`AGY_SESSION_UNRECOVERABLE（没有可发送的增量消息）`）**。真机复现于 2026-11-27 09:50 的会话：第 1 步 `glob`、第 2 步 `grep` 都正常回喂，第 3 步直接报错。根因是 rc.1 重构 `ContinuationState` 时漏掉了 v0.5.7 的「续轮接受后轮换账本」语义——`#history` 在构造时冻结在首个请求上、`#emitted` 只增不减，于是从第二段工具调用起 `accepts()` 恒为假；adapter 误判「输入已偏离当前工具续轮」而 abort 回合，abort 又把会话标成 `cancelled`，紧接着 `evaluateRecordContinuity` 只看得到未投递的工具结果与上一段 assistant 输出（`skipToolResults` 后为空），直接判 `unrecoverable` 并删掉磁盘映射。现在「接受续轮」与「换账本」是同一个原子动作（`rotateContinuation`），并补了真机路径的回归用例：一个会话、一个 prompt、连续两段 MCP 工具调用必须全部走通。
 
