@@ -12,7 +12,8 @@
 import type { ClientCapabilities } from '@agentclientprotocol/sdk'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { SubprocessHandle, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { ensureAcpCredentials } from '../auth/token-store.js'
+import { createSubprocessKeyringReader, ensureAcpCredentials } from '../auth/token-store.js'
+import type { KeyringReader } from '../auth/token-store.js'
 import { AgentLink, agentStreamFromSubprocess, AGY_CLIENT_INFO, AGY_LINK_ERROR, launchAcpAgent } from '../protocol/agent-link.js'
 import type { AgentLinkHandlers } from '../protocol/agent-link.js'
 import { withAbort } from './abort.js'
@@ -50,6 +51,8 @@ export interface AcpRuntimeManagerOptions {
   isLinkBusy?: (link: AgentLink) => boolean
   fetchImpl?: typeof fetch
   log?: AcpRuntimeLog
+  /** 仅系统账号使用：在 CLI token 文件缺失时只读回退系统钥匙串。 */
+  readKeyring?: KeyringReader
   /** 仅测试覆写：检查 Windows Low 完整性。 */
   checkLowIntegrity?: (executable: string) => Promise<boolean>
   /** 仅测试覆写：自定义凭据准备。 */
@@ -98,13 +101,14 @@ export class AcpRuntimeManager {
 
     const account = this.#options.resolveAccount()
 
-    // 1. 当前链路与账号一致且存活：直接复用。
+    // 1. 当前链路与账号一致且存活：直接复用并补齐调用方回调。
     if (
       this.#current
       && !this.#current.link.closed
       && this.#current.accountId === account.id
       && this.#current.accountRevision === account.revision
     ) {
+      this.#current.link.setHandlers(handlers)
       return this.#current.link
     }
 
@@ -115,6 +119,7 @@ export class AcpRuntimeManager {
       && this.#inflight.accountRevision === account.revision
     ) {
       const managed = await this.#awaitInflight(this.#inflight, signal)
+      managed.link.setHandlers(handlers)
       return managed.link
     }
 
@@ -285,9 +290,13 @@ export class AcpRuntimeManager {
       }
 
       const prepareCreds = this.#options.prepareCredentials ?? ensureAcpCredentials
+      const readKeyring = account.system
+        ? (this.#options.readKeyring ?? createSubprocessKeyringReader(this.#options.subprocess))
+        : undefined
       const cred = await prepareCreds({
         homeDir: account.home,
         fetchImpl: this.#options.fetchImpl,
+        ...(readKeyring ? { readKeyring } : {}),
       })
       if (!cred.ready) {
         this.#options.log?.warn(`antigravity-acp: 凭据导入未就绪（账号 ${account.id}）：${cred.note ?? '未知原因'}`)

@@ -4,6 +4,14 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.0.0 · 2026-11-27（正式版：方案 A 共享常驻架构 + 修复已有会话切模型死锁与系统钥匙串登录态读取）
+
+汇总 `1.0.0-rc.1` 至 `1.0.0-rc.4` 的全部方案 A 架构重构与稳定性修复，并新增以下修复：
+
+- **修复（[#3](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/3)）：已有对话历史的会话首次切入 Antigravity 模型时不再因 `contextWindow` 未知报错**。`CatalogStore.resolveModel()` 在尚未收到上游实测 `usage_update.size` 前，按模型家族提供保守内存兜底窗口（Gemini `1,048,576`、Claude `200,000`、其它 `128,000`），让 DSH `compaction-basic` 切换检查能够通过；兜底值不写入 `catalog.json`，首轮跑通拿到实测窗口后立即覆盖并持久化。
+- **修复（[#2](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/2)）：兼容新版 `agy` 将 OAuth 凭据迁至系统钥匙串后的「主账号（系统登录）」读取**。仅针对系统账号（隔离账号严格保持文件隔离、绝不串读系统钥匙串），在 `~/.gemini/antigravity-cli/antigravity-oauth-token` 缺失时经 `ctx.subprocess` 只读回退系统钥匙串（macOS `security find-generic-password -s gemini -a antigravity -w`，Linux 桌面在存在 `DBUS_SESSION_BUS_ADDRESS` 时回退 `secret-tool`），兼容 `zalando/go-keyring` 的明文 / 十六进制 / `go-keyring-base64:` 载荷编码，同步打通账号卡片登录态探测、Cloud Code Assist HTTP 额度查询与 ACP 启动凭据预导入，并在钥匙串被锁定或拒绝访问时给出明确引导提示。
+- **修复：共享链路复用与非强制模型刷新细节**。`AcpRuntimeManager.getLink()` 复用已有或在途链路时自动通过 `AgentLink.setHandlers()` 补齐入站回调，避免冷启动首个调用方不带回调时丢失后续 `session/update`；`CatalogStore.refreshCliModels(false)` 在内存已有 CLI 清单时跳过重复派生 `agy models`。
+
 ## 1.0.0-rc.4 · 2026-11-27（预发版：修复系统提示刷新触发冷重放、压缩误判死、毒丸会话复用及 v1.0 深审缺陷）
 
 - **修复：宿主中途刷新 `role === 'system'` 导致工具续轮中断并触发 1.53 MB 冷重放撞 429**。真机复现于 2026-11-27 11:31 的会话（`session-afd68c96` 与 `session-5e320b82`）：当其它插件（如 `free-search`）刷新系统提示并以 `surfaceOp: replace` 原地替换 `messages[0]` 时，`ContinuationState.accepts()` 与 `prefixMatches()` 对 `role === 'system'` 做了严格 ID/内容字节比对，误判为输入偏离/前缀变化，强杀原有缓存健康的 ACP 会话并全量冷重放 416 条历史（1.53 MB），直接触发上游连续 16 次 `HTTP 429 RESOURCE_EXHAUSTED`。现在 `messageFingerprint()` 对 `role === 'system'` 仅锚定槽位角色，`ContinuationState` 容忍工具循环中途原地刷新或尾部新增系统提示消息，并通过 `systemMessagesDigest()` 记录诊断日志。

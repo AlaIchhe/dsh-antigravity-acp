@@ -108,6 +108,7 @@ export class AntigravityRemoteService extends TypertRemoteService {
   /* ── 账号管理 RPC ────────────────────────────────────────────────── */
 
   async listAccounts(): Promise<AccountsResult> {
+    await this._options.accounts.refreshSystemReady()
     return this.buildAccountsResult()
   }
 
@@ -201,10 +202,10 @@ export class AntigravityRemoteService extends TypertRemoteService {
     return this._options.resolveCli?.() !== undefined
   }
 
-  private resolveAccount(id?: string): { id: string; home: string } {
+  private resolveAccount(id?: string): { id: string; home: string; system: boolean } {
     const found = id ? this._options.accounts.resolve(id) : this._options.accounts.active()
     if (!found) throw new Error('账号不存在或已删除')
-    return { id: found.id, home: found.home }
+    return { id: found.id, home: found.home, system: found.system }
   }
 
   private entryFor(key: string): QuotaCacheEntry {
@@ -229,7 +230,7 @@ export class AntigravityRemoteService extends TypertRemoteService {
   }
 
   private async fetchQuotaForAccount(
-    account: { id: string; home: string },
+    account: { id: string; home: string; system: boolean },
     cliOn: boolean,
     entry: QuotaCacheEntry,
     force: boolean,
@@ -252,12 +253,18 @@ export class AntigravityRemoteService extends TypertRemoteService {
         return { ...entry.quota!, credits: entry.credits }
       }
 
+      const httpDeps = {
+        ...(this._options.deps ?? {}),
+        homedir: () => account.home,
+        readKeyring: account.system ? this._options.deps?.readKeyring : undefined,
+      }
+
       const [freshQuota, freshCredits] = await Promise.all([
         quotaCached
           ? Promise.resolve(entry.quota!)
           : cli
             ? fetchAgyUsage(cli.run, cli.cliPath, account.home)
-            : fetchQuotaSnapshot({ ...(this._options.deps ?? {}), homedir: () => account.home }),
+            : fetchQuotaSnapshot(httpDeps),
         creditsCached
           ? Promise.resolve(entry.credits!)
           : cli

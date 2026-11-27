@@ -4,7 +4,7 @@
  * 所有涉及真实 ACP 进程、MCP 桥、工具续轮、取消宽限、多账号切换与并发的端到端测试
  * 均在 `tests/real-session-core.test.ts` 中使用本机真实 `agy acp` 与真实凭据运行。
  */
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -19,7 +19,7 @@ import {
 import type { GenerateOptions, RequestMessage, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
 import { classifyTurnOutcome } from '../src/session/adapter.js'
-import { CatalogStore } from '../src/session/catalog-store.js'
+import { CatalogStore, defaultContextWindowFor } from '../src/session/catalog-store.js'
 import { findModelSelector, findThoughtLevelSelector, normalizeEffort } from '../src/session/model-router.js'
 import { SessionCoordinator, evaluateRecordContinuity } from '../src/session/session-coordinator.js'
 import {
@@ -354,6 +354,37 @@ describe('v1.0 session core pure invariants (zero mocks)', () => {
     await new Promise((r) => setTimeout(r, 30))
     const reloaded = new CatalogStore({ cacheDir, acpVersion: '1.4.0' })
     expect((await reloaded.resolveModel('antigravity-acp', 'gemini-4-hydrogen')).reasoning?.defaultEffort?.toString()).toBe('xhigh')
+  })
+
+  it('CatalogStore returns conservative fallback contextWindow before observation without polluting cache, and prefers observed values', async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'agy-ctx-'))
+    dirs.push(cacheDir)
+
+    expect(defaultContextWindowFor('gemini-4-neon')).toBe(1_048_576)
+    expect(defaultContextWindowFor('claude-sonnet-5-5')).toBe(200_000)
+    expect(defaultContextWindowFor('gpt-oss-120b-medium')).toBe(128_000)
+
+    const store = new CatalogStore({ cacheDir, acpVersion: '1.4.0' })
+    store.observeConfigOptions(configOptionsFor('gemini-4-neon', 'high'), { authoritative: true })
+
+    // 未跑过真实回合前，resolveModel 仍提供家族保守兜底，避免已有会话切模型被 DSH 压缩检查阻断
+    expect((await store.resolveModel('antigravity-acp', 'gemini-4-neon')).context?.contextWindow).toBe(1_048_576)
+    expect((await store.resolveModel('antigravity-acp', 'claude-sonnet-5-5')).context?.contextWindow).toBe(200_000)
+    expect((await store.resolveModel('antigravity-acp', 'gpt-oss-120b-medium')).context?.contextWindow).toBe(128_000)
+
+    // 兜底值不得写入 catalog.json 伪装为实测值
+    await new Promise((r) => setTimeout(r, 30))
+    const savedBefore = JSON.parse(readFileSync(join(cacheDir, 'catalog.json'), 'utf8')) as {
+      models: Array<{ id: string; contextWindow?: number }>
+    }
+    expect(savedBefore.models.find((m) => m.id === 'claude-sonnet-5-5')?.contextWindow).toBeUndefined()
+
+    // 一旦收到上游实测 usage_update.size，立刻覆盖兜底并持久化
+    store.noteContextWindow('claude-sonnet-5-5', 1_000_000)
+    expect((await store.resolveModel('antigravity-acp', 'claude-sonnet-5-5')).context?.contextWindow).toBe(1_000_000)
+    await new Promise((r) => setTimeout(r, 30))
+    const reloaded = new CatalogStore({ cacheDir, acpVersion: '1.4.0' })
+    expect((await reloaded.resolveModel('antigravity-acp', 'claude-sonnet-5-5')).context?.contextWindow).toBe(1_000_000)
   })
 
   it('usage accounting, upstream error notice detection, and model-router pure helpers work accurately', () => {

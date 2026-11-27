@@ -16,9 +16,11 @@ import {
 } from '../src/auth/oauth-client.js'
 import {
   CLI_TOKEN_SUBPATH,
+  decodeKeyringPayload,
   ensureAcpCredentials,
   isTokenUsable,
   parseTokenState,
+  readCliTokenDetail,
 } from '../src/auth/token-store.js'
 import { fetchQuotaSnapshot, parseQuotaSummary } from '../src/auth/code-assist.js'
 import { isContainedDir, loadAccountsFile, saveAccountsFile } from '../src/accounts/store.js'
@@ -106,6 +108,61 @@ describe('auth & accounts domain (pure invariants)', () => {
       await manager.remove('acc_disposable')
       expect(manager.active().id).toBe(SYSTEM_ACCOUNT_ID)
       await expect(manager.remove(SYSTEM_ACCOUNT_ID)).rejects.toThrow('系统账号不可删除')
+    } finally {
+      await manager.dispose()
+    }
+  })
+
+  it('decodes go-keyring payloads (plain, hex, base64, hex+base64) and falls back to keyring only for system account', async () => {
+    const rawJson = JSON.stringify({
+      token: {
+        access_token: 'ya29.test-access',
+        refresh_token: '1//test-refresh',
+        expiry: new Date(Date.now() + 600_000).toISOString(),
+      },
+    })
+    const b64Wrapped = `go-keyring-base64:${Buffer.from(rawJson, 'utf8').toString('base64')}`
+    const hexPlain = Buffer.from(`${rawJson}\n`, 'utf8').toString('hex')
+    const hexB64 = Buffer.from(b64Wrapped, 'utf8').toString('hex')
+
+    expect(JSON.parse(decodeKeyringPayload(rawJson))).toMatchObject({ token: { access_token: 'ya29.test-access' } })
+    expect(JSON.parse(decodeKeyringPayload(b64Wrapped))).toMatchObject({ token: { refresh_token: '1//test-refresh' } })
+    expect(JSON.parse(decodeKeyringPayload(hexPlain))).toMatchObject({ token: { access_token: 'ya29.test-access' } })
+    expect(JSON.parse(decodeKeyringPayload(hexB64))).toMatchObject({ token: { refresh_token: '1//test-refresh' } })
+
+    const emptyHome = makeTemp('agy-nokeyfile-')
+    // 无 readKeyring（隔离账号）：找不到文件时直接空结果
+    const isolated = await readCliTokenDetail(emptyHome)
+    expect(isolated.state).toBeUndefined()
+
+    // 传入 readKeyring（系统账号）：文件不存在时回退系统钥匙串
+    const fromKeyring = await readCliTokenDetail(emptyHome, {
+      readKeyring: async () => ({ status: 'ok', payload: hexB64 }),
+    })
+    expect(fromKeyring.source).toBe('keyring')
+    expect(fromKeyring.state?.accessToken).toBe('ya29.test-access')
+    expect(fromKeyring.state?.refreshToken).toBe('1//test-refresh')
+
+    // 钥匙串被拒绝/锁定时返回可行动提示
+    const deniedQuota = await fetchQuotaSnapshot({
+      homedir: () => emptyHome,
+      readKeyring: async () => ({ status: 'denied', note: 'User interaction is not allowed' }),
+    })
+    expect(deniedQuota.status).toBe('error')
+    expect(deniedQuota.error?.code).toBe('token-missing')
+    expect(deniedQuota.error?.message).toContain('系统钥匙串')
+
+    // AccountsManager.refreshSystemReady 探测钥匙串并更新系统账号 ready（不污染隔离账号）
+    const baseDir = makeTemp('agy-acc-kr-')
+    const manager = new AccountsManager({
+      baseDir,
+      homeDir: emptyHome,
+      readKeyring: async () => ({ status: 'ok', payload: b64Wrapped }),
+    })
+    try {
+      expect(manager.snapshot().accounts[0]?.ready).toBe(false)
+      expect(await manager.refreshSystemReady()).toBe(true)
+      expect(manager.snapshot().accounts[0]?.ready).toBe(true)
     } finally {
       await manager.dispose()
     }

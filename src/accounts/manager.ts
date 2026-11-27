@@ -21,7 +21,15 @@ import {
   startCallbackListener,
 } from '../auth/oauth-client.js'
 import type { CallbackListener, OAuthClientMeta, TokenSet } from '../auth/oauth-client.js'
-import { ACP_HOME_SUBPATH, ACP_TOKEN_FILENAME, CLI_TOKEN_SUBPATH, writeAcpCredentialFiles, writeCliTokenFile } from '../auth/token-store.js'
+import {
+  ACP_HOME_SUBPATH,
+  ACP_TOKEN_FILENAME,
+  CLI_TOKEN_SUBPATH,
+  readCliTokenDetail,
+  writeAcpCredentialFiles,
+  writeCliTokenFile,
+} from '../auth/token-store.js'
+import type { KeyringReader } from '../auth/token-store.js'
 import { accountDirFor, isValidAccountId, loadAccountsFile, saveAccountsFile } from './store.js'
 import type { AccountsFile } from './store.js'
 import {
@@ -52,6 +60,8 @@ export interface AccountsManagerOptions {
   fetchImpl?: typeof fetch
   resolveClient?: () => OAuthClientMeta
   writeCredentials?: (input: { home: string; client: OAuthClientMeta; tokens: TokenSet }) => Promise<void>
+  /** 仅系统账号使用：在 CLI token 文件缺失时只读探测系统钥匙串登录态。 */
+  readKeyring?: KeyringReader
   openBrowser?: (url: string) => Promise<boolean>
   loginTimeoutMs?: number
   loginPort?: number
@@ -77,6 +87,7 @@ interface ActiveLogin {
 }
 
 const AUTH_TERMINAL_RESET_MS = 15_000
+const SYSTEM_KEYRING_CACHE_MS = 15_000
 
 export class AccountsManager {
   private file: AccountsFile
@@ -84,6 +95,9 @@ export class AccountsManager {
   private login: ActiveLogin | undefined
   private authReset?: ReturnType<typeof setTimeout>
   private disposed = false
+  private systemKeyringReady = false
+  private systemKeyringCheckedAt = 0
+  private systemKeyringInflight?: Promise<boolean>
   private readonly revisions = new Map<string, number>()
   private readonly knownIds = new Set<string>()
   private readonly baseDir: string
@@ -93,6 +107,7 @@ export class AccountsManager {
   private readonly fetchImpl: typeof fetch
   private readonly resolveClient: () => OAuthClientMeta
   private readonly writeCredentials: NonNullable<AccountsManagerOptions['writeCredentials']>
+  private readonly readKeyring: KeyringReader | undefined
   private readonly openBrowser: AccountsManagerOptions['openBrowser']
   private readonly loginTimeoutMs: number
   private readonly loginPort: number | undefined
@@ -113,6 +128,7 @@ export class AccountsManager {
         ...(tokens.expiresAt === undefined ? {} : { expiry: new Date(tokens.expiresAt).toISOString() }),
       })
     })
+    this.readKeyring = options.readKeyring
     this.openBrowser = options.openBrowser
     this.loginTimeoutMs = options.loginTimeoutMs ?? 300_000
     this.loginPort = options.loginPort
@@ -123,6 +139,43 @@ export class AccountsManager {
     this.cleanupStagingDirs()
   }
 
+  /**
+   * 异步探测系统账号是否已通过本机文件或系统钥匙串登录（带短 TTL 缓存与并发去重）。
+   * 若磁盘上已有 `antigravity-oauth-token` 文件则立即返回 `true`，不触发钥匙串子进程。
+   */
+  async refreshSystemReady(force = false): Promise<boolean> {
+    if (this.tokenExists(this.homeDir, false)) {
+      this.systemKeyringReady = true
+      this.systemKeyringCheckedAt = this.now()
+      return true
+    }
+    if (!this.readKeyring) {
+      this.systemKeyringReady = false
+      return false
+    }
+    if (!force && this.systemKeyringCheckedAt > 0 && this.now() - this.systemKeyringCheckedAt < SYSTEM_KEYRING_CACHE_MS) {
+      return this.systemKeyringReady
+    }
+    if (this.systemKeyringInflight) return this.systemKeyringInflight
+    const probe = (async () => {
+      try {
+        const detail = await readCliTokenDetail(this.homeDir, { readKeyring: this.readKeyring })
+        this.systemKeyringReady = Boolean(detail.state?.accessToken || detail.state?.refreshToken)
+      } catch {
+        this.systemKeyringReady = false
+      } finally {
+        this.systemKeyringCheckedAt = this.now()
+      }
+      return this.systemKeyringReady
+    })()
+    this.systemKeyringInflight = probe
+    try {
+      return await probe
+    } finally {
+      if (this.systemKeyringInflight === probe) this.systemKeyringInflight = undefined
+    }
+  }
+
   snapshot(): AccountsSnapshot {
     this.syncFromDisk()
     const activeId = this.activeRecordId()
@@ -131,7 +184,7 @@ export class AccountsManager {
       alias: SYSTEM_ACCOUNT_ALIAS,
       system: true,
       active: activeId === SYSTEM_ACCOUNT_ID,
-      ready: this.tokenExists(this.homeDir, false),
+      ready: this.isSystemReady(),
       createdAt: 0,
     }
     const isolated: AccountView[] = this.file.accounts.map((row) => ({
@@ -369,6 +422,9 @@ export class AccountsManager {
 
       let autoActivated = false
       if (target.kind === 'add') {
+        if (this.activeRecordId() === SYSTEM_ACCOUNT_ID && !this.tokenExists(this.homeDir, false) && this.readKeyring) {
+          await this.refreshSystemReady(true)
+        }
         autoActivated = this.commitNewAccount(target, tokenHome, email)
       } else {
         const record = this.file.accounts.find((row) => row.id === target.id)
@@ -412,7 +468,7 @@ export class AccountsManager {
     this.knownIds.add(record.id)
     const activeId = this.activeRecordId()
     const activeReady = activeId === SYSTEM_ACCOUNT_ID
-      ? this.tokenExists(this.homeDir, false)
+      ? this.isSystemReady()
       : this.tokenExists(this.file.accounts.find((row) => row.id === activeId)?.dir ?? '', true)
     if (!activeReady) {
       this.file.activeAccountId = record.id
@@ -461,6 +517,10 @@ export class AccountsManager {
       home: this.homeDir,
       revision: this.revisions.get(SYSTEM_ACCOUNT_ID) ?? 0,
     }
+  }
+
+  private isSystemReady(): boolean {
+    return this.tokenExists(this.homeDir, false) || this.systemKeyringReady
   }
 
   private tokenExists(home: string, checkAcpToken: boolean): boolean {

@@ -63,6 +63,21 @@ const TIER_LABELS: Record<string, string> = {
   max: 'Max',
 }
 
+const DEFAULT_GEMINI_CONTEXT_WINDOW = 1_048_576
+const DEFAULT_CLAUDE_CONTEXT_WINDOW = 200_000
+const DEFAULT_FALLBACK_CONTEXT_WINDOW = 128_000
+
+/**
+ * 尚未拿到真实会话 `usage_update.size` 前的保守默认上下文窗口，避免已有会话首次切入
+ * Antigravity 模型时被 DSH `compaction-basic` 的 `no context capacity` 检查直接阻断。
+ * 仅作内存兜底，绝不写入 `catalog.json`；一旦收到上游实测值即被精确覆盖。
+ */
+export function defaultContextWindowFor(modelId: string): number {
+  if (/gemini/i.test(modelId)) return DEFAULT_GEMINI_CONTEXT_WINDOW
+  if (/claude/i.test(modelId)) return DEFAULT_CLAUDE_CONTEXT_WINDOW
+  return DEFAULT_FALLBACK_CONTEXT_WINDOW
+}
+
 function effortRank(id: string): number {
   const index = (EFFORT_ORDER as readonly string[]).indexOf(id)
   return index === -1 ? EFFORT_ORDER.length : index
@@ -222,6 +237,7 @@ export class CatalogStore {
   /** 刷新 CLI 只读清单（用于补齐 ACP 尚未观测到的模型以及每个家族的实际思考档位）。 */
   async refreshCliModels(force = false): Promise<void> {
     if (!this.#options.loadCliModels) return
+    if (!force && this.#cliModels.size > 0) return
     try {
       const rows = await this.#options.loadCliModels(force)
       const next = new Map<string, CatalogModelEntry>()
@@ -276,7 +292,9 @@ export class CatalogStore {
     }
     const known = this.#acpModels.get(modelId) ?? this.#cliModels.get(modelId)
     const modalities = this.#inputModalities()
-    const contextWindow = this.#contextWindows.get(modelId) ?? known?.contextWindow
+    const contextWindow = this.#contextWindows.get(modelId)
+      ?? known?.contextWindow
+      ?? defaultContextWindowFor(modelId)
     const reasoning = this.#buildReasoningInfo(modelId)
     return {
       provider,
@@ -284,7 +302,7 @@ export class CatalogStore {
       name: known?.name ?? modelId,
       ...(known?.description ? { description: known.description } : {}),
       ...(modalities === undefined ? {} : { inputModalities: modalities }),
-      ...(contextWindow === undefined ? {} : { context: { contextWindow } }),
+      context: { contextWindow },
       ...(reasoning ? { reasoning } : {}),
     }
   }

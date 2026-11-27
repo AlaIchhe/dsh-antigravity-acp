@@ -9,8 +9,8 @@ import { buildAntigravityHarnessBootstrapHeaders } from '@cortexkit/antigravity-
 import type { QuotaErrorCode, QuotaGroup, QuotaSnapshot } from '../shared/rpc-contract.js'
 import { redactSensitiveText } from '../runtime/redact.js'
 import { refreshAccessToken, resolveOAuthClient } from './oauth-client.js'
-import { isTokenUsable, readCliTokenState } from './token-store.js'
-import type { TokenState } from './token-store.js'
+import { isTokenUsable, readCliTokenDetail } from './token-store.js'
+import type { KeyringReader, TokenState } from './token-store.js'
 
 export const CODE_ASSIST_BASE_URL = 'https://daily-cloudcode-pa.googleapis.com/v1internal'
 export const QUOTA_CACHE_MS = 300_000
@@ -35,6 +35,8 @@ export interface CodeAssistProject {
 export interface CodeAssistDeps {
   fetchImpl?: typeof fetch
   readFileImpl?: (path: string) => Promise<string>
+  /** 仅系统账号传入：在 CLI token 文件缺失时只读回退系统钥匙串。 */
+  readKeyring?: KeyringReader
   env?: Readonly<Record<string, string | undefined>>
   now?: () => number
   homedir?: () => string
@@ -189,9 +191,23 @@ export async function fetchQuotaSnapshot(deps: CodeAssistDeps = {}): Promise<Quo
   const updatedAt = new Date(now()).toISOString()
   try {
     const home = (deps.homedir ?? homedir)()
-    const state = await readCliTokenState(home, deps.readFileImpl)
+    const detail = await readCliTokenDetail(home, {
+      ...(deps.readFileImpl ? { readFileImpl: deps.readFileImpl } : {}),
+      ...(deps.readKeyring ? { readKeyring: deps.readKeyring } : {}),
+    })
+    const state = detail.state
     if (!state) {
-      return failure(updatedAt, 'token-missing', '读不到官方 CLI 登录态（antigravity-oauth-token）')
+      if (detail.keyringStatus === 'denied') {
+        return failure(
+          updatedAt,
+          'token-missing',
+          '无法读取系统钥匙串中的官方 CLI 登录态（钥匙串已锁定或未授权），请解锁钥匙串或改用「添加账号」登录',
+        )
+      }
+      const message = deps.readKeyring
+        ? '读不到官方 CLI 登录态（antigravity-oauth-token 与系统钥匙串均未找到），请先用 agy 登录或改用「添加账号」'
+        : '读不到官方 CLI 登录态（antigravity-oauth-token）'
+      return failure(updatedAt, 'token-missing', message)
     }
     if (!state.accessToken && !state.refreshToken) {
       return failure(updatedAt, 'token-missing', '官方 CLI 登录态里没有可用 token，请先在 Antigravity 登录')

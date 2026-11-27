@@ -207,7 +207,7 @@ export class AgentLink {
   #handlers: AgentLinkHandlers
   #closeTimeoutMs: number
   /** 无法路由的畸形帧只留痕并丢弃，不据此关闭链路（见 #route）。 */
-  readonly #onProtocolViolation: ((detail: string) => void) | undefined
+  #onProtocolViolation: ((detail: string) => void) | undefined
   #closePromise?: Promise<void>
 
   #pending = new Map<JsonRpcId, PendingEntry>()
@@ -236,6 +236,20 @@ export class AgentLink {
   /** 链路是否已关闭（主动 close 或对端断流会置位）；已关闭的链路不可复用。 */
   get closed(): boolean {
     return this.#closed
+  }
+
+  /** 补齐或更新入站回调（共享链路复用时确保 adapter 回调挂载生效）。 */
+  setHandlers(handlers: AgentLinkHandlers): void {
+    this.#handlers = {
+      ...this.#handlers,
+      ...(handlers.onSessionUpdate ? { onSessionUpdate: handlers.onSessionUpdate } : {}),
+      ...(handlers.onRequestPermission ? { onRequestPermission: handlers.onRequestPermission } : {}),
+      ...(handlers.onUnexpectedAgentRequest ? { onUnexpectedAgentRequest: handlers.onUnexpectedAgentRequest } : {}),
+      ...(handlers.onProtocolViolation ? { onProtocolViolation: handlers.onProtocolViolation } : {}),
+    }
+    if (handlers.onProtocolViolation) {
+      this.#onProtocolViolation = handlers.onProtocolViolation
+    }
   }
 
   /** 是否已完成 initialize。 */

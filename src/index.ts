@@ -17,6 +17,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { AccountsManager } from './accounts/manager.js'
 import { resolveAccountsDir } from './accounts/paths.js'
+import { createSubprocessKeyringReader } from './auth/token-store.js'
 import { AntigravityRemoteService, registerAntigravityRemote } from './remote/service.js'
 import { AcpRuntimeManager } from './runtime/acp-runtime.js'
 import { installAgyCli } from './runtime/agy-cli-install.js'
@@ -102,9 +103,12 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
   let catalogRef: CatalogStore | undefined
   let adapterRef: AntigravityAcpAdapter | undefined
 
+  const systemKeyringReader = createSubprocessKeyringReader(ctx.subprocess)
+
   const accounts = new AccountsManager({
     baseDir: resolveAccountsDir(),
     fetchImpl: pluginFetch,
+    readKeyring: systemKeyringReader,
     openBrowser: (url) => openExternalUrl(ctx.subprocess, url),
     onChange: () => {
       catalogRef?.clearCliModels()
@@ -141,6 +145,7 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
     resolveAccount: () => accounts.active(),
     isLinkBusy: (link) => adapterRef?.isLinkBusy(link) ?? false,
     fetchImpl: pluginFetch,
+    readKeyring: systemKeyringReader,
     log,
   })
   runtimeRef = runtime
@@ -206,7 +211,7 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
   registerAntigravityRemote(ctx)
   ctx.plugin(AntigravityRemoteService, {
     accounts,
-    deps: { fetchImpl: pluginFetch },
+    deps: { fetchImpl: pluginFetch, readKeyring: systemKeyringReader },
     cliQuotaEnabled: () => config.cliQuotaEnabled === true,
     resolveCli: () => {
       const cliPath = findCli()
