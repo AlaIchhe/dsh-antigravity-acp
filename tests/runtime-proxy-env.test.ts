@@ -23,8 +23,11 @@ import { buildSubprocessEnv, isolatedHomeEnv } from '../src/runtime/process-env.
 import {
   AGY_BINARY_ERROR,
   assertValidVersion,
+  defaultAgentArgs,
   ensureAgentBinary,
+  isAgyCliExecutable,
   pickExecutablePath,
+  resolveAgentArgs,
   resolveInstallRoot,
   versionCachePaths,
 } from '../src/runtime/binary.js'
@@ -126,7 +129,7 @@ describe('runtime/proxy, process-env, binary, agy-cli', () => {
     expect(env.HTTPS_PROXY).toBe('http://127.0.0.1:7890')
   })
 
-  it('locates ACP binary from config, env, and versioned cache without downloading', async () => {
+  it('locates ACP binary from config, env, versioned cache, and local agy CLI fallback without downloading', async () => {
     expect(() => assertValidVersion('../evil')).toThrow()
     expect(pickExecutablePath(['sub/agy_acp_server.par', 'agy_acp_server.par'], 'posix')).toBe('agy_acp_server.par')
     expect(resolveInstallRoot({ LOCALAPPDATA: 'C:\\Local' }, 'win32', 'C:\\Users\\u')).toContain('dsh-antigravity-host')
@@ -138,12 +141,82 @@ describe('runtime/proxy, process-env, binary, agy-cli', () => {
     const bin = join(extractDir, 'agy_acp_server.par')
     writeFileSync(bin, '#!/bin/sh\n')
 
-    const found = await ensureAgentBinary({ cacheDir: dir, version: '1.5.0', platform: 'linux', arch: 'x64', env: {} })
+    const found = await ensureAgentBinary({ cacheDir: dir, version: '1.5.0', platform: 'linux', arch: 'x64', env: {}, home: dir })
     expect(found).toEqual({ executablePath: bin, source: 'cache', version: '1.5.0' })
 
+    // 缓存缺失且 PATH / 默认目录均无 agy 时明确报错
     await expect(
-      ensureAgentBinary({ cacheDir: dir, version: '9.9.9', platform: 'linux', arch: 'x64', env: {} }),
+      ensureAgentBinary({ cacheDir: dir, version: '9.9.9', platform: 'linux', arch: 'x64', env: {}, home: dir }),
     ).rejects.toMatchObject({ code: AGY_BINARY_ERROR.BINARY_MISSING })
+
+    // 缓存缺失但默认安装目录（~/.local/bin/agy）存在时自动回退到本机 agy CLI
+    const localBinDir = join(dir, '.local', 'bin')
+    mkdirSync(localBinDir, { recursive: true })
+    const localAgy = join(localBinDir, 'agy')
+    writeFileSync(localAgy, '#!/bin/sh\n')
+    const fromDefaultCli = await ensureAgentBinary({
+      cacheDir: dir,
+      version: '9.9.9',
+      platform: 'linux',
+      arch: 'x64',
+      env: {},
+      home: dir,
+    })
+    expect(fromDefaultCli).toEqual({ executablePath: localAgy, source: 'cli' })
+
+    // PATH 中的 agy 优先于默认安装目录
+    const pathBinDir = join(dir, 'path-bin')
+    mkdirSync(pathBinDir, { recursive: true })
+    const pathAgy = join(pathBinDir, 'agy')
+    writeFileSync(pathAgy, '#!/bin/sh\n')
+    const fromPathCli = await ensureAgentBinary({
+      cacheDir: dir,
+      version: '9.9.9',
+      platform: 'linux',
+      arch: 'x64',
+      env: { PATH: pathBinDir },
+      home: dir,
+    })
+    expect(fromPathCli).toEqual({ executablePath: pathAgy, source: 'cli' })
+
+    // 显式 cliPath（对应 config.agyCliPath）优先于 PATH
+    const customAgy = join(dir, 'custom-dir', 'agy')
+    mkdirSync(join(dir, 'custom-dir'), { recursive: true })
+    writeFileSync(customAgy, '#!/bin/sh\n')
+    const fromCliPath = await ensureAgentBinary({
+      cacheDir: dir,
+      cliPath: customAgy,
+      version: '9.9.9',
+      platform: 'linux',
+      arch: 'x64',
+      env: { PATH: pathBinDir },
+      home: dir,
+    })
+    expect(fromCliPath).toEqual({ executablePath: customAgy, source: 'cli' })
+
+    // AGY_ACP_BIN 指向 agy 时保留 source=env
+    const fromEnvAgy = await ensureAgentBinary({
+      cacheDir: dir,
+      version: '9.9.9',
+      platform: 'darwin',
+      arch: 'arm64',
+      env: { AGY_ACP_BIN: localAgy },
+      home: dir,
+    })
+    expect(fromEnvAgy).toEqual({ executablePath: localAgy, source: 'env' })
+
+    // 统一 agy CLI 与旧版独立 agy_acp_server 的参数区分
+    expect(isAgyCliExecutable('/Users/alice/.local/bin/agy')).toBe(true)
+    expect(isAgyCliExecutable('C:\\Users\\alice\\AppData\\Local\\agy\\bin\\agy.exe')).toBe(true)
+    expect(isAgyCliExecutable('/opt/agy/agy_acp_server.par')).toBe(false)
+    expect(defaultAgentArgs('linux', '/usr/local/bin/agy')).toEqual(['acp'])
+    expect(defaultAgentArgs('darwin', '/Users/alice/.local/bin/agy')).toEqual(['acp'])
+    expect(defaultAgentArgs('linux', '/opt/agy/agy_acp_server.par')).toEqual(['--uid='])
+    expect(resolveAgentArgs('/root/.local/bin/agy', undefined, 'linux')).toEqual(['acp'])
+    expect(resolveAgentArgs('/root/.local/bin/agy', ['--disable-telemetry'], 'linux')).toEqual(['acp', '--disable-telemetry'])
+    expect(resolveAgentArgs('/root/.local/bin/agy', ['acp', '--disable-telemetry'], 'linux')).toEqual(['acp', '--disable-telemetry'])
+    expect(resolveAgentArgs('/opt/agy/agy_acp_server.par', ['--foo'], 'linux')).toEqual(['--uid=', '--foo'])
+    expect(resolveAgentArgs('/opt/agy/agy_acp_server.par', ['--foo'], 'darwin')).toEqual(['--foo'])
   })
 
   it('parses agy CLI models with per-family tiers, usage, and credits cleanly', () => {

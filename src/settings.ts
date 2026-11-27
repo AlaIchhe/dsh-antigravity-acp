@@ -17,7 +17,7 @@ export interface AntigravityHostConfig {
   agentMode?: string
   /** 官方 agy CLI 路径；留空依次查 AGY_CLI_BIN、PATH 和默认安装目录。 */
   agyCliPath?: string
-  /** 官方 agy-acp-server 可执行文件路径；优先级高于 AGY_ACP_BIN 与缓存目录。 */
+  /** 官方 ACP server 或 agy CLI 可执行文件路径；优先级高于 AGY_ACP_BIN、缓存目录与本机 agy CLI 自动发现。 */
   binaryPath?: string
   /** 传给 ACP server 的额外命令行参数。 */
   extraArgs?: string[]
@@ -88,7 +88,7 @@ export const Config = Schema.object({
   hiddenModels: Schema.array(Schema.string()).default([]).volatile().description('不出现在 DSH 模型选择器中的模型 ID 列表'),
   agentMode: Schema.string().volatile().description('会话模式（agent 声明的 mode id，如 plan）；留空沿用默认，只影响新建或恢复的会话'),
   agyCliPath: Schema.string().volatile().description('官方 agy CLI 路径；留空依次查 AGY_CLI_BIN、PATH 和默认安装目录'),
-  binaryPath: Schema.string().description('官方 agy-acp-server 可执行文件路径；留空按 AGY_ACP_BIN → 缓存目录解析，找不到直接报错'),
+  binaryPath: Schema.string().description('官方 ACP server 或 agy CLI 路径；留空按 AGY_ACP_BIN → 缓存目录 → 本机 agy CLI（agyCliPath / AGY_CLI_BIN / PATH / 默认目录）解析'),
   extraArgs: Schema.array(Schema.string()).default([]).description('传给 ACP server 的额外命令行参数'),
   acpVersion: Schema.string().default(DEFAULT_ACP_SERVER_VERSION).description('期望的 ACP server 版本；用于匹配缓存目录与目录缓存'),
   requestTimeoutMs: Schema.natural().default(30_000).description('单个 ACP 请求默认超时（毫秒）'),

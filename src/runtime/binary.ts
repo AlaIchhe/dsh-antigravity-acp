@@ -1,12 +1,13 @@
 /**
  * 官方 Antigravity ACP server 二进制定位与临时运行目录管理（v1.0 精简版）。
  *
- * 解析顺序：config.binaryPath → 环境变量 AGY_ACP_BIN → 缓存目录中已安装的对应版本。
+ * 解析顺序：config.binaryPath → 环境变量 AGY_ACP_BIN → 缓存目录中已安装的对应版本 → 本机官方 `agy` CLI（agyCliPath / AGY_CLI_BIN / PATH / 默认安装目录）。
  * 不执行自动下载，找不到直接报 AGY_BINARY_MISSING。
  */
 import { access, chmod, mkdir, readdir, rm } from 'node:fs/promises'
 import { homedir as osHomedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { agyCliCandidates } from './agy-cli.js'
 
 export const DEFAULT_ACP_SERVER_VERSION = '1.4.0'
 export const CACHE_SUBPATH = ['cache', 'antigravity-acp'] as const
@@ -42,8 +43,30 @@ export const ACP_DISTRIBUTIONS = {
   linux: { directory: 'linux', executable: 'agy_acp_server.par', defaultArgs: ['--uid='] },
 } as const
 
-export function defaultAgentArgs(platform: NodeJS.Platform = process.platform): readonly string[] {
+export function isAgyCliExecutable(executablePath: string): boolean {
+  const base = executablePath.split(/[\\/]/).at(-1)?.toLowerCase() ?? ''
+  return base === 'agy' || base === 'agy.exe'
+}
+
+export function defaultAgentArgs(
+  platform: NodeJS.Platform = process.platform,
+  executablePath?: string,
+): readonly string[] {
+  if (executablePath && isAgyCliExecutable(executablePath)) return ['acp']
   return platform === 'linux' ? [...ACP_DISTRIBUTIONS.linux.defaultArgs] : []
+}
+
+/** 根据目标可执行文件类型构造启动参数：统一 `agy` CLI 自动补 `acp` 子命令且不重复、不附带旧版 `--uid=`。 */
+export function resolveAgentArgs(
+  executablePath: string,
+  extraArgs?: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const extra = extraArgs ?? []
+  if (isAgyCliExecutable(executablePath)) {
+    return extra[0] === 'acp' ? [...extra] : ['acp', ...extra]
+  }
+  return [...defaultAgentArgs(platform), ...extra]
 }
 
 export function mapNodePlatform(
@@ -143,14 +166,16 @@ export async function releaseRuntimeDirectory(directory: RuntimeDirectory): Prom
 
 export interface AgentBinaryResolution {
   executablePath: string
-  source: 'config' | 'env' | 'cache'
+  source: 'config' | 'env' | 'cache' | 'cli'
   version?: string
 }
 
 export interface AgentBinaryOptions {
   binaryPath?: string
+  cliPath?: string
   version?: string
   env?: Readonly<Record<string, string | undefined>>
+  home?: string
   cacheDir?: string
   platform?: NodeJS.Platform
   arch?: string
@@ -187,9 +212,10 @@ async function findExtractedExecutable(extractDir: string, flavor: ExecutableFla
 
 export async function ensureAgentBinary(options: AgentBinaryOptions = {}): Promise<AgentBinaryResolution> {
   const env = options.env ?? process.env
+  const home = options.home ?? osHomedir()
   const version = options.version ?? DEFAULT_ACP_SERVER_VERSION
   const platform = options.platform ?? process.platform
-  const installRoot = options.cacheDir ?? resolveInstallRoot(env, platform)
+  const installRoot = options.cacheDir ?? resolveInstallRoot(env, platform, home)
 
   if (options.binaryPath && options.binaryPath.trim().length > 0) {
     const candidate = options.binaryPath.trim()
@@ -216,8 +242,14 @@ export async function ensureAgentBinary(options: AgentBinaryOptions = {}): Promi
     return { executablePath: cached, source: 'cache', version }
   }
 
+  for (const candidate of agyCliCandidates(env, home, options.cliPath, platform)) {
+    if (await fileExists(candidate)) {
+      return { executablePath: resolve(candidate), source: 'cli' }
+    }
+  }
+
   throw new AgyBinaryError(
     AGY_BINARY_ERROR.BINARY_MISSING,
-    `未找到 ACP server 二进制（binaryPath 未配置、AGY_ACP_BIN 未设置、缓存无 ${version} 版本）。`,
+    `未找到 ACP server 二进制（binaryPath 未配置、AGY_ACP_BIN 未设置、缓存无 ${version} 版本，且未在 PATH 或默认目录找到官方 agy CLI）。`,
   )
 }

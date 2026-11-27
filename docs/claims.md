@@ -47,6 +47,7 @@
 | 30 | 官方 agent 把上游失败写成 `end_turn` + `⚠ <CODE> (code NNN): <detail>` 文本，ACP 层没有 error 信号（binary 内模板为 `end_turn\n⚠ %s\n`） | `src/session/turn-runner.ts`（`describeUpstreamErrorNotice`） | ✅ | 2026-11-26 真机：`session-e3421f85` 的 8 次上游 429 最终以该文本收尾并 `stopReason=end_turn`，宿主记 `completed`；`agy` 1.5.17 binary 内可见同一模板 |
 | 31 | 复用轮只发增量，工具签名只在第一轮 prompt 里发一次；agent 的 MCP 工具面在 `session/new` 握手时确定，宿主中途新增工具对已有会话没有实际影响 | `src/session/transcript.ts`（`buildFullPrompt` 一次注入、`buildDeltaPrompt` 只发增量）、`src/session/session-reuse.ts`（指纹不含 tools） | 🟡 | 插件侧行为由 `tests/session-core.test.ts`「`ContinuationState ignores dynamic tool changes mid-turn`」锁定；官方 agent 是否会在长回合中重新 `tools/list` 未做真机确认（`AGY_REAL_ACP` 可升级为 ✅） |
 | 32 | 官方 `agy` CLI 使用 `zalando/go-keyring` 将 `StoredToken` JSON 写入系统钥匙串（macOS 钥匙串 `service=gemini` / `account=antigravity`，Linux Secret Service 属性 `service=gemini` / `username=antigravity`） | `src/auth/token-store.ts`（`decodeKeyringPayload`、`createSubprocessKeyringReader`） | ⚪ | Linux `agy 1.5.18` 二进制符号确认 `zalando/go-keyring` 与 `KeyringTokenStorage`/`StoredToken`，且 [Issue #2](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/2) 确认 macOS 钥匙串条目；但尚未在 macOS 实机验证 `security find-generic-password` 返回格式与钥匙串弹窗行为 |
+| 33 | 统一官方 `agy` CLI（1.5+）通过 `agy acp` 子命令默认以 stdio JSON-RPC 启动 ACP server，无需 `--uid=`，可直接完成 `initialize` 握手 | `src/runtime/binary.ts`（`isAgyCliExecutable`、`resolveAgentArgs`、`ensureAgentBinary`） | ✅ | 2026-11-27 真机 `agy 1.5.18`：`agy acp --help` 确认默认 `--stdio`，发 `initialize` 返回 `Antigravity ACP Server 1.5.18` |
 
 ## 优先补验顺序（剩余未实机验证项）
 

@@ -4,6 +4,12 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.1.1 · 2026-11-27（修复本机仅安装新版 `agy` CLI 时找不到 ACP server 二进制及未自动传 `acp` 子命令）
+
+- **修复（[#4](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/4)）：`ensureAgentBinary` 支持自动回退发现本机官方 `agy` CLI**（[src/runtime/binary.ts](../src/runtime/binary.ts)、[src/runtime/acp-runtime.ts](../src/runtime/acp-runtime.ts)）：当 `config.binaryPath`、`AGY_ACP_BIN` 与缓存目录（1.4.0）均未命中时，自动复用 `agyCliCandidates` 依次查找 `config.agyCliPath`、`AGY_CLI_BIN`、`PATH` 与平台默认安装目录（`~/.local/bin/agy`、`~/bin/agy`、`%LOCALAPPDATA%\agy\bin\agy.exe`），不再因 DSH 进程未继承 shell 环境变量或缺少旧版 1.4.0 独立缓存而报错 `AGY_BINARY_MISSING`。
+- **修复（[#4](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/4)）：指向统一 `agy` CLI 时自动以 `acp` 子命令启动**（[src/runtime/binary.ts](../src/runtime/binary.ts)、[src/runtime/acp-runtime.ts](../src/runtime/acp-runtime.ts)）：新增 `isAgyCliExecutable` 与 `resolveAgentArgs`，无论通过 `binaryPath`、`AGY_ACP_BIN` 还是自动回退解析到 `agy` / `agy.exe`，均自动补齐 `['acp', ...extraArgs]`（若 `extraArgs` 首位已是 `acp` 则不重复），且不再附加旧版独立 `agy_acp_server.par` 在 Linux 上的 `--uid=` 参数；旧版独立 server 行为保持不变。
+- **测试与文档**：在 [tests/runtime-proxy-env.test.ts](../tests/runtime-proxy-env.test.ts) 补齐默认目录 / `PATH` / `cliPath` / `AGY_ACP_BIN` 回退与多平台参数构造单元测试；同步更新 [src/settings.ts](../src/settings.ts)、[docs/configuration.md](configuration.md) 与 [docs/claims.md](claims.md)（#33 真机 `agy 1.5.18` 实测断言）。
+
 ## 1.1.0 · 2026-11-27（协议/并发稳定性加固、持久化裁剪、设置页高级配置与 DSH Bundle 生态完善）
 
 ### 协议、并发与资源清理

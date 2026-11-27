@@ -16,7 +16,7 @@
 | `cancelGraceMs` | `30000` | 是 | 用户取消后等待 agent 确认停止的上限（毫秒）；`0` 表示立即回收进程。 |
 | `idleRecycleMs` | `900000` | 是 | 空闲共享 ACP 进程保留时长（毫秒，默认 15 分钟）；超时回收，下次按 `session/resume` 接回。`0` 表示不回收。 |
 | `cliQuotaEnabled` | `false` | 是 | 是否允许额度取数调用本机 `agy` CLI。关闭时套餐额度走 Cloud Code Assist HTTP，不查 AI Credits；开启后仅运行 `agy -p /usage` 与 `/credits`，未找到 CLI 时直接报错（不回落 HTTP）。 |
-| `binaryPath` | 未设置 | 否 | 官方 ACP server 可执行文件路径，优先级高于 `AGY_ACP_BIN` 与缓存目录；找不到直接报错（不自动下载）。 |
+| `binaryPath` | 未设置 | 否 | 官方 ACP server 或 `agy` CLI 可执行文件路径，优先级高于 `AGY_ACP_BIN`、缓存目录与本机 `agy` CLI 自动发现；指向 `agy` 时自动以 `acp` 子命令启动，找不到直接报错（不自动下载）。 |
 | `extraArgs` | `[]` | 否 | 传给 ACP server 的额外命令行参数。 |
 | `acpVersion` | `"1.4.0"` | 否 | 缓存目录与目录缓存匹配的目标版本。 |
 | `requestTimeoutMs` | `30000` | 否 | 普通 ACP 请求超时（毫秒）。 |

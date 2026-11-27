@@ -20,10 +20,10 @@ import { withAbort } from './abort.js'
 import {
   AGY_BINARY_ERROR,
   createRuntimeDirectory,
-  defaultAgentArgs,
   DEFAULT_ACP_SERVER_VERSION,
   ensureAgentBinary,
   releaseRuntimeDirectory,
+  resolveAgentArgs,
 } from './binary.js'
 import type { RuntimeDirectory } from './binary.js'
 import { describeLowIntegrity, isLowIntegrityTarget } from './integrity.js'
@@ -302,6 +302,7 @@ export class AcpRuntimeManager {
       const proxy = this.#resolveProxyOrThrow(config)
       const binary = await ensureAgentBinary({
         binaryPath: config.binaryPath,
+        cliPath: config.agyCliPath,
         version: config.acpVersion ?? DEFAULT_ACP_SERVER_VERSION,
       })
 
@@ -327,7 +328,7 @@ export class AcpRuntimeManager {
 
       launchSignal.throwIfAborted()
       directory = await createRuntimeDirectory()
-      const extraArgs = [...defaultAgentArgs(), ...(config.extraArgs ?? [])]
+      const extraArgs = resolveAgentArgs(binary.executablePath, config.extraArgs)
       handle = launchAcpAgent(this.#options.subprocess, {
         executable: binary.executablePath,
         extraArgs,
