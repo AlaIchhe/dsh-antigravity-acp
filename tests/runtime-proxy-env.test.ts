@@ -1,7 +1,14 @@
+/**
+ * runtime/proxy、process-env、binary、agy-cli 测试：零 mock fetch / 零 mock undici。
+ * 代理路由用真实本地 HTTP 服务器 + 真实 undici ProxyAgent 验证；
+ * `agy models` 解析除离线断言外，实机环境也直跑真实 `agy models`。
+ */
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   ProxyConfigError,
   ambientProxyEnv,
@@ -23,11 +30,14 @@ import {
 } from '../src/runtime/binary.js'
 import {
   agyCliCandidates,
+  createSubprocessCliRun,
+  fetchAgyModels,
   foldCliModelFamilies,
   parseAgyCredits,
   parseAgyModels,
   parseAgyUsage,
 } from '../src/runtime/agy-cli.js'
+import { createRealSubprocessRuntime, REAL_AGY_BIN, REAL_TESTS_ENABLED } from './helpers/real-env.js'
 
 const tempDirs: string[] = []
 afterEach(() => {
@@ -35,7 +45,7 @@ afterEach(() => {
 })
 
 describe('runtime/proxy, process-env, binary, agy-cli', () => {
-  it('normalizes proxy URLs, preserves loopback bypass, and routes via undici', async () => {
+  it('normalizes proxy URLs, preserves loopback bypass, and routes via real undici ProxyAgent', async () => {
     expect(normalizeProxyUrl('127.0.0.1:7890')).toBe('http://127.0.0.1:7890')
     expect(() => normalizeProxyUrl('ftp://127.0.0.1:21')).toThrow(ProxyConfigError)
     expect(matchesBypass('127.0.0.1', 'localhost,127.0.0.1,::1')).toBe(true)
@@ -48,30 +58,50 @@ describe('runtime/proxy, process-env, binary, agy-cli', () => {
     expect(ambientProxyEnv({ HTTPS_PROXY: 'http://proxy.local:8080' })?.https_proxy).toBe('http://proxy.local:8080')
     expect(resolveHttpsProxy(undefined, { HTTPS_PROXY: 'http://proxy.local:8080' })?.url).toBe('http://proxy.local:8080')
 
-    const fallback = vi.fn(async () => new Response('direct'))
-    const proxyFetch = vi.fn(async () => new Response('proxied'))
-    const destroy = vi.fn(async () => {})
-    const loadUndici = async () => ({
-      ProxyAgent: class { destroy = destroy },
-      fetch: proxyFetch,
+    // 真实本地目标 HTTP 服务器 + 真实本地 HTTP 代理服务器 + 真实 undici ProxyAgent
+    const targetHits: string[] = []
+    const proxyHits: string[] = []
+    const targetServer = createServer((req, res) => {
+      targetHits.push(req.url ?? '')
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end('direct-target')
+    })
+    const proxyServer = createServer((req, res) => {
+      proxyHits.push(req.url ?? '')
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end('via-real-proxy')
     })
 
-    const pf = createProxiedFetch({ url: 'http://127.0.0.1:7890', bypass: 'localhost,127.0.0.1' }, { fallback, loadUndici })
-    await pf('http://127.0.0.1:1234/mcp')
-    expect(fallback).toHaveBeenCalledTimes(1)
-    await pf('https://oauth2.googleapis.com/token')
-    expect(proxyFetch).toHaveBeenCalledTimes(1)
-    await pf.close()
-    expect(destroy).toHaveBeenCalledTimes(1)
+    await Promise.all([
+      new Promise<void>((r) => targetServer.listen(0, '127.0.0.1', () => r())),
+      new Promise<void>((r) => proxyServer.listen(0, '127.0.0.1', () => r())),
+    ])
 
-    let currentUrl: string | undefined
-    const live = createLiveProxiedFetch(() => (currentUrl ? { url: currentUrl, bypass: 'localhost' } : undefined), { fallback, loadUndici })
-    await live('https://example.com')
-    expect(fallback).toHaveBeenCalledTimes(2)
-    currentUrl = 'http://127.0.0.1:7890'
-    await live('https://example.com')
-    expect(proxyFetch).toHaveBeenCalledTimes(2)
-    await live.close()
+    const targetPort = (targetServer.address() as AddressInfo).port
+    const proxyPort = (proxyServer.address() as AddressInfo).port
+    const proxyUrl = `http://127.0.0.1:${proxyPort}`
+
+    const pf = createProxiedFetch({ url: proxyUrl, bypass: 'localhost,127.0.0.1,::1' })
+    const live = createLiveProxiedFetch(() => ({ url: proxyUrl, bypass: 'localhost,127.0.0.1,::1' }))
+    try {
+      // loopback 必须绕过代理直连目标
+      const directResp = await pf(`http://127.0.0.1:${targetPort}/mcp`)
+      expect(await directResp.text()).toBe('direct-target')
+      expect(targetHits).toEqual(['/mcp'])
+      expect(proxyHits).toHaveLength(0)
+
+      // 非 loopback 必须走真实 undici ProxyAgent 到达本地代理服务器
+      const proxiedResp = await live('http://example.invalid/check')
+      expect(await proxiedResp.text()).toBe('via-real-proxy')
+      expect(proxyHits).toEqual(['http://example.invalid/check'])
+    } finally {
+      await pf.close()
+      await live.close()
+      await Promise.all([
+        new Promise<void>((r) => targetServer.close(() => r())),
+        new Promise<void>((r) => proxyServer.close(() => r())),
+      ])
+    }
   })
 
   it('builds minimal scrubbed subprocess env with isolated home and proxy precedence', () => {
@@ -116,13 +146,21 @@ describe('runtime/proxy, process-env, binary, agy-cli', () => {
     ).rejects.toMatchObject({ code: AGY_BINARY_ERROR.BINARY_MISSING })
   })
 
-  it('parses agy CLI models, usage, and credits cleanly', () => {
+  it('parses agy CLI models with per-family tiers, usage, and credits cleanly', () => {
     expect(agyCliCandidates({ PATH: '/usr/local/bin' }, '/home/u', undefined, 'linux')[0]).toBe('/usr/local/bin/agy')
 
-    const rawModels = parseAgyModels('claude-opus-5-5-high\tClaude Opus 5.5 (High)\nclaude-opus-5-5-low\tClaude Opus 5.5 (Low)\ngpt-oss-120b\tGPT OSS\ngemini-4-neon\tGemini 4 Neon\n')
+    const rawModels = parseAgyModels([
+      'claude-opus-5-5-high\tClaude Opus 5.5 (High)',
+      'claude-opus-5-5-low\tClaude Opus 5.5 (Low)',
+      'gpt-oss-120b\tGPT OSS',
+      'gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)',
+      'gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)',
+      'gemini-pro-orchestrator\tOrchestrator (Carbon)',
+    ].join('\n'))
     expect(foldCliModelFamilies(rawModels)).toEqual([
-      { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
-      { id: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+      { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', tiers: ['low', 'high'] },
+      { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', tiers: ['high', 'xhigh'] },
+      { id: 'gemini-pro-orchestrator', name: 'Orchestrator (Carbon)', tiers: [] },
     ])
 
     const usage = parseAgyUsage({
@@ -144,4 +182,20 @@ describe('runtime/proxy, process-env, binary, agy-cli', () => {
     })
     expect(credits).toEqual({ remainingCredits: 4200, planName: 'Pro' })
   })
+
+  it.skipIf(!REAL_TESTS_ENABLED || !REAL_AGY_BIN)('runs real `agy models` and folds real per-family tiers', async () => {
+    const { runtime, killAll } = createRealSubprocessRuntime()
+    const cliRun = createSubprocessCliRun(runtime, () => resolveHttpsProxy(undefined))
+    try {
+      const families = await fetchAgyModels(cliRun, REAL_AGY_BIN!)
+      expect(families.length).toBeGreaterThan(3)
+      const neon = families.find((f) => f.id === 'gemini-4-neon')
+      const claude = families.find((f) => f.id === 'claude-sonnet-5-5')
+      expect(neon?.tiers).toEqual(expect.arrayContaining(['low', 'medium', 'high', 'xhigh']))
+      expect(claude?.tiers).toEqual(expect.arrayContaining(['low', 'medium', 'high']))
+      expect(claude?.tiers).not.toContain('xhigh')
+    } finally {
+      killAll()
+    }
+  }, 60_000)
 })

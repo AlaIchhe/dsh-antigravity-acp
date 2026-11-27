@@ -58,6 +58,7 @@ export function AccountsTab({ api }: { api: AntigravityClientApi }) {
   const [notice, setNotice] = React.useState<{ kind: 'ok' | 'error' | 'busy'; text: string } | null>(null)
   const [newAlias, setNewAlias] = React.useState('')
   const [callbackUrl, setCallbackUrl] = React.useState('')
+  const [copiedState, setCopiedState] = React.useState<'idle' | 'copied' | 'failed'>('idle')
   const [installingCli, setInstallingCli] = React.useState(false)
   const aliveRef = React.useRef(true)
 
@@ -69,7 +70,10 @@ export function AccountsTab({ api }: { api: AntigravityClientApi }) {
   const refresh = React.useCallback(async () => {
     try {
       const result = await api.listAccounts()
-      if (aliveRef.current) setState(result)
+      if (aliveRef.current) {
+        setState(result)
+        setNotice((prev) => (prev?.kind === 'error' ? null : prev))
+      }
     } catch (error) {
       if (aliveRef.current) setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     }
@@ -85,6 +89,7 @@ export function AccountsTab({ api }: { api: AntigravityClientApi }) {
     if (authPhase !== 'preparing' && authPhase !== 'waiting' && authPhase !== 'exchanging') return
     const timer = setInterval(() => {
       void api.listAccounts().then((next) => {
+        if (!aliveRef.current) return
         setState(next)
         if (next.auth.phase === 'done') {
           setNotice({ kind: 'ok', text: next.auth.message ?? '登录成功' })
@@ -119,12 +124,27 @@ export function AccountsTab({ api }: { api: AntigravityClientApi }) {
     setNotice({ kind: 'busy', text: '正在下载并校验官方 agy CLI…' })
     try {
       const outcome = await api.installCli()
+      if (!aliveRef.current) return
       setNotice({ kind: 'ok', text: outcome.message })
       await refresh()
     } catch (error) {
-      setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+      if (aliveRef.current) setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     } finally {
-      setInstallingCli(false)
+      if (aliveRef.current) setInstallingCli(false)
+    }
+  }
+
+  const copyAuthUrl = (url: string) => {
+    const done = (ok: boolean) => {
+      if (!aliveRef.current) return
+      setCopiedState(ok ? 'copied' : 'failed')
+      setTimeout(() => { if (aliveRef.current) setCopiedState('idle') }, 2_000)
+    }
+    const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
+    if (clipboard && typeof clipboard.writeText === 'function') {
+      void clipboard.writeText(url).then(() => done(true), () => done(false))
+    } else {
+      done(false)
     }
   }
 
@@ -133,7 +153,16 @@ export function AccountsTab({ api }: { api: AntigravityClientApi }) {
 
   return (
     <div style={{ display: 'grid', gap: '12px' }}>
-      {notice ? <p className="agy-notice" data-kind={notice.kind} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.text}</p> : null}
+      {notice ? (
+        <div className="agy-notice" data-kind={notice.kind} role={notice.kind === 'error' ? 'alert' : 'status'} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+          <span>{notice.text}</span>
+          {!state && notice.kind === 'error' ? (
+            <button type="button" className="agy-btn" onClick={() => { void refresh() }}>
+              重试
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
         <input
@@ -174,9 +203,17 @@ export function AccountsTab({ api }: { api: AntigravityClientApi }) {
           </div>
           {auth?.authUrl ? (
             <div style={{ display: 'grid', gap: '8px' }}>
-              <a href={auth.authUrl} target="_blank" rel="noreferrer" style={{ fontSize: '12px', wordBreak: 'break-all' }}>
-                打开 Google 授权页面
-              </a>
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <button type="button" className="agy-btn" onClick={() => copyAuthUrl(auth.authUrl!)}>
+                  {copiedState === 'copied' ? '已复制' : copiedState === 'failed' ? '复制失败，请手动选中' : '复制授权链接'}
+                </button>
+                <a href={auth.authUrl} target="_blank" rel="noreferrer noopener" style={{ fontSize: '12px' }}>
+                  打开 Google 授权页面
+                </a>
+              </div>
+              <code style={{ fontSize: '11px', lineHeight: 1.5, wordBreak: 'break-all', padding: '6px 8px', borderRadius: '6px', background: 'rgba(128,128,128,.10)', userSelect: 'all' }}>
+                {auth.authUrl}
+              </code>
               <div style={{ display: 'flex', gap: '6px' }}>
                 <input
                   type="text"

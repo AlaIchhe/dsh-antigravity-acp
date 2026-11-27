@@ -2,7 +2,8 @@
  * 持久化 ACP 会话映射表（format v3）。
  *
  * v1.0 核心简化与修复：
- * - 修复了旧版 `readSessionMap` 漏读 `routeVersion` 导致重启后所有会话全部软失效的 Bug；
+ * - 保留 `routeVersion`、`routeBase` 与 `accountId`：避免重启软失效、避免切档位判死对话、
+ *   避免跨账号把旧账号的 sessionId 拿去新账号 `session/resume`；
  * - 方案 A 下进程内只有一个共享 `SessionCoordinator`，彻底移除跨 worker 的 `symbol`
  *   所有权/claim/unclaim 复杂度；
  * - 复用 `atomic-json.ts` 统一原子写。
@@ -22,6 +23,8 @@ export interface SessionMapEntry {
   /** 去掉思考档位的路由指纹：档位是可运行时调整的旋钮，只变它不该判定会话报废。 */
   routeBase?: string
   routeVersion: number
+  /** 建立该 ACP 会话时所属的账号 ID；切账号时走 `reset-fresh` 而非跨账号 resume。 */
+  accountId?: string
   updatedAt: number
   cancelled?: boolean
 }
@@ -62,6 +65,7 @@ export async function readSessionMap(cacheDir: string): Promise<Record<string, S
       if (!Number.isSafeInteger(row.sentCount) || row.sentCount === undefined || row.sentCount < 0) continue
       if (!isHash(row.sentHash) || !isHash(row.outputHash) || !isHash(row.route)) continue
       if (row.routeBase !== undefined && !isHash(row.routeBase)) continue
+      if (row.accountId !== undefined && (typeof row.accountId !== 'string' || row.accountId.trim() === '')) continue
       const routeVersion = typeof row.routeVersion === 'number' && Number.isSafeInteger(row.routeVersion)
         ? row.routeVersion
         : 0
@@ -74,6 +78,7 @@ export async function readSessionMap(cacheDir: string): Promise<Record<string, S
         route: row.route,
         ...(isHash(row.routeBase) ? { routeBase: row.routeBase } : {}),
         routeVersion,
+        ...(typeof row.accountId === 'string' && row.accountId.trim() !== '' ? { accountId: row.accountId.trim() } : {}),
         updatedAt: typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) ? row.updatedAt : 0,
         ...(row.cancelled === true ? { cancelled: true } : {}),
       }

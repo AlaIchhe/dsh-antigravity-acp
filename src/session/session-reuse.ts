@@ -4,7 +4,10 @@
  * v1.0 关键修复：
  * - `ContinuationState` 与 `SessionCoordinator` 共享同一个 `routeFingerprint`；
  * - 工具目录不参与任何路由或续轮指纹（只作 `toolsDigest` 诊断日志），彻底解决
- *   回合中途或跨轮动态注入工具（如 `bcdp_*`）导致会话或工具续轮中断的问题。
+ *   回合中途或跨轮动态注入工具（如 `bcdp_*`）导致会话或工具续轮中断的问题；
+ * - `messages` 中 `role === 'system'` 的系统提示消息只锚定槽位角色，不锁死动态内容与
+ *   消息 ID，彻底避免其他插件（如搜索/技能目录）刷新系统提示时中断正在执行的工具续轮
+ *   或误触发长会话全量冷重放（进而撞上上游 429）。
  */
 import { createHash } from 'node:crypto'
 import type { ContentBlock, GenerateOptions, RequestMessage } from '@deepseek-ai/dsh-llm'
@@ -78,7 +81,23 @@ export function toolsDigest(tools: GenerateOptions['tools'] | undefined): string
   )).digest('hex')
 }
 
+/** 仅用于诊断日志：汇总 `messages` 中所有 `role === 'system'` 消息的内容摘要。 */
+export function systemMessagesDigest(messages: readonly RequestMessage[]): string {
+  return createHash('sha256').update(stableJson(
+    messages.filter((message) => message.role === 'system').map((message) => message.content),
+  )).digest('hex')
+}
+
+/** 判断消息序列是否包含宿主上下文压缩产生的 `compact-checkpoint`。 */
+export function hasCompactionCheckpoint(messages: readonly RequestMessage[]): boolean {
+  return messages.some((message) => messageSourceKind(message) === 'compact-checkpoint')
+}
+
 export function messageFingerprint(message: RequestMessage): string {
+  // DSH 在插件配置变动或热重载时会用 `surfaceOp: replace` 原地替换 `messages` 中的
+  // `role === 'system'` 消息（换新 id 与微调段落）。此处仅锚定槽位角色，避免把宿主动态
+  // 刷新系统提示误判为前缀改写/上下文压缩，从而触发破坏性的全量冷重放。
+  if (message.role === 'system') return stableJson({ role: 'system' })
   return stableJson({ id: messageId(message), value: messageValue(message) })
 }
 
@@ -149,6 +168,7 @@ export function incrementalMessages(
 
 interface HistoryEntry {
   id: string
+  role: RequestMessage['role']
   value: string
 }
 
@@ -163,6 +183,7 @@ export class ContinuationState {
     this.#route = routeFingerprint(options)
     this.#history = options.messages.map((message) => ({
       id: messageId(message),
+      role: message.role,
       value: stableJson(messageValue(message)),
     }))
     this.#knownIds = new Set(this.#history.map((entry) => entry.id))
@@ -173,6 +194,7 @@ export class ContinuationState {
   }
 
   isHostContext(message: RequestMessage): boolean {
+    if (message.role === 'system') return !this.#knownIds.has(messageId(message))
     if (message.role !== 'user') return false
     if (messageSourceKind(message) === 'user') return false
     return !this.#knownIds.has(messageId(message))
@@ -192,6 +214,8 @@ export class ContinuationState {
     for (const [index, entry] of this.#history.entries()) {
       const message = prefix[index]
       if (message === undefined) return false
+      // 宿主在工具等待期间原地刷新 `role === 'system'`（如插件列表变动）不得打断正在进行的工具续轮。
+      if (entry.role === 'system' && message.role === 'system') continue
       if (messageId(message) !== entry.id) return false
       if (stableJson(messageValue(message)) !== entry.value) return false
     }

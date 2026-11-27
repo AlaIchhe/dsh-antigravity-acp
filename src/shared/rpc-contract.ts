@@ -182,11 +182,6 @@ export function parseModelsResult(value: unknown): ModelsResult {
   return value as unknown as ModelsResult
 }
 
-export function parseEmptyRequest(value: unknown): undefined {
-  if (value !== undefined && value !== null && !isRecord(value)) throw new TypeError('Invalid empty request')
-  return undefined
-}
-
 export function parseStartLoginRequest(value: unknown): StartLoginRequest {
   if (!isRecord(value)) throw new TypeError('Invalid StartLoginRequest')
   if (value.mode !== 'add' && value.mode !== 'relogin') throw new TypeError('Invalid StartLoginRequest.mode')
@@ -230,11 +225,17 @@ export function parseInstallCliResult(value: unknown): InstallCliResult {
 /* ── 共享 Typert Invocation 描述符 ──────────────────────────────────── */
 
 const accountsResultCodec = strictCodec(`${PACKAGE_NAME}#AccountsResult`, parseAccountsResult)
-const emptyRequestCodec = strictCodec(`${PACKAGE_NAME}#EmptyRequest`, parseEmptyRequest)
 
+/**
+ * 构造直接 RPC 描述符。
+ *
+ * 注意：DSH `dsh-api-gateway` 客户端严格按 `values.length === descriptor.parameters.length`
+ * 校验入参个数（`acceptsUndefined: true` 只允许显式传 `undefined`，不放行少传参数）。
+ * 因此无参方法（`listAccounts` / `cancelAccountLogin` / `installCli`）必须声明 `parameters: []`。
+ */
 function directMethod(
   method: string,
-  reqCodec: TypertCodec,
+  reqCodec: TypertCodec | undefined,
   resCodec: TypertCodec,
   acceptsUndefined = false,
 ): InvocationDescriptor {
@@ -244,7 +245,9 @@ function directMethod(
     namespace: REMOTE_SERVICE_NAME,
     method,
     invocation: { kind: 'direct' },
-    parameters: [{ name: 'request', wire: 'request', source: 'json', ...(acceptsUndefined ? { acceptsUndefined: true as const } : {}), codec: reqCodec }],
+    parameters: reqCodec
+      ? [{ name: 'request', wire: 'request', source: 'json', ...(acceptsUndefined ? { acceptsUndefined: true as const } : {}), codec: reqCodec }]
+      : [],
     result: resCodec,
   }
 }
@@ -262,7 +265,7 @@ export const ANTIGRAVITY_REMOTE_INVOCATIONS: readonly InvocationDescriptor[] = [
     strictCodec(`${PACKAGE_NAME}#ModelsResult`, parseModelsResult),
     true,
   ),
-  directMethod('listAccounts', emptyRequestCodec, accountsResultCodec, true),
+  directMethod('listAccounts', undefined, accountsResultCodec),
   directMethod(
     'startAccountLogin',
     strictCodec(`${PACKAGE_NAME}#StartLoginRequest`, parseStartLoginRequest),
@@ -273,7 +276,7 @@ export const ANTIGRAVITY_REMOTE_INVOCATIONS: readonly InvocationDescriptor[] = [
     strictCodec(`${PACKAGE_NAME}#SubmitCallbackRequest`, parseSubmitCallbackRequest),
     accountsResultCodec,
   ),
-  directMethod('cancelAccountLogin', emptyRequestCodec, accountsResultCodec, true),
+  directMethod('cancelAccountLogin', undefined, accountsResultCodec),
   directMethod(
     'activateAccount',
     strictCodec(`${PACKAGE_NAME}#AccountIdRequest`, parseAccountIdRequest),
@@ -286,8 +289,7 @@ export const ANTIGRAVITY_REMOTE_INVOCATIONS: readonly InvocationDescriptor[] = [
   ),
   directMethod(
     'installCli',
-    emptyRequestCodec,
+    undefined,
     strictCodec(`${PACKAGE_NAME}#InstallCliResult`, parseInstallCliResult),
-    true,
   ),
 ]

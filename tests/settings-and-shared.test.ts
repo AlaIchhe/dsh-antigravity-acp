@@ -48,7 +48,7 @@ describe('v1.0 settings schema & shared contracts', () => {
     expect(quotaGroupKeyFor('Claude and GPT models')).toBe('claude')
   })
 
-  it('RPC contract defines unified remote.antigravity methods with strict codecs', () => {
+  it('RPC contract defines unified remote.antigravity methods with strict codecs and exact arity', () => {
     expect(ANTIGRAVITY_REMOTE_INVOCATIONS.map((d) => d.id)).toEqual([
       `${PACKAGE_NAME}#${REMOTE_SERVICE_NAME}/readQuota`,
       `${PACKAGE_NAME}#${REMOTE_SERVICE_NAME}/listModels`,
@@ -60,6 +60,20 @@ describe('v1.0 settings schema & shared contracts', () => {
       `${PACKAGE_NAME}#${REMOTE_SERVICE_NAME}/removeAccount`,
       `${PACKAGE_NAME}#${REMOTE_SERVICE_NAME}/installCli`,
     ])
+    const arities = Object.fromEntries(
+      ANTIGRAVITY_REMOTE_INVOCATIONS.map((d) => [d.method, d.parameters.length]),
+    )
+    expect(arities).toEqual({
+      readQuota: 1,
+      listModels: 1,
+      listAccounts: 0,
+      startAccountLogin: 1,
+      submitAccountCallback: 1,
+      cancelAccountLogin: 0,
+      activateAccount: 1,
+      removeAccount: 1,
+      installCli: 0,
+    })
     expect(parseReadQuotaRequest({ force: true, model: ' gemini-4-neon ' })).toEqual({ force: true, model: 'gemini-4-neon' })
     expect(() => parseReadQuotaRequest({ force: 'yes' })).toThrow(TypeError)
     expect(() => parseStartLoginRequest({ mode: 'relogin' })).toThrow(TypeError)

@@ -66,11 +66,19 @@ export function agyCliCandidates(
 
 const TIER_SUFFIX_RE = /-(low|medium|high|xhigh)$/i
 const TIER_LABEL_RE = /\s*\((Low|Medium|High|Extra High|XHigh)\)\s*$/i
+const TIER_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const EXCLUDED_FAMILIES = new Set(['gpt-oss-120b'])
+
+function tierRank(tier: string): number {
+  const index = (TIER_ORDER as readonly string[]).indexOf(tier)
+  return index === -1 ? TIER_ORDER.length : index
+}
 
 export interface CliModelEntry {
   id: string
   name: string
+  /** 该家族在 `agy models` 原始清单中实际出现过的思考档位（`[]` 表示无档位模型）。 */
+  tiers?: readonly string[]
 }
 
 export function parseAgyModels(text: string): CliModelEntry[] {
@@ -89,17 +97,29 @@ export function parseAgyModels(text: string): CliModelEntry[] {
   return out
 }
 
-/** 把 `agy models` 档位化的原始行（如 `claude-opus-5-5-high`）折叠成家族行。 */
+/**
+ * 把 `agy models` 档位化的原始行（如 `claude-opus-5-5-high`、`gemini-4-hydrogen-xhigh`）
+ * 折叠成家族行，并保留每个家族实际声明的档位清单（供 `CatalogStore` 精准按模型暴露档位）。
+ */
 export function foldCliModelFamilies(rows: readonly CliModelEntry[]): CliModelEntry[] {
-  const byFamily = new Map<string, CliModelEntry>()
+  const byFamily = new Map<string, { id: string; name: string; tiers: Set<string> }>()
   for (const row of rows) {
-    const familyId = row.id.replace(TIER_SUFFIX_RE, '')
+    const tierMatch = TIER_SUFFIX_RE.exec(row.id)
+    const familyId = tierMatch ? row.id.slice(0, tierMatch.index) : row.id
     if (EXCLUDED_FAMILIES.has(familyId.toLowerCase())) continue
-    if (byFamily.has(familyId)) continue
-    const cleanName = row.name.replace(TIER_LABEL_RE, '').trim() || familyId
-    byFamily.set(familyId, { id: familyId, name: cleanName })
+    let entry = byFamily.get(familyId)
+    if (!entry) {
+      const cleanName = row.name.replace(TIER_LABEL_RE, '').trim() || familyId
+      entry = { id: familyId, name: cleanName, tiers: new Set() }
+      byFamily.set(familyId, entry)
+    }
+    if (tierMatch?.[1]) entry.tiers.add(tierMatch[1].toLowerCase())
   }
-  return [...byFamily.values()]
+  return [...byFamily.values()].map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    tiers: [...entry.tiers].sort((a, b) => tierRank(a) - tierRank(b)),
+  }))
 }
 
 export async function fetchAgyModels(run: CliRun, cliPath: string, homeDir?: string): Promise<CliModelEntry[]> {

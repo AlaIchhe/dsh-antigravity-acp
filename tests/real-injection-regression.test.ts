@@ -189,7 +189,8 @@ describe.skipIf(!ENABLED)('真机回归：工具循环中途的 time-context 注
     // eslint-disable-next-line no-console
     console.log('\n[对照组] 续轮 finish =', JSON.stringify(resumed.finish), 'error =', resumed.error ?? '-')
     expect(failureCode(resumed)).not.toContain('AGY_SESSION_UNRECOVERABLE')
-    expect(logs).not.toContain('放弃 ACP 会话复用')
+    expect(logs).not.toContain('将新建会话并重放当前历史')
+    expect(logs).toContain('reused=true')
   }, 900_000)
 
   it('注入组：尾部多一条 time-context → 仍然正常续轮（回归锁）', async () => {
@@ -226,8 +227,8 @@ describe.skipIf(!ENABLED)('真机回归：工具循环中途的 time-context 注
     // 关键修复点：注入块不再让续轮假失败。
     expect(failureCode(broken)).not.toContain('AGY_SESSION_UNRECOVERABLE')
     expect(broken.finish?.kind, '注入组应正常收尾').toBe('stop')
-    expect(logs).not.toContain('放弃 ACP 会话复用')
-    // 注入块本身仍要发给 agent：它出现在历史里，不是被吞掉。
-    expect(logs).toContain('复用 ACP 会话')
+    expect(logs).not.toContain('将新建会话并重放当前历史')
+    // 第二轮仍复用了同一条 ACP 会话，没有被重置或报废。
+    expect(logs).toContain('reused=true')
   }, 900_000)
 })

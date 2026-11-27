@@ -15,47 +15,43 @@
 
 | # | 断言 | 代码位置 | 等级 | 验证方式 |
 |---|---|---|---|---|
-| 1 | stdio 使用换行分隔 JSON-RPC | `protocol/agent-link.ts` | ✅ | 真机探针 2026-11-18 |
+| 1 | stdio 使用换行分隔 JSON-RPC | `src/protocol/agent-link.ts` | ✅ | 真机探针 2026-11-18 |
 | 2 | `initialize` 接受空的 `clientCapabilities` | 同上 | ✅ | 真机探针 |
 | 3 | `session/new` 需要 `cwd` 与 `mcpServers` | 同上 | ✅ | 真机探针 + ACP 日志 |
-| 4 | `session/prompt` 的 `stopReason: end_turn` / `cancelled` | `adapter/prompt-turn.ts` | ✅ | 真机探针 |
+| 4 | `session/prompt` 的 `stopReason: end_turn` / `cancelled` | `src/session/turn-runner.ts` | ✅ | 真机探针 |
 | 5 | `stopReason: max_tokens` / `refusal` / `max_turn_requests` 存在 | 同上 | ⚪ | 只按协议文档写进“干净失败”白名单 |
-| 6 | `session/resume` 可接回**已取消**的会话 | `adapter/antigravity-adapter.ts` | ✅ | 真机探针：cancel → resume → prompt end_turn |
+| 6 | `session/resume` 可接回**已取消**的会话 | `src/session/adapter.ts`、`src/session/session-coordinator.ts` | ✅ | 真机探针：cancel → resume → prompt end_turn |
 | 7 | 取消确认前发新 prompt 会被拒绝 | 同上 | ✅ | 真机探针：`wait for it to finish` |
-| 8 | `session/list` 存在并列出会话 | 同上（未启用） | ✅ | 集成用例「取消确认后同一会话可以继续…」 |
-| 9 | `session/close` 之后会话仍可 `resume` 并继续对话 | `adapter/antigravity-adapter.ts` | ✅ | 集成用例「session/close 之后仍能 resume 并继续对话」（2026-11-18） |
-| 10 | `thought_level` 是独立 configOption，值含 low/medium/high；随当前模型变化 | 同上 | ✅ | 集成用例「新会话声明 model / thought_level / mode 选项…」；`xhigh` 仅 Hydrogen 家族，由 CLI 目录并集补 |
-| 11 | `_meta.antigravity.systemPrompt.append` 把 system 追加进 agent 提示 | 同上 | ✅ | 0.1.52 changelog 记录真机 1.5.10 |
+| 8 | `session/list` 存在并列出会话 | `src/protocol/agent-link.ts`（未启用） | ✅ | 集成用例「取消确认后同一会话可以继续…」 |
+| 9 | `session/close` 之后会话仍可 `resume` 并继续对话 | `src/session/adapter.ts`、`src/session/session-coordinator.ts` | ✅ | 集成用例「session/close 之后仍能 resume 并继续对话」（2026-11-18） |
+| 10 | `thought_level` 是独立 configOption，值含 low/medium/high；随当前模型变化 | `src/session/catalog-store.ts`、`src/session/model-router.ts` | ✅ | 集成用例「新会话声明 model / thought_level / mode 选项…」；`xhigh` 仅 Hydrogen 家族，由 CLI 目录并集补 |
+| 11 | `_meta.antigravity.systemPrompt.append` 把 system 追加进 agent 提示 | `src/session/adapter.ts` | ✅ | 0.1.52 changelog 记录真机 1.5.10 |
 | 12 | `enabledTools: []` 关闭 agent 内置工具 | 同上 | ✅ | ACP 日志：工具请求全部走 `mcp_dsh-tools_*` |
 | 13 | `eagerMcpServers: ["dsh-tools"]` 预加载桥 | 同上 | ✅ | ACP 日志与 `mcp/dsh-tools` 目录 |
-| 14 | `usage_update.size/used` 是当前上下文而非累计 | `adapter/prompt-turn.ts` | ✅ | 0.1.52：修复 360%/411% 的实测 |
-| 15 | MCP 工具可在同一 prompt 内被调用、回填并继续生成 | `adapter/prompt-turn.ts`、`bridge/mcp-bridge.ts` | ✅ | 集成用例「MCP 工具：agent 调用工具并在同一 prompt 内拿到结果继续」：真机调用 `ping` 得到 `pong:hello`、`end_turn` |
-| 16 | MCP 桥的 loopback + bearer token + 权限握手 | `bridge/mcp-bridge.ts` | 🟡 | 假 agent + 本地 SOCKS 测试；真机只见过日志片段 |
-| 17 | `session/set_mode` 接受 agent 声明的 mode（default/accept-edits/auto/plan） | 同上 | ✅ | 集成用例「…档位与模式可设置」：`set_mode` 返回 `{}` |
-| 18 | `set_config_option` 可能归一化模型 ID | 同上 | 🟡 | 假 agent |
-| 19 | 额度：`loadCodeAssist` → `retrieveUserQuotaSummary` 的端点与字段 | `runtime/quota.ts` | ✅ | 2026-11-18 真机取到 plan=Google AI Pro 与三个额度组 |
-| 20 | OAuth：PKCE、loopback 回调、token 交换 | `accounts/oauth.ts` | ⚪ | 只有假 fetch；真 Google 未验证（文档已承认） |
-| 21 | Windows 强制完整性（icacls 探测）影响会话建立 | `runtime/integrity.ts` | ⚪ | 从未在 Windows 实机跑过（文档已承认） |
-| 22 | `agy -p /usage` / `/credits` 输出格式 | `runtime/agy-cli.ts` | ✅ | 本机实跑日志 |
-| 23 | 同一会话的后续 prompt 保留上下文（插件据此只发增量） | `adapter/session-reuse.ts` | ✅ | 集成用例「第二次 prompt 记得第一次的暗号 ZEBRA-731」 |
+| 14 | `usage_update.size/used` 是当前上下文而非累计 | `src/session/turn-runner.ts`、`src/session/usage-accounting.ts` | ✅ | 0.1.52：修复 360%/411% 的实测 |
+| 15 | MCP 工具可在同一 prompt 内被调用、回填并继续生成 | `src/session/turn-runner.ts`、`src/bridge/mcp-bridge.ts` | ✅ | 集成用例「MCP 工具：agent 调用工具并在同一 prompt 内拿到结果继续」：真机调用 `ping` 得到 `pong:hello`、`end_turn` |
+| 16 | MCP 桥的 loopback + bearer token + 权限握手 | `src/bridge/mcp-bridge.ts` | 🟡 | 单测 + 本地 SOCKS 测试；真机已覆盖批准并回填，拒绝分支未构造 |
+| 17 | `session/set_mode` 接受 agent 声明的 mode（default/accept-edits/auto/plan） | `src/session/model-router.ts` | ✅ | 集成用例「…档位与模式可设置」：`set_mode` 返回 `{}` |
+| 18 | `set_config_option` 可能归一化模型 ID | `src/session/model-router.ts` | 🟡 | 离线单元测试 |
+| 19 | 额度：`loadCodeAssist` → `retrieveUserQuotaSummary` 的端点与字段 | `src/auth/code-assist.ts` | ✅ | 2026-11-18 真机取到 plan=Google AI Pro 与三个额度组 |
+| 20 | OAuth：PKCE、loopback 回调、token 交换 | `src/auth/oauth-client.ts` | ⚪ | 只有假 fetch；真 Google 未验证（文档已承认） |
+| 21 | Windows 强制完整性（icacls 探测）影响会话建立 | `src/runtime/integrity.ts` | ⚪ | 从未在 Windows 实机跑过（文档已承认） |
+| 22 | `agy -p /usage` / `/credits` 输出格式 | `src/runtime/agy-cli.ts` | ✅ | 本机实跑日志 |
+| 23 | 同一会话的后续 prompt 保留上下文（插件据此只发增量） | `src/session/session-reuse.ts`、`src/session/session-coordinator.ts` | ✅ | 集成用例「第二次 prompt 记得第一次的暗号 ZEBRA-731」 |
 | 24 | 同账号 5 路并发（含长回答）不触发 429 | 无（实验结论） | ✅ | 2026-11-18 两轮探针：5/5 成功、零 429 |
-| 25 | `PromptResponse.usage` 是**本回合**内各次内部模型调用之和（非会话累计）；`totalTokens` = 本轮 Σ `usage_update.used` | `adapter/prompt-turn.ts`、`adapter/usage-accounting.ts` | ✅ | 2026-11-18 与 2026-11-25 探针：单步 total=used=12305；3 次调用轮 total=39209=12803+12974+13432，末步上下文 13432 |
-| 26 | agy 对 MCP 工具声明 `mcp_dsh-tools_<后缀>_<短名>`，并在声明里附加必填 `toolSummary`；调用进 MCP 前这两项被剥离 | `adapter/tool-args.ts` | ✅ | 2026-11-18：agy 会话库里的工具声明含 `{"required":["toolSummary"],…}` 与 `mcp_dsh-tools_5406866c_*`；DSH `session-6642c5ed` 的 584 次 `tool/call` 参数里没有 `toolSummary` |
-| 27 | `PromptResponse.usage` 四桶互斥（`inputTokens + cachedReadTokens + cachedWriteTokens + outputTokens === totalTokens`），且 `outputTokens` 已包含 `thoughtTokens` | `adapter/usage-accounting.ts` | ✅ | 2026-11-25 真机探针：单步 12194+0+0+111=12305（thought=45≤111）；3 步工具轮 28148+10564+0+497=39209（thought=347≤497） |
-| 28 | 多步工具回合中 `usage_update` 在对应 MCP `tools/call` 之前到达（间隔约 1.4–1.6s） | `adapter/prompt-turn.ts`、`adapter/usage-accounting.ts` | ✅ | 2026-11-25 真机探针：`usage_update(12803)` +14842ms → `tools/call` +16420ms；`usage_update(12974)` +44856ms → `tools/call` +46304ms；`tests/real-usage-accounting.test.ts` |
+| 25 | `PromptResponse.usage` 是**本回合**内各次内部模型调用之和（非会话累计）；`totalTokens` = 本轮 Σ `usage_update.used` | `src/session/turn-runner.ts`、`src/session/usage-accounting.ts` | ✅ | 2026-11-18 与 2026-11-25 探针：单步 total=used=12305；3 次调用轮 total=39209=12803+12974+13432，末步上下文 13432 |
+| 26 | agy 对 MCP 工具声明 `mcp_dsh-tools_<后缀>_<短名>`，并在声明里附加必填 `toolSummary`；调用进 MCP 前这两项被剥离 | `src/session/tool-args.ts` | ✅ | 2026-11-18：agy 会话库里的工具声明含 `{"required":["toolSummary"],…}` 与 `mcp_dsh-tools_5406866c_*`；DSH `session-6642c5ed` 的 584 次 `tool/call` 参数里没有 `toolSummary` |
+| 27 | `PromptResponse.usage` 四桶互斥（`inputTokens + cachedReadTokens + cachedWriteTokens + outputTokens === totalTokens`），且 `outputTokens` 已包含 `thoughtTokens` | `src/session/usage-accounting.ts` | ✅ | 2026-11-25 真机探针：单步 12194+0+0+111=12305（thought=45≤111）；3 步工具轮 28148+10564+0+497=39209（thought=347≤497） |
+| 28 | 多步工具回合中 `usage_update` 在对应 MCP `tools/call` 之前到达（间隔约 1.4–1.6s） | `src/session/turn-runner.ts`、`src/session/usage-accounting.ts` | ✅ | 2026-11-25 真机探针：`usage_update(12803)` +14842ms → `tools/call` +16420ms；`usage_update(12974)` +44856ms → `tools/call` +46304ms；`tests/real-usage-accounting.test.ts` |
 | 29 | 上游对含越狱模板指纹的提示词返回 `RESOURCE_EXHAUSTED (HTTP 429)`，而不是 safety refusal；与账号额度、并发、模型无关 | 无（上游行为，插件只登记不下判断） | ✅ | 2026-11-26 本机探针矩阵（同账号交替发送）：`[MODE: UNRESTRICTED SANDBOX — STABLE]` 35 B → 8 次重试全 429；`[MODE: HELPFUL SANDBOX — STABLE]` 61 B、`[MODE: UNRESTRICTED SANDBOX]` 29 B、`UNRESTRICTED SANDBOX — STABLE` 32 B、中性 41 KB → 正常。Hydrogen / Carbon 都触发；当时额度 82%/83%、同分钟换模型可出流 |
-| 30 | 官方 agent 把上游失败写成 `end_turn` + `⚠ <CODE> (code NNN): <detail>` 文本，ACP 层没有 error 信号（binary 内模板为 `end_turn\n⚠ %s\n`） | `adapter/prompt-turn.ts`（`describeUpstreamErrorNotice`） | ✅ | 2026-11-26 真机：`session-e3421f85` 的 8 次上游 429 最终以该文本收尾并 `stopReason=end_turn`，宿主记 `completed`；`agy` 1.5.17 binary 内可见同一模板 |
-| 31 | 复用轮只发增量，工具签名只在第一轮 prompt 里发一次；agent 的 MCP 工具面在 `session/new` 握手时确定，宿主中途新增工具对已有会话没有实际影响 | `adapter/prompt-transcript.ts`（`buildPromptContent` 一次注入）、`adapter/image-content.ts`（`buildPromptDeltaWithImages` 只发增量）、`adapter/session-reuse.ts`（指纹不含 tools） | 🟡 | 插件侧行为由 `tests/multi-session-bridge.test.ts`「宿主中途新增工具不再让已有会话报废」锁定；官方 agent 是否会在长回合中重新 `tools/list` 未做真机确认（`AGY_REAL_ACP` 可升级为 ✅） |
+| 30 | 官方 agent 把上游失败写成 `end_turn` + `⚠ <CODE> (code NNN): <detail>` 文本，ACP 层没有 error 信号（binary 内模板为 `end_turn\n⚠ %s\n`） | `src/session/turn-runner.ts`（`describeUpstreamErrorNotice`） | ✅ | 2026-11-26 真机：`session-e3421f85` 的 8 次上游 429 最终以该文本收尾并 `stopReason=end_turn`，宿主记 `completed`；`agy` 1.5.17 binary 内可见同一模板 |
+| 31 | 复用轮只发增量，工具签名只在第一轮 prompt 里发一次；agent 的 MCP 工具面在 `session/new` 握手时确定，宿主中途新增工具对已有会话没有实际影响 | `src/session/transcript.ts`（`buildFullPrompt` 一次注入、`buildDeltaPrompt` 只发增量）、`src/session/session-reuse.ts`（指纹不含 tools） | 🟡 | 插件侧行为由 `tests/session-core.test.ts`「`ContinuationState ignores dynamic tool changes mid-turn`」锁定；官方 agent 是否会在长回合中重新 `tools/list` 未做真机确认（`AGY_REAL_ACP` 可升级为 ✅） |
 
-## 优先验证顺序（按“错了会怎样”排序）
+## 优先补验顺序（剩余未实机验证项）
 
-1. **#15 工具续轮**：这是本插件的核心价值（工具回 DSH 执行）。现在零真机证据、零单测，
-   错了表现为“工具调用后对话卡死或重复执行”。
-2. **#9 `session/close` 后能否 resume**：取消/异常路径依赖它；如果 close 即销毁，
-   取消后继续聊就必须改成重建。
-3. **#17 `set_mode`**：未验证就先声明支持，配置后可能直接失败。
-4. **#20 OAuth 真机**：换账号/新增账号是高频操作，假 fetch 不能证明 Google 端可达。
-5. **#21 Windows 完整性**：只在 Windows 上出错，且表现为“会话永久挂起”。
+1. **#20 OAuth 真机**：换账号/新增账号是高频操作，假 fetch 不能证明 Google 端可达。
+2. **#21 Windows 完整性**：只在 Windows 上出错，且表现为“会话永久挂起”。
+3. **#31 长回合中官方 agent 是否重拉 `tools/list`**：目前插件侧已锁定不破坏会话，上游动态工具刷新行为仍待真机确认。
 
 ## 怎么跑
 

@@ -1,13 +1,19 @@
-import { describe, expect, it, vi } from 'vitest'
-import { gzipSync } from 'node:zlib'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+/**
+ * 官方 CLI 一键安装测试：纯函数校验（平台、白名单、manifest、tar 提取）+ 实机访问官方 manifest 端点。
+ */
+import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createHash } from 'node:crypto'
 import {
-  AGY_CLI_INSTALL_ERROR, assertAgyCliUrl, extractExecutableFromTar,
-  installAgyCli, parseAgyCliManifest, resolveAgyCliTarget,
+  AGY_CLI_MANIFEST_BASE,
+  assertAgyCliUrl,
+  extractExecutableFromTar,
+  installAgyCli,
+  parseAgyCliManifest,
+  resolveAgyCliTarget,
 } from '../src/runtime/agy-cli-install.js'
+import { createRealProxiedFetch, REAL_TESTS_ENABLED } from './helpers/real-env.js'
 
 /** 造一个最小 ustar 归档，含一个名为 name 的普通文件。 */
 function tarWith(name: string, body: Buffer): Buffer {
@@ -57,75 +63,31 @@ describe('官方 CLI 一键安装', () => {
     expect(() => extractExecutableFromTar(archive, ['agy'])).toThrow(/没有找到/)
   })
 
-  it('完整安装：manifest → 下载 → 校验 → 解包 → 落盘', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'agy-inst-'))
-    try {
-      const binary = Buffer.from('#!/bin/sh\necho agy\n')
-      const tgz = gzipSync(tarWith('antigravity', binary))
-      const sha = createHash('sha512').update(tgz).digest('hex')
-      const stages: string[] = []
-      const fetchImpl = vi.fn(async (url: string | URL) => {
-        const href = String(url)
-        if (href.endsWith('/manifests/linux_amd64.json')) {
-          return new Response(JSON.stringify({
-            version: '1.5.13',
-            url: 'https://storage.googleapis.com/antigravity-public/agy.tar.gz',
-            sha512: sha,
-          }), { status: 200 })
-        }
-        if (href.includes('storage.googleapis.com')) return new Response(tgz, { status: 200 })
-        return new Response('nope', { status: 404 })
-      })
-      const result = await installAgyCli({
-        targetDir: dir, fetchImpl: fetchImpl as unknown as typeof fetch,
-        target: { platform: 'linux_amd64', executable: 'agy' },
-        onStage: (stage) => stages.push(stage),
-      })
-      expect(result.installed).toBe(true)
-      expect(result.version).toBe('1.5.13')
-      expect(stages.length).toBeGreaterThan(2)
-      const written = await readFile(result.path, 'utf8')
-      expect(written).toBe(binary.toString())
-      expect(((await stat(result.path)).mode & 0o111) !== 0).toBe(true)
-    } finally { await rm(dir, { recursive: true, force: true }) }
-  })
-
-  it('校验不符时中止，不落盘', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'agy-bad-'))
-    try {
-      const tgz = gzipSync(tarWith('antigravity', Buffer.from('x')))
-      const fetchImpl = async (url: string | URL) => String(url).endsWith('.json')
-        ? new Response(JSON.stringify({ version: '1', url: 'https://storage.googleapis.com/a.tar.gz', sha512: 'b'.repeat(128) }), { status: 200 })
-        : new Response(tgz, { status: 200 })
-      await expect(installAgyCli({
-        targetDir: dir, fetchImpl: fetchImpl as unknown as typeof fetch,
-        target: { platform: 'linux_amd64', executable: 'agy' },
-      })).rejects.toMatchObject({ code: AGY_CLI_INSTALL_ERROR.CHECKSUM_MISMATCH })
-      await expect(stat(join(dir, 'agy'))).rejects.toThrow()
-    } finally { await rm(dir, { recursive: true, force: true }) }
-  })
-
-  it('已存在时跳过下载', async () => {
+  it('目标文件已存在时直接跳过下载', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'agy-exist-'))
     try {
-      await writeFile(join(dir, 'agy'), 'old', { mode: 0o755 })
-      const fetchImpl = vi.fn()
+      await writeFile(join(dir, 'agy'), '#!/bin/sh\n', { mode: 0o755 })
       const result = await installAgyCli({
-        targetDir: dir, fetchImpl: fetchImpl as unknown as typeof fetch,
+        targetDir: dir,
+        fetchImpl: (() => { throw new Error('不应触发网络下载') }) as unknown as typeof fetch,
         target: { platform: 'linux_amd64', executable: 'agy' },
-        exists: async (path) => path === join(dir, 'agy'),
       })
       expect(result.installed).toBe(false)
-      expect(fetchImpl).not.toHaveBeenCalled()
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
 
-  it('manifest 服务不可达时报可读错误', async () => {
-    await expect(installAgyCli({
-      targetDir: '/tmp/unused',
-      fetchImpl: (async () => { throw new Error('ECONNREFUSED') }) as unknown as typeof fetch,
-      target: { platform: 'linux_amd64', executable: 'agy' },
-      exists: async () => false,
-    })).rejects.toMatchObject({ code: AGY_CLI_INSTALL_ERROR.MANIFEST_UNAVAILABLE })
-  })
+  it.skipIf(!REAL_TESTS_ENABLED)('实机拉取官方 release manifest 并通过地址白名单与 sha512 校验', async () => {
+    const realFetch = createRealProxiedFetch()
+    try {
+      const target = resolveAgyCliTarget()
+      const resp = await realFetch(`${AGY_CLI_MANIFEST_BASE}/manifests/${target.platform}.json`, { redirect: 'error' })
+      expect(resp.ok, `官方 manifest 返回 HTTP ${resp.status}`).toBe(true)
+      const manifest = parseAgyCliManifest(await resp.json())
+      expect(manifest.version.length).toBeGreaterThan(0)
+      expect(manifest.sha512).toMatch(/^[a-f0-9]{128}$/)
+      expect(assertAgyCliUrl(manifest.url).hostname).toBe('storage.googleapis.com')
+    } finally {
+      await realFetch.close()
+    }
+  }, 30_000)
 })

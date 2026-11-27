@@ -97,7 +97,7 @@ export interface AntigravityClientApi {
 }
 
 const REMOTE_KEY = `remote.${REMOTE_SERVICE_NAME}`
-const MOUNT_WAIT_MS = 6_000
+const MOUNT_WAIT_MS = 20_000
 const CALL_TIMEOUT_MS = 45_000
 
 async function waitForRemoteFace(ctx: ClientContextLike): Promise<RawRemoteFace> {

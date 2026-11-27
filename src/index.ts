@@ -2,9 +2,9 @@
  * Cordis 插件入口（v1.0 纯装配根 Composition Root）。
  *
  * 只负责依赖装配、宿主事件接入与生命周期清理闭环：
- * - 单一 `AcpRuntimeManager`（方案 A：按账号共享常驻 ACP 进程）
- * - 单一 `CatalogStore`（全局模型目录与思考档位元数据）
- * - 单一 `AntigravityAcpAdapter`（多对话并发复用、会话恢复、MCP 桥）
+ * - 单一 `AcpRuntimeManager`（方案 A：按账号共享常驻 ACP 进程，切账号优雅排空）
+ * - 单一 `CatalogStore`（全局模型目录与按模型隔离的思考档位元数据）
+ * - 单一 `AntigravityAcpAdapter`（多对话并发复用、取消宽限等待、会话恢复、MCP 桥）
  * - 单一 `AntigravityRemoteService`（`remote.antigravity` 统一 RPC 网关）
  */
 import { existsSync } from 'node:fs'
@@ -98,12 +98,18 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
     }
   }
 
+  let runtimeRef: AcpRuntimeManager | undefined
+  let catalogRef: CatalogStore | undefined
+  let adapterRef: AntigravityAcpAdapter | undefined
+
   const accounts = new AccountsManager({
     baseDir: resolveAccountsDir(),
     fetchImpl: pluginFetch,
     openBrowser: (url) => openExternalUrl(ctx.subprocess, url),
     onChange: () => {
+      catalogRef?.clearCliModels()
       notifyCatalogChanged()
+      void runtimeRef?.retireIfAccountChanged().catch(() => undefined)
     },
     log,
   })
@@ -123,6 +129,7 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
     },
     onCatalogChanged: notifyCatalogChanged,
   })
+  catalogRef = catalog
 
   const sessionStore = createFileSessionStore(cacheDir, () => {
     log.warn('antigravity-acp: 会话映射读写失败（恢复能力已降级）')
@@ -132,14 +139,20 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
     subprocess: ctx.subprocess,
     readConfig: () => config,
     resolveAccount: () => accounts.active(),
+    isLinkBusy: (link) => adapterRef?.isLinkBusy(link) ?? false,
     fetchImpl: pluginFetch,
     log,
   })
+  runtimeRef = runtime
 
   const adapter = new AntigravityAcpAdapter({
     catalog,
     getLink: (handlers, signal) => runtime.getLink(handlers, signal),
     recycleLink: (link) => runtime.recycle(link),
+    resolveAccount: () => accounts.active(),
+    onLinkIdle: () => {
+      void runtime.drainRetired().catch(() => undefined)
+    },
     sessionStore,
     readSettings: () => ({
       agentMode: config.agentMode,
@@ -156,6 +169,7 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
     },
     log,
   })
+  adapterRef = adapter
 
   // 弱依赖附件服务：动态感知图像输入能力。
   ctx.inject(['attachments'], (scope) => {

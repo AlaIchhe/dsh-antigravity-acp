@@ -3,14 +3,16 @@
  *
  * 彻底消除旧版 `#findReusableSession` 与 `#resumeSession` 两份平行且微妙分叉的校验逻辑，
  * 所有决策走同一个纯函数 `evaluateRecordContinuity`，结果显式分为四种：
- * - `reuse`：当前内存连接与桥作用域均有效，直接增量发送；
+ * - `reuse`：当前内存连接、账号与桥作用域均有效，直接增量发送；
  * - `resume`：历史合法，需走 `session/resume` 接回原 ACP 会话；
- * - `reset-fresh`：历史前缀已压缩/上轮异常中断/指纹版本升级，丢弃旧映射并明确重开新会话；
- * - `unrecoverable`：路由变更、历史不合法或无法接续，直接报 `AGY_SESSION_UNRECOVERABLE`。
+ * - `reset-fresh`：账号切换 / 无工具切有工具 / 仅思考档位变化 / 前缀压缩 / 异常中断 / 指纹升级 / 上轮失效会话清理后重试，
+ *   丢弃旧映射并明确重开新会话（保留历史）；
+ * - `unrecoverable`：模型或系统提示变化、历史不合法或映射缺失，直接报 `AGY_SESSION_UNRECOVERABLE`。
  */
 import type { ContentBlock, GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { AgentLink } from '../protocol/agent-link.js'
 import {
+  hasCompactionCheckpoint,
   incrementalMessages,
   looksLikeInterruptedTurn,
   outputHash,
@@ -20,6 +22,7 @@ import {
   ROUTE_FINGERPRINT_VERSION,
   routeBaseFingerprint,
   routeFingerprint,
+  systemMessagesDigest,
   toolsDigest,
 } from './session-reuse.js'
 import type { SessionMapEntry, SessionStore } from './session-store.js'
@@ -35,10 +38,15 @@ export interface LiveSession {
   route: string
   routeBase?: string
   routeVersion: number
+  accountId?: string
+  accountRevision?: number
   usesTools: boolean
   toolsDigest?: string
+  systemDigest?: string
   systemViaMeta: boolean
   cancelled?: boolean
+  /** 仅内存态：该 ACP 会话连续以 error 结束的次数，达到阈值后放弃复用。 */
+  consecutiveErrors?: number
 }
 
 export type SessionDecision =
@@ -58,6 +66,7 @@ export interface EvaluatedRecord {
   route: string
   routeBase?: string
   routeVersion: number
+  accountId?: string
   cancelled?: boolean
 }
 
@@ -68,12 +77,16 @@ export function evaluateRecordContinuity(
   record: EvaluatedRecord,
   options: GenerateOptions,
   cwd: string,
+  currentAccountId?: string,
 ): { ok: true } | { ok: false; kind: 'reset-fresh' | 'unrecoverable'; reason: string } {
   if (record.cwd !== cwd) {
     return { ok: false, kind: 'unrecoverable', reason: '会话工作目录与当前不一致' }
   }
   if (record.routeVersion !== ROUTE_FINGERPRINT_VERSION) {
     return { ok: false, kind: 'reset-fresh', reason: '会话映射来自旧的路由指纹版本，按新会话重新开始' }
+  }
+  if (currentAccountId !== undefined && record.accountId !== undefined && record.accountId !== currentAccountId) {
+    return { ok: false, kind: 'reset-fresh', reason: '当前账号已切换，按新会话继续（历史保留）' }
   }
   if (record.route !== routeFingerprint(options)) {
     // 思考档位是运行时可调的 config_option，用户随时会改，DSH 也会按 adapter 默认
@@ -84,6 +97,11 @@ export function evaluateRecordContinuity(
     return { ok: false, kind: 'unrecoverable', reason: '模型、思考档位或系统提示已变化' }
   }
   if (options.messages.length <= record.sentCount) {
+    // 上下文压缩（/compact）会把消息条数大幅缩减并插入 compact-checkpoint；
+    // 必须在长度检查阶段识别，否则会被误判为「没有严格追加的新输入」而判死对话。
+    if (hasCompactionCheckpoint(options.messages)) {
+      return { ok: false, kind: 'reset-fresh', reason: '会话已触发上下文压缩，按新会话开始' }
+    }
     return { ok: false, kind: 'unrecoverable', reason: '没有严格追加的新输入' }
   }
   if (!prefixMatches(options.messages, record.sentCount, record.sentHash)) {
@@ -107,6 +125,8 @@ export function evaluateRecordContinuity(
 
 export class SessionCoordinator {
   readonly #live = new Map<string, LiveSession>()
+  /** 记录刚因首轮上游错误或连续失败主动清理掉失效 ACP 会话的键，允许下一次明确以全新会话重试。 */
+  readonly #recoverableFreshResets = new Set<string>()
   readonly #cwd: string
   #store: SessionStore | undefined
 
@@ -139,26 +159,62 @@ export class SessionCoordinator {
     hasPriorHistory: boolean
     resumeEnabled: boolean
     hasValidBridgeScope: (key: string) => boolean
+    currentAccountId?: string
+    currentAccountRevision?: number
     log?: { info(msg: string): void }
   }): Promise<SessionDecision> {
-    const { key, options, hasPriorHistory, resumeEnabled, hasValidBridgeScope, log } = input
+    const {
+      key,
+      options,
+      hasPriorHistory,
+      resumeEnabled,
+      hasValidBridgeScope,
+      currentAccountId,
+      currentAccountRevision,
+      log,
+    } = input
     const live = this.#live.get(key)
 
     // 1. 优先检查内存句柄
     if (live) {
-      const linkAlive = !live.link.closed
-      const bridgeValid = !live.usesTools || hasValidBridgeScope(key)
-      const check = evaluateRecordContinuity(live, options, this.#cwd)
+      // 当前账号重新登录（同 accountId 但 revision 递增）：清掉旧句柄并新建会话以启用新凭据。
+      if (
+        currentAccountId !== undefined
+        && live.accountId === currentAccountId
+        && currentAccountRevision !== undefined
+        && live.accountRevision !== undefined
+        && live.accountRevision !== currentAccountRevision
+      ) {
+        this.drop(key, true)
+        return { kind: 'reset-fresh', reason: '当前账号已重新登录，按新会话继续（历史保留）' }
+      }
+      const check = evaluateRecordContinuity(live, options, this.#cwd, currentAccountId)
       if (!check.ok) {
         this.drop(key, true)
         return { kind: check.kind, reason: check.reason }
       }
+      // 第 1 轮未挂 MCP 桥，本轮首次带上工具：旧 ACP 会话上没有 dsh-tools server，必须重建挂载。
+      const needsTools = (options.tools?.length ?? 0) > 0
+      if (!live.usesTools && needsTools) {
+        this.drop(key, true)
+        return { kind: 'reset-fresh', reason: '当前会话首次启用工具，需新建 ACP 会话以挂载 MCP 桥' }
+      }
+      const linkAlive = !live.link.closed
+      const bridgeValid = !live.usesTools || hasValidBridgeScope(key)
       if (linkAlive && bridgeValid) {
         const currentTools = toolsDigest(options.tools)
         if (live.toolsDigest !== undefined && live.toolsDigest !== currentTools) {
           log?.info(
             `antigravity-acp: 工具目录已变化（${live.toolsDigest.slice(0, 8)} → ${currentTools.slice(0, 8)}），`
             + '本轮仍复用原 ACP 会话；新工具从下一个新会话开始可用',
+          )
+        }
+        const currentSystem = systemMessagesDigest(options.messages)
+        if (live.systemDigest !== undefined && live.systemDigest !== currentSystem) {
+          live.systemDigest = currentSystem
+          log?.info(
+            'antigravity-acp: 系统提示消息已刷新，本轮仍复用原 ACP 会话；'
+            + '新系统提示从下一个新会话开始生效',
           )
         }
         return { kind: 'reuse', live }
@@ -169,7 +225,13 @@ export class SessionCoordinator {
 
     // 2. 没有历史的新对话直接开新会话
     if (!hasPriorHistory) {
+      this.#recoverableFreshResets.delete(key)
       return { kind: 'reset-fresh', reason: '新对话首次请求' }
+    }
+
+    // 2.5 上一轮因新建会话首轮失败或连续上游失败主动丢弃了废 ACP 会话：允许干净重开，避免复用毒丸会话或误判不可恢复。
+    if (this.#recoverableFreshResets.delete(key)) {
+      return { kind: 'reset-fresh', reason: '上一轮失效的 ACP 会话已清理，按全新会话重试' }
     }
 
     // 3. 有历史：尝试从磁盘映射恢复
@@ -181,7 +243,7 @@ export class SessionCoordinator {
     if (!entry) {
       return { kind: 'unrecoverable', reason: '没有可用的会话映射' }
     }
-    const check = evaluateRecordContinuity(entry, options, this.#cwd)
+    const check = evaluateRecordContinuity(entry, options, this.#cwd, currentAccountId)
     if (!check.ok) {
       this.#store?.delete(key)
       return { kind: check.kind, reason: check.reason }
@@ -195,7 +257,10 @@ export class SessionCoordinator {
     link: AgentLink
     options: GenerateOptions
     systemViaMeta: boolean
+    accountId?: string
+    accountRevision?: number
   }): LiveSession {
+    this.#recoverableFreshResets.delete(input.key)
     const live: LiveSession = {
       key: input.key,
       sessionId: input.sessionId,
@@ -206,8 +271,11 @@ export class SessionCoordinator {
       route: routeFingerprint(input.options),
       routeBase: routeBaseFingerprint(input.options),
       routeVersion: ROUTE_FINGERPRINT_VERSION,
+      ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
+      ...(input.accountRevision === undefined ? {} : { accountRevision: input.accountRevision }),
       usesTools: (input.options.tools?.length ?? 0) > 0,
       toolsDigest: toolsDigest(input.options.tools),
+      systemDigest: systemMessagesDigest(input.options.messages),
       systemViaMeta: input.systemViaMeta,
     }
     this.#live.set(input.key, live)
@@ -221,7 +289,12 @@ export class SessionCoordinator {
     usesTools: boolean
     /** 旧映射没有 `routeBase` 时用它补上（调用方按当前请求算）。 */
     routeBase?: string
+    systemDigest?: string
+    accountId?: string
+    accountRevision?: number
   }): LiveSession {
+    this.#recoverableFreshResets.delete(input.key)
+    const resolvedAccountId = input.entry.accountId ?? input.accountId
     const live: LiveSession = {
       key: input.key,
       sessionId: input.entry.sessionId,
@@ -237,7 +310,10 @@ export class SessionCoordinator {
         ? {}
         : { routeBase: (input.entry.routeBase ?? input.routeBase)! },
       routeVersion: input.entry.routeVersion,
+      ...(resolvedAccountId === undefined ? {} : { accountId: resolvedAccountId }),
+      ...(input.accountRevision === undefined ? {} : { accountRevision: input.accountRevision }),
       usesTools: input.usesTools,
+      ...(input.systemDigest === undefined ? {} : { systemDigest: input.systemDigest }),
       systemViaMeta: true,
       ...(input.entry.cancelled === true ? { cancelled: true } : {}),
     }
@@ -252,26 +328,30 @@ export class SessionCoordinator {
     await this.#store.flush()
   }
 
-  /** 回合完成、取消或干净失败后推进已发送游标并落盘；异常失败时丢弃映射。 */
+  /** 回合完成、取消或干净失败后推进已发送游标并落盘；异常/不可复用失败时丢弃映射。 */
   advance(
     live: LiveSession,
     options: GenerateOptions,
     emitted: readonly ContentBlock[],
     promptSettled: boolean,
     outcome: TurnDeliveryOutcome,
+    advanceOptions?: { allowFreshRetry?: boolean },
   ): void {
     if (outcome === 'failed') {
-      this.drop(live.key, true)
+      this.drop(live.key, true, { allowFreshRetry: advanceOptions?.allowFreshRetry })
       return
     }
     if (this.#live.get(live.key) !== live) return
     live.sentCount = options.messages.length
     live.sentHash = prefixHash(options.messages)
     live.outputHash = outputHash(emitted)
+    live.systemDigest = systemMessagesDigest(options.messages)
     if (outcome === 'cancelled') {
       live.cancelled = true
     } else if (promptSettled) {
       delete live.cancelled
+      delete live.consecutiveErrors
+      this.#recoverableFreshResets.delete(live.key)
     }
     if (promptSettled) this.persist(live)
   }
@@ -296,16 +376,19 @@ export class SessionCoordinator {
       route: live.route,
       routeBase: live.routeBase,
       routeVersion: live.routeVersion,
+      ...(live.accountId === undefined ? {} : { accountId: live.accountId }),
       updatedAt: Date.now(),
       ...(live.cancelled === true ? { cancelled: true } : {}),
     })
   }
 
   /** 丢弃内存句柄；`deletePersisted=true` 时同步删磁盘映射。 */
-  drop(key: string, deletePersisted: boolean): LiveSession | undefined {
+  drop(key: string, deletePersisted: boolean, options?: { allowFreshRetry?: boolean }): LiveSession | undefined {
     const live = this.#live.get(key)
     this.#live.delete(key)
     if (deletePersisted) this.#store?.delete(key)
+    if (options?.allowFreshRetry === true) this.#recoverableFreshResets.add(key)
+    else this.#recoverableFreshResets.delete(key)
     return live
   }
 
@@ -324,6 +407,7 @@ export class SessionCoordinator {
   clearMemory(): LiveSession[] {
     const all = [...this.#live.values()]
     this.#live.clear()
+    this.#recoverableFreshResets.clear()
     return all
   }
 }

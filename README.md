@@ -21,11 +21,13 @@
 ## 安装
 
 ```bash
-# 从 GitHub 安装
-dsh plugin --profile <profile> add github:AlaIchhe/dsh-antigravity-acp
-# 或从 npm 安装
+# 从 npm 安装（正式版）
 dsh plugin --profile <profile> add dsh-bundle-antigravity-acp
+# 或安装预发版（rc）
+dsh plugin --profile <profile> add dsh-bundle-antigravity-acp@rc
 ```
+
+> 如需从源码本地安装，先克隆仓库并执行 `npm ci && npm run build`，再以 `dsh plugin --profile <profile> add file:/path/to/dsh-antigravity-acp` 安装（仓库不提交 `dist/`，不支持直接通过 `github:` 安装）。
 
 安装后重载 DSH 服务，在「设置 → Antigravity ACP」里完成账号登录或使用本机 CLI 登录态即可开始对话。
 

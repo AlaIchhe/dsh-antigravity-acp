@@ -4,7 +4,9 @@
  * 职责：
  * - 只观测，不自造：模型来自 ACP `session/new` / `config_option_update` 观测（或同版本磁盘缓存）
  *   与官方只读 `agy models` 清单并集；
- * - 统一管理 `thought_level` 档位元数据、实测上下文窗口容量与图像输入能力；
+ * - 按模型维度隔离 `thought_level` 档位元数据（并集官方 CLI 家族档位，避免 Hydrogen/Neon 的
+ *   `xhigh` 串台到 Carbon/Claude 或被其它模型冲掉）；
+ * - 统一管理实测上下文窗口容量与图像输入能力；
  * - 统一应用 `hiddenModels` 过滤，对设置页提供未过滤的完整行。
  */
 import { readFile } from 'node:fs/promises'
@@ -40,6 +42,7 @@ interface CatalogCacheFile {
   acpVersion: string
   models: CatalogModelEntry[]
   thoughtLevel?: CachedThoughtLevel
+  modelThoughtLevels?: Record<string, CachedThoughtLevel>
 }
 
 export interface CatalogStoreOptions {
@@ -52,6 +55,13 @@ export interface CatalogStoreOptions {
 }
 
 const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+const TIER_LABELS: Record<string, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra High',
+  max: 'Max',
+}
 
 function effortRank(id: string): number {
   const index = (EFFORT_ORDER as readonly string[]).indexOf(id)
@@ -70,11 +80,25 @@ function keepDeclared(
   return options.some((opt) => opt.value === current) ? current : undefined
 }
 
+function serializeThoughtLevel(selector: ThoughtLevelSelector): CachedThoughtLevel {
+  return {
+    configId: selector.configId,
+    options: selector.options.map((opt) => ({
+      value: opt.value,
+      name: opt.name,
+      ...(opt.description ? { description: opt.description } : {}),
+    })),
+    ...(selector.currentValue ? { currentValue: selector.currentValue } : {}),
+  }
+}
+
 export class CatalogStore {
   #acpModels = new Map<string, CatalogModelEntry>()
   #cliModels = new Map<string, CatalogModelEntry>()
+  #cliFamilyTiers = new Map<string, readonly string[]>()
   #contextWindows = new Map<string, number>()
   #thoughtLevel: ThoughtLevelSelector | undefined
+  #modelThoughtLevels = new Map<string, ThoughtLevelSelector>()
   #imageSupported: boolean | undefined
   #cacheLoaded = false
   #cacheLoading: Promise<void> | undefined
@@ -88,6 +112,10 @@ export class CatalogStore {
     return this.#thoughtLevel
   }
 
+  thoughtLevelFor(modelId: string): ThoughtLevelSelector | undefined {
+    return this.#modelThoughtLevels.get(modelId)
+  }
+
   get imageSupported(): boolean | undefined {
     return this.#imageSupported
   }
@@ -96,6 +124,12 @@ export class CatalogStore {
     if (this.#imageSupported === supported) return
     this.#imageSupported = supported
     this.#options.onCatalogChanged?.()
+  }
+
+  clearCliModels(): void {
+    if (this.#cliModels.size === 0 && this.#cliFamilyTiers.size === 0) return
+    this.#cliModels.clear()
+    this.#cliFamilyTiers.clear()
   }
 
   noteContextWindow(modelId: string, size: number): void {
@@ -110,20 +144,16 @@ export class CatalogStore {
   }
 
   /**
-   * 吸收一次 agent `session/new` 返回的 configOptions。
+   * 吸收一次 agent `session/new` / `set_config_option` / `config_option_update` 返回的 configOptions。
    *
-   * `currentValue`（思考档位）会成为模型元数据的 `defaultEffort`，而 DSH 在请求未显式
-   * 指定档位时用的就是它。**只有聊天会话有权写它**：标题 / 压缩这类一次性请求（带
-   * `purpose`）会按廉价档位（实测 `low`）新建自己的 ACP 会话，若也记进去，用户的思考
-   * 强度会被后台请求悄悄改成 Low，随后的聊天请求档位突变，会话因路由指纹不符整轮报废。
-   *
-   * 非权威观测仍会学习模型清单与档位**选项表**（不同模型支持的档位不同，这部分是真实
-   * 信息），但保留已记录的 `currentValue`；保留值若不在新选项里则丢弃，避免
-   * `defaultEffort` 指向未声明的档位（DSH 会判 `INVALID_MODEL_REASONING`）。
+   * - `currentValue`（思考档位）会成为模型元数据的 `defaultEffort`，**只有聊天会话有权写它**
+   *   （标题 / 压缩 / 探针等 `authoritative: false` 观测只学选项表、保留已有 `currentValue`）。
+   * - 同时按 `modelSelector.currentValue` 分模型记录 `#modelThoughtLevels`，彻底避免
+   *   Hydrogen/Neon 的 `xhigh` 串台到 Carbon/Claude 或被低档位模型覆盖。
    */
   observeConfigOptions(
     configOptions: readonly SessionConfigOption[] | null | undefined,
-    options?: { readonly authoritative?: boolean },
+    options?: { readonly authoritative?: boolean; readonly modelId?: string },
   ): boolean {
     if (!configOptions?.length) return false
     const authoritative = options?.authoritative !== false
@@ -147,19 +177,37 @@ export class CatalogStore {
       }
     }
 
+    const activeModelId = modelSelector?.currentValue ?? options?.modelId
     const thought = findThoughtLevelSelector(configOptions)
     if (thought && thought.options.length > 0) {
-      const currentValue = authoritative
+      // 1. 按模型维度精准记录该模型声明的 thought_level
+      if (activeModelId) {
+        const prevModel = this.#modelThoughtLevels.get(activeModelId)
+        const modelCurrent = authoritative
+          ? thought.currentValue
+          : keepDeclared(prevModel?.currentValue, thought.options)
+        const nextModel: ThoughtLevelSelector = {
+          configId: thought.configId,
+          options: thought.options,
+          ...(modelCurrent === undefined ? {} : { currentValue: modelCurrent }),
+        }
+        if (JSON.stringify(prevModel ?? null) !== JSON.stringify(nextModel)) {
+          this.#modelThoughtLevels.set(activeModelId, nextModel)
+          changed = true
+        }
+      }
+
+      // 2. 更新全局兜底槽（仅用于尚未观测且无 CLI 档位清单的模型）
+      const fallbackCurrent = authoritative
         ? thought.currentValue
         : keepDeclared(this.#thoughtLevel?.currentValue, thought.options)
-      const next: ThoughtLevelSelector = {
+      const nextFallback: ThoughtLevelSelector = {
         configId: thought.configId,
         options: thought.options,
-        ...(currentValue === undefined ? {} : { currentValue }),
+        ...(fallbackCurrent === undefined ? {} : { currentValue: fallbackCurrent }),
       }
-      const prevKey = JSON.stringify(this.#thoughtLevel ?? null)
-      if (prevKey !== JSON.stringify(next)) {
-        this.#thoughtLevel = next
+      if (JSON.stringify(this.#thoughtLevel ?? null) !== JSON.stringify(nextFallback)) {
+        this.#thoughtLevel = nextFallback
         changed = true
       }
     }
@@ -171,17 +219,21 @@ export class CatalogStore {
     return changed
   }
 
-  /** 刷新 CLI 只读清单（用于补齐 ACP 尚未观测到的模型）。 */
+  /** 刷新 CLI 只读清单（用于补齐 ACP 尚未观测到的模型以及每个家族的实际思考档位）。 */
   async refreshCliModels(force = false): Promise<void> {
     if (!this.#options.loadCliModels) return
     try {
       const rows = await this.#options.loadCliModels(force)
       const next = new Map<string, CatalogModelEntry>()
+      const nextTiers = new Map<string, readonly string[]>()
       for (const row of rows) {
         next.set(row.id, { id: row.id, name: row.name })
+        if (row.tiers !== undefined) nextTiers.set(row.id, [...row.tiers])
       }
-      if (!sameModelMap(this.#cliModels, next)) {
+      const tiersChanged = !sameTiersMap(this.#cliFamilyTiers, nextTiers)
+      if (!sameModelMap(this.#cliModels, next) || tiersChanged) {
         this.#cliModels = next
+        this.#cliFamilyTiers = nextTiers
         this.#options.onCatalogChanged?.()
       }
     } catch {
@@ -219,10 +271,13 @@ export class CatalogStore {
 
   async resolveModel(provider: string, modelId: string): Promise<LlmResolvedModelInfo> {
     await this.#ensureCacheLoaded()
+    if (this.#cliModels.size === 0 && this.#cliFamilyTiers.size === 0 && this.#options.loadCliModels) {
+      await this.refreshCliModels(false)
+    }
     const known = this.#acpModels.get(modelId) ?? this.#cliModels.get(modelId)
     const modalities = this.#inputModalities()
     const contextWindow = this.#contextWindows.get(modelId) ?? known?.contextWindow
-    const reasoning = this.#buildReasoningInfo()
+    const reasoning = this.#buildReasoningInfo(modelId)
     return {
       provider,
       id: modelId,
@@ -240,17 +295,64 @@ export class CatalogStore {
     return this.#imageSupported ? ['text', 'image'] : ['text']
   }
 
-  #buildReasoningInfo(): LlmModelReasoningInfo | undefined {
-    const selector = this.#thoughtLevel
-    if (!selector || selector.options.length === 0) return undefined
-    const efforts = [...selector.options]
+  #buildReasoningInfo(modelId: string): LlmModelReasoningInfo | undefined {
+    const exact = this.#modelThoughtLevels.get(modelId)
+    const cliTiers = this.#cliFamilyTiers.get(modelId)
+
+    // CLI 明确表明该家族没有任何档位（如 gemini-pro-orchestrator）且 ACP 也未为其单独观测过档位：
+    // 绝不借用其它模型的全局 thoughtLevel。
+    if (!exact && cliTiers !== undefined && cliTiers.length === 0) return undefined
+
+    const optionByValue = new Map<string, { value: string; name: string; description?: string }>()
+    const labelLookup = new Map<string, { name: string; description?: string }>()
+    for (const opt of this.#thoughtLevel?.options ?? []) {
+      labelLookup.set(opt.value, { name: opt.name, ...(opt.description ? { description: opt.description } : {}) })
+    }
+    for (const opt of exact?.options ?? []) {
+      labelLookup.set(opt.value, { name: opt.name, ...(opt.description ? { description: opt.description } : {}) })
+    }
+
+    if (exact) {
+      for (const opt of exact.options) {
+        optionByValue.set(opt.value, { value: opt.value, name: opt.name, ...(opt.description ? { description: opt.description } : {}) })
+      }
+      // 并上官方 CLI 目录里该家族真实存在的档位（如 Hydrogen / Neon 的 xhigh）。
+      for (const tier of cliTiers ?? []) {
+        if (!optionByValue.has(tier)) {
+          const meta = labelLookup.get(tier)
+          optionByValue.set(tier, { value: tier, name: meta?.name ?? TIER_LABELS[tier] ?? tier, ...(meta?.description ? { description: meta.description } : {}) })
+        }
+      }
+    } else if (cliTiers !== undefined && cliTiers.length > 0) {
+      // 未直接跑过该模型，但 CLI 已给出该家族的精确档位表：严格只暴露它自己的档位，
+      // 防止 Hydrogen/Neon 的 xhigh 串台到 Carbon/Argon/Claude/Flash。
+      for (const tier of cliTiers) {
+        const meta = labelLookup.get(tier)
+        optionByValue.set(tier, { value: tier, name: meta?.name ?? TIER_LABELS[tier] ?? tier, ...(meta?.description ? { description: meta.description } : {}) })
+      }
+    } else if (this.#thoughtLevel && this.#thoughtLevel.options.length > 0) {
+      for (const opt of this.#thoughtLevel.options) {
+        optionByValue.set(opt.value, { value: opt.value, name: opt.name, ...(opt.description ? { description: opt.description } : {}) })
+      }
+    } else {
+      return undefined
+    }
+
+    const efforts = [...optionByValue.values()]
       .sort((a, b) => effortRank(a.value) - effortRank(b.value))
       .map((opt) => ({
         id: ReasoningEffortId(opt.value),
         name: opt.name,
         ...(opt.description ? { description: opt.description } : {}),
       }))
-    const defaultValue = selector.currentValue ?? efforts.find((e) => e.id.toString() === 'medium')?.id.toString() ?? efforts[0]!.id.toString()
+    if (efforts.length === 0) return undefined
+
+    const preferred = keepDeclared(exact?.currentValue, optionByValue.size > 0 ? [...optionByValue.values()] : [])
+      ?? keepDeclared(this.#thoughtLevel?.currentValue, [...optionByValue.values()])
+    const defaultValue = preferred
+      ?? efforts.find((e) => e.id.toString() === 'medium')?.id.toString()
+      ?? efforts[0]!.id.toString()
+
     return {
       efforts,
       defaultEffort: ReasoningEffortId(defaultValue),
@@ -281,13 +383,23 @@ export class CatalogStore {
           }
         }
         if (!this.#thoughtLevel && parsed.thoughtLevel && typeof parsed.thoughtLevel.configId === 'string' && Array.isArray(parsed.thoughtLevel.options) && parsed.thoughtLevel.options.length > 0) {
-          // 缓存里的 currentValue 可能来自被旧版本污染的写入（一次性请求的低档位）：
-          // 只接受它仍然是该选项表里声明的档位，否则当作没有默认值。
           const currentValue = keepDeclared(parsed.thoughtLevel.currentValue, parsed.thoughtLevel.options)
           this.#thoughtLevel = {
             configId: parsed.thoughtLevel.configId,
             options: parsed.thoughtLevel.options,
             ...(currentValue === undefined ? {} : { currentValue }),
+          }
+        }
+        if (parsed.modelThoughtLevels && typeof parsed.modelThoughtLevels === 'object' && !Array.isArray(parsed.modelThoughtLevels)) {
+          for (const [modelId, entry] of Object.entries(parsed.modelThoughtLevels)) {
+            if (!modelId || this.#modelThoughtLevels.has(modelId)) continue
+            if (!entry || typeof entry.configId !== 'string' || !Array.isArray(entry.options) || entry.options.length === 0) continue
+            const currentValue = keepDeclared(entry.currentValue, entry.options)
+            this.#modelThoughtLevels.set(modelId, {
+              configId: entry.configId,
+              options: entry.options,
+              ...(currentValue === undefined ? {} : { currentValue }),
+            })
           }
         }
       } catch {
@@ -301,23 +413,16 @@ export class CatalogStore {
 
   async #saveCache(): Promise<void> {
     if (!this.#options.cacheDir || this.#acpModels.size === 0) return
+    const modelThoughtLevels: Record<string, CachedThoughtLevel> = {}
+    for (const [modelId, selector] of this.#modelThoughtLevels) {
+      modelThoughtLevels[modelId] = serializeThoughtLevel(selector)
+    }
     const payload: CatalogCacheFile = {
       format: CATALOG_CACHE_FORMAT,
       acpVersion: this.#options.acpVersion,
       models: [...this.#acpModels.values()],
-      ...(this.#thoughtLevel
-        ? {
-            thoughtLevel: {
-              configId: this.#thoughtLevel.configId,
-              options: this.#thoughtLevel.options.map((opt) => ({
-                value: opt.value,
-                name: opt.name,
-                ...(opt.description ? { description: opt.description } : {}),
-              })),
-              ...(this.#thoughtLevel.currentValue ? { currentValue: this.#thoughtLevel.currentValue } : {}),
-            },
-          }
-        : {}),
+      ...(this.#thoughtLevel ? { thoughtLevel: serializeThoughtLevel(this.#thoughtLevel) } : {}),
+      ...(Object.keys(modelThoughtLevels).length > 0 ? { modelThoughtLevels } : {}),
     }
     try {
       await writeAtomicJson(join(this.#options.cacheDir, CATALOG_FILE), payload, 0o600)
@@ -334,6 +439,15 @@ function sameModelMap(a: Map<string, CatalogModelEntry>, b: Map<string, CatalogM
     if (!other || other.name !== entry.name || other.description !== entry.description || other.contextWindow !== entry.contextWindow) {
       return false
     }
+  }
+  return true
+}
+
+function sameTiersMap(a: Map<string, readonly string[]>, b: Map<string, readonly string[]>): boolean {
+  if (a.size !== b.size) return false
+  for (const [id, tiers] of a) {
+    const other = b.get(id)
+    if (!other || other.length !== tiers.length || other.some((v, idx) => v !== tiers[idx])) return false
   }
   return true
 }

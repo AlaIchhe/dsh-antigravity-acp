@@ -1,24 +1,37 @@
+/**
+ * 会话核心纯逻辑与持久化回归测试（零 mock / 零假 ACP agent）。
+ *
+ * 所有涉及真实 ACP 进程、MCP 桥、工具续轮、取消宽限、多账号切换与并发的端到端测试
+ * 均在 `tests/real-session-core.test.ts` 中使用本机真实 `agy acp` 与真实凭据运行。
+ */
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   ReasoningEffortId,
   ToolCallId,
   createAssistantMessage,
+  createSystemMessage,
   createToolResultMessage,
   createUserMessage,
 } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, RequestMessage, StreamChunk, ToolSchema } from '@deepseek-ai/dsh-llm'
-import type { AnyMessage, SessionConfigOption, Stream } from '@agentclientprotocol/sdk'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { AgentLink } from '../src/protocol/agent-link.js'
-import { AntigravityAcpAdapter, AGY_ADAPTER_ERROR } from '../src/session/adapter.js'
+import type { GenerateOptions, RequestMessage, ToolSchema } from '@deepseek-ai/dsh-llm'
+import type { SessionConfigOption } from '@agentclientprotocol/sdk'
+import { classifyTurnOutcome } from '../src/session/adapter.js'
 import { CatalogStore } from '../src/session/catalog-store.js'
-import { AGY_ROUTING_ERROR, applySessionSelection } from '../src/session/model-router.js'
-import { evaluateRecordContinuity } from '../src/session/session-coordinator.js'
-import { ContinuationState, ROUTE_FINGERPRINT_VERSION, outputHash, prefixHash, routeBaseFingerprint, routeFingerprint } from '../src/session/session-reuse.js'
+import { findModelSelector, findThoughtLevelSelector, normalizeEffort } from '../src/session/model-router.js'
+import { SessionCoordinator, evaluateRecordContinuity } from '../src/session/session-coordinator.js'
+import {
+  ContinuationState,
+  ROUTE_FINGERPRINT_VERSION,
+  outputHash,
+  prefixHash,
+  prefixMatches,
+  rotateContinuation,
+  routeBaseFingerprint,
+  routeFingerprint,
+} from '../src/session/session-reuse.js'
 import { createFileSessionStore, readSessionMap, writeSessionMap } from '../src/session/session-store.js'
 import { describeUpstreamErrorNotice } from '../src/session/turn-runner.js'
 import { TurnUsageAccounting } from '../src/session/usage-accounting.js'
@@ -28,57 +41,42 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-/** 创建进程内双向 ACP Stream（测试用，不起子进程）。 */
-function createLinkedAcpPair(
-  onAgentMessage: (msg: AnyMessage, sendToClient: (msg: AnyMessage) => void) => void | Promise<void>,
-): Stream {
-  let clientCtrl!: ReadableStreamDefaultController<AnyMessage>
-  const readable = new ReadableStream<AnyMessage>({
-    start(controller) { clientCtrl = controller },
-  })
-  const sendToClient = (msg: AnyMessage) => { clientCtrl.enqueue(msg) }
-  const writable = new WritableStream<AnyMessage>({
-    async write(msg) { await onAgentMessage(msg, sendToClient) },
-    close() { try { clientCtrl.close() } catch { /* already closed */ } },
-  })
-  return { readable, writable }
+function configOptionsFor(
+  modelId: string,
+  effort: 'low' | 'medium' | 'high' | 'xhigh',
+  efforts: Array<{ value: string; name: string }> = [
+    { value: 'low', name: 'Low' },
+    { value: 'medium', name: 'Medium' },
+    { value: 'high', name: 'High' },
+  ],
+): SessionConfigOption[] {
+  return [
+    {
+      type: 'select',
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      currentValue: modelId,
+      options: [
+        { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+        { value: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen' },
+        { value: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
+        { value: 'gemini-pro-orchestrator', name: 'Orchestrator (Carbon)' },
+      ],
+    },
+    {
+      type: 'select',
+      id: 'thought_level',
+      name: 'Thought Level',
+      category: 'thought_level',
+      currentValue: effort,
+      options: efforts,
+    },
+  ]
 }
 
-const DEFAULT_CONFIG_OPTIONS: SessionConfigOption[] = [
-  {
-    type: 'select',
-    id: 'model',
-    name: 'Model',
-    category: 'model',
-    currentValue: 'gemini-4-neon',
-    options: [
-      { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
-      { value: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
-    ],
-  },
-  {
-    type: 'select',
-    id: 'thought_level',
-    name: 'Thought Level',
-    category: 'thought_level',
-    currentValue: 'medium',
-    options: [
-      { value: 'low', name: 'Low' },
-      { value: 'medium', name: 'Medium' },
-      { value: 'high', name: 'High' },
-    ],
-  },
-]
-
-/** 造一份 thought_level.currentValue 指定的 configOptions。 */
-function withCurrentEffort(current: 'low' | 'medium' | 'high' | 'xhigh'): SessionConfigOption[] {
-  return DEFAULT_CONFIG_OPTIONS.map((option) =>
-    option.id === 'thought_level' ? { ...option, currentValue: current } as SessionConfigOption : option,
-  )
-}
-
-describe('v1.0 session core & bug regressions', () => {
-  it('BUG FIX #1: session-store preserves routeVersion across disk read/write', async () => {
+describe('v1.0 session core pure invariants (zero mocks)', () => {
+  it('session-store persists routeVersion, routeBase, and accountId strictly', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agy-smap-'))
     dirs.push(dir)
     const msg = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
@@ -89,15 +87,26 @@ describe('v1.0 session core & bug regressions', () => {
       sentHash: prefixHash([msg]),
       outputHash: outputHash([{ type: 'text', text: 'hi' }]),
       route: routeFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: 'sys' }),
+      routeBase: routeBaseFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: 'sys' }),
       routeVersion: ROUTE_FINGERPRINT_VERSION,
+      accountId: 'acc_work_1',
       updatedAt: Date.now(),
     }
     expect(await writeSessionMap(dir, { 'dsh-1::chat': entry })).toBe(true)
     const reloaded = await readSessionMap(dir)
     expect(reloaded['dsh-1::chat']?.routeVersion).toBe(ROUTE_FINGERPRINT_VERSION)
+    expect(reloaded['dsh-1::chat']?.routeBase).toBe(entry.routeBase)
+    expect(reloaded['dsh-1::chat']?.accountId).toBe('acc_work_1')
+
+    // 非法 routeBase 或空白 accountId 必须被拒收（不静默接受脏数据）
+    await writeSessionMap(dir, { 'dsh-bad-rb::chat': { ...entry, routeBase: 'not-a-hash' } })
+    await writeSessionMap(dir, { 'dsh-bad-acc::chat': { ...entry, accountId: '   ' } })
+    const checked = await readSessionMap(dir)
+    expect(checked['dsh-bad-rb::chat']).toBeUndefined()
+    expect(checked['dsh-bad-acc::chat']).toBeUndefined()
   })
 
-  it('BUG FIX #2: ContinuationState ignores dynamic tool changes mid-turn (e.g. bcdp lazy unlock)', () => {
+  it('ContinuationState ignores dynamic tool additions mid-turn and rotateContinuation advances ledger', () => {
     const toolA: ToolSchema = { name: 'read', description: 'read', parameters: { type: 'object', properties: {} } }
     const toolB: ToolSchema = { name: 'bcdp_click', description: 'click', parameters: { type: 'object', properties: {} } }
     const u1 = createUserMessage({ content: [{ type: 'text', text: 'open page' }], source: { kind: 'user' } })
@@ -107,638 +116,271 @@ describe('v1.0 session core & bug regressions', () => {
       messages: [u1],
       tools: [toolA],
     }
-    const cont = new ContinuationState(baseOpts)
-    const callBlock = { type: 'tool-call' as const, id: ToolCallId('dsh-tools-1'), name: 'read', arguments: '{}' }
-    cont.emitted(callBlock)
+    const host = { continuation: new ContinuationState(baseOpts) }
+    const call1 = { type: 'tool-call' as const, id: ToolCallId('dsh-tools-1'), name: 'read', arguments: '{}' }
+    host.continuation.emitted(call1)
 
-    const nextOpts: GenerateOptions = {
+    const step2Opts: GenerateOptions = {
       ...baseOpts,
-      tools: [toolA, toolB], // 动态新增了工具！
+      tools: [toolA, toolB],
       messages: [
         u1,
-        createAssistantMessage({ content: [callBlock], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } }),
+        createAssistantMessage({ content: [call1], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } }),
         createToolResultMessage({ callId: ToolCallId('dsh-tools-1'), content: [{ type: 'text', text: 'ok' }], isError: false }),
       ],
     }
-    expect(cont.accepts(nextOpts, 1)).toBe(true)
-  })
+    expect(host.continuation.accepts(step2Opts, 1)).toBe(true)
 
-  it('BUG FIX #3: evaluateRecordContinuity distinguishes reuse / reset-fresh / unrecoverable cleanly', () => {
-    const u1 = createUserMessage({ content: [{ type: 'text', text: 'first' }], source: { kind: 'user' } })
-    const a1 = createAssistantMessage({ content: [{ type: 'text', text: 'reply' }], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } })
-    const u2 = createUserMessage({ content: [{ type: 'text', text: 'second' }], source: { kind: 'user' } })
-    const route = routeFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon' })
-
-    const baseRecord = {
-      sessionId: 'acp-1',
-      cwd: '/work',
-      sentCount: 1,
-      sentHash: prefixHash([u1]),
-      outputHash: outputHash(a1.content),
-      route,
-      routeVersion: ROUTE_FINGERPRINT_VERSION,
-    }
-
-    // 正常追加
-    expect(evaluateRecordContinuity(baseRecord, { provider: 'antigravity-acp', model: 'gemini-4-neon', messages: [u1, a1, u2] }, '/work')).toEqual({ ok: true })
-    // 切换模型 → unrecoverable
-    expect(evaluateRecordContinuity(baseRecord, { provider: 'antigravity-acp', model: 'claude-sonnet-5-5', messages: [u1, a1, u2] }, '/work')).toMatchObject({ ok: false, kind: 'unrecoverable' })
-    // 历史压缩前缀变化 → 显式 reset-fresh
-    const compacted = createUserMessage({ content: [{ type: 'text', text: 'summary' }], source: { kind: 'user' } })
-    expect(evaluateRecordContinuity(baseRecord, { provider: 'antigravity-acp', model: 'gemini-4-neon', messages: [compacted, u2] }, '/work')).toMatchObject({ ok: false, kind: 'reset-fresh' })
-  })
-
-  it('CatalogStore filters hiddenModels and persists v3 catalog with thoughtLevel', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'agy-cat-'))
-    dirs.push(dir)
-    let hidden: string[] = ['claude-sonnet-5-5']
-    const store = new CatalogStore({
-      cacheDir: dir,
-      acpVersion: '1.5.0',
-      readHiddenModels: () => hidden,
-      canReadImages: () => true,
-    })
-    store.setImageSupported(true)
-    store.observeConfigOptions(DEFAULT_CONFIG_OPTIONS)
-    store.noteContextWindow('gemini-4-neon', 200_000)
-
-    const visible = await store.listVisibleModels()
-    expect(visible.map((m) => m.id)).toEqual(['gemini-4-neon'])
-    const all = await store.listAllModels()
-    expect(all.map((m) => m.id)).toEqual(['gemini-4-neon', 'claude-sonnet-5-5'])
-
-    const resolved = await store.resolveModel('antigravity-acp', 'gemini-4-neon')
-    expect(resolved.context?.contextWindow).toBe(200_000)
-    expect(resolved.inputModalities).toEqual(['text', 'image'])
-    expect(resolved.reasoning?.efforts.map((e) => e.id.toString())).toEqual(['low', 'medium', 'high'])
-  })
-
-  it('applySessionSelection rejects undeclared effort with AGY_EFFORT_UNSUPPORTED', async () => {
-    const link = {
-      setConfigOption: vi.fn(async () => ({ configOptions: DEFAULT_CONFIG_OPTIONS })),
-    } as unknown as AgentLink
-
-    await expect(applySessionSelection({
-      link,
-      sessionId: 's1',
-      configOptions: DEFAULT_CONFIG_OPTIONS,
-      model: 'gemini-4-neon',
-      effort: ReasoningEffortId('xhigh'),
-    })).rejects.toMatchObject({ code: AGY_ROUTING_ERROR.EFFORT_UNSUPPORTED })
-  })
-
-  it('TurnUsageAccounting reconciles multi-step tool turns and describeUpstreamErrorNotice catches 429 notices', () => {
-    const acc = new TurnUsageAccounting()
-    acc.noteObservedUsed(10_000)
-    const step1 = acc.emitIntermediateStep()
-    expect(step1?.inputTokens).toBe(10_000)
-    expect(step1?.outputTokens).toBe(0)
-
-    acc.noteObservedUsed(12_000)
-    const final = acc.reconcileFinalStep({
-      inputTokens: 15_000,
-      cachedReadTokens: 7_000,
-      cachedWriteTokens: 0,
-      outputTokens: 400,
-      thoughtTokens: 120,
-      totalTokens: 22_400,
-    })
-    expect(final?.outputTokens).toBe(400)
-    expect(final?.reasoningTokens).toBe(120)
-    expect(final?.totalTokens).toBe((final?.inputTokens ?? 0) + (final?.cacheReadTokens ?? 0) + (final?.cacheWriteTokens ?? 0) + 400)
-
-    expect(describeUpstreamErrorNotice('⚠ RESOURCE_EXHAUSTED (code 429): quota', false)).toContain('HTTP 429')
-    expect(describeUpstreamErrorNotice('⚠ RESOURCE_EXHAUSTED (code 429): quota', true)).toBeUndefined()
-  })
-
-  it('Plan A adapter multiplexes two concurrent conversations over ONE shared AgentLink', async () => {
-    let sessionSeq = 0
-    const createdSessions: string[] = []
-    const stream = createLinkedAcpPair(async (msg, send) => {
-      if (!('method' in msg) || !('id' in msg)) return
-      if (msg.method === 'initialize') {
-        send({
-          jsonrpc: '2.0',
-          id: msg.id,
-          result: {
-            protocolVersion: 1,
-            agentCapabilities: { promptCapabilities: { image: true }, sessionCapabilities: { resume: {} } },
-            authMethods: [],
-          },
-        })
-        return
-      }
-      if (msg.method === 'session/new') {
-        const sid = `acp-s-${++sessionSeq}`
-        createdSessions.push(sid)
-        send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: sid, configOptions: DEFAULT_CONFIG_OPTIONS } })
-        return
-      }
-      if (msg.method === 'session/prompt') {
-        const params = msg.params as { sessionId: string; prompt: Array<{ type: string; text?: string }> }
-        const text = params.prompt.map((b) => b.text ?? '').join('')
-        const tag = text.includes('ALPHA') ? 'reply-ALPHA' : 'reply-BETA'
-        // 交错延时，验证并发多路复用
-        await new Promise((r) => setTimeout(r, tag === 'reply-ALPHA' ? 40 : 10))
-        send({
-          jsonrpc: '2.0',
-          method: 'session/update',
-          params: {
-            sessionId: params.sessionId,
-            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: tag } },
-          },
-        })
-        send({
-          jsonrpc: '2.0',
-          id: msg.id,
-          result: { stopReason: 'end_turn', usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 } },
-        })
-      }
-    })
-
-    const dir = mkdtempSync(join(tmpdir(), 'agy-adapter-'))
-    dirs.push(dir)
-    const store = createFileSessionStore(dir)
-    const catalog = new CatalogStore({ cacheDir: dir, acpVersion: '1.5.0' })
-
-    let linkInst: AgentLink | undefined
-    let linkReady: Promise<AgentLink> | undefined
-    const getLinkCalls = vi.fn((handlers) => {
-      linkReady ??= (async () => {
-        const created = new AgentLink({ stream, handlers })
-        created.start()
-        await created.initialize({ clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } })
-        linkInst = created
-        return created
-      })()
-      return linkReady
-    })
-
-    const adapter = new AntigravityAcpAdapter({
-      catalog,
-      getLink: getLinkCalls,
-      recycleLink: async (l) => { await l.close() },
-      sessionStore: store,
-      cwd: '/work',
-      readSettings: () => ({ resumeSessions: true, idleRecycleMs: 0 }),
-    })
-
-    const collect = async (opts: GenerateOptions) => {
-      let text = ''
-      let finish = ''
-      for await (const chunk of adapter.stream(opts)) {
-        if (chunk.type === 'text-delta') text += chunk.text
-        if (chunk.type === 'finish') finish = chunk.reason.kind
-      }
-      return { text, finish }
-    }
-
-    const [resA, resB] = await Promise.all([
-      collect({
-        provider: 'antigravity-acp',
-        model: 'gemini-4-neon',
-        sessionId: 'conv-alpha' as GenerateOptions['sessionId'],
-        messages: [createUserMessage({ content: [{ type: 'text', text: 'ALPHA' }], source: { kind: 'user' } })],
-      }),
-      collect({
-        provider: 'antigravity-acp',
-        model: 'gemini-4-neon',
-        sessionId: 'conv-beta' as GenerateOptions['sessionId'],
-        messages: [createUserMessage({ content: [{ type: 'text', text: 'BETA' }], source: { kind: 'user' } })],
-      }),
-    ])
-
-    expect(resA).toEqual({ text: 'reply-ALPHA', finish: 'stop' })
-    expect(resB).toEqual({ text: 'reply-BETA', finish: 'stop' })
-    expect(createdSessions).toHaveLength(2)
-
-    // 校验缺失映射的历史聊天报 AGY_SESSION_UNRECOVERABLE
-    await expect(collect({
-      provider: 'antigravity-acp',
-      model: 'gemini-4-neon',
-      sessionId: 'conv-ghost' as GenerateOptions['sessionId'],
+    // 轮换账本后，第二段工具调用同样可通过 accepts()
+    rotateContinuation(host, step2Opts)
+    const call2 = { type: 'tool-call' as const, id: ToolCallId('dsh-tools-2'), name: 'bcdp_click', arguments: '{}' }
+    host.continuation.emitted(call2)
+    const step3Opts: GenerateOptions = {
+      ...step2Opts,
       messages: [
-        createUserMessage({ content: [{ type: 'text', text: 'old' }], source: { kind: 'user' } }),
-        createAssistantMessage({ content: [{ type: 'text', text: 'old-reply' }], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } }),
-        createUserMessage({ content: [{ type: 'text', text: 'new' }], source: { kind: 'user' } }),
+        ...step2Opts.messages,
+        createAssistantMessage({ content: [call2], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } }),
+        createToolResultMessage({ callId: ToolCallId('dsh-tools-2'), content: [{ type: 'text', text: 'clicked' }], isError: false }),
       ],
-    })).rejects.toMatchObject({ code: AGY_ADAPTER_ERROR.SESSION_UNRECOVERABLE })
-
-    await adapter.dispose()
-    await linkInst?.close()
-    await store.close()
+    }
+    expect(host.continuation.accepts(step3Opts, 1)).toBe(true)
   })
 
-  it('Plan A 故障隔离 + 取消/干净失败后保留会话可续聊', async () => {
-    let sessionSeq = 0
-    const closedSessions: string[] = []
-    let promptCount = 0
-    const stream = createLinkedAcpPair(async (msg, send) => {
-      if (!('method' in msg) || !('id' in msg)) return
-      if (msg.method === 'initialize') {
-        send({
-          jsonrpc: '2.0',
-          id: msg.id,
-          result: {
-            protocolVersion: 1,
-            agentCapabilities: { promptCapabilities: { image: true }, sessionCapabilities: { resume: {} } },
-            authMethods: [],
-          },
-        })
-        return
-      }
-      if (msg.method === 'session/new') {
-        const sid = `acp-iso-${++sessionSeq}`
-        send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: sid, configOptions: DEFAULT_CONFIG_OPTIONS } })
-        return
-      }
-      if (msg.method === 'session/close') {
-        closedSessions.push((msg.params as { sessionId: string }).sessionId)
-        send({ jsonrpc: '2.0', id: msg.id, result: {} })
-        return
-      }
-      if (msg.method === 'session/prompt') {
-        promptCount += 1
-        const params = msg.params as { sessionId: string; prompt: Array<{ type: string; text?: string }> }
-        const text = params.prompt.map((b) => b.text ?? '').join('')
-        if (text.includes('FAIL_TIMEOUT')) {
-          // 故意不回复，让它命中 promptTimeoutMs
-          return
-        }
-        if (text.includes('NOTICE_429')) {
-          send({
-            jsonrpc: '2.0',
-            method: 'session/update',
-            params: {
-              sessionId: params.sessionId,
-              update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '⚠ RESOURCE_EXHAUSTED (code 429): busy' } },
-            },
-          })
-          send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } })
-          return
-        }
-        // 25ms 发首块触发活跃续期，再等 35ms（总计 60ms > 45ms promptTimeoutMs）发尾块
-        await new Promise((r) => setTimeout(r, 25))
-        send({
-          jsonrpc: '2.0',
-          method: 'session/update',
-          params: {
-            sessionId: params.sessionId,
-            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'healthy-' } },
-          },
-        })
-        await new Promise((r) => setTimeout(r, 35))
-        send({
-          jsonrpc: '2.0',
-          method: 'session/update',
-          params: {
-            sessionId: params.sessionId,
-            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } },
-          },
-        })
-        send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } })
-      }
-    })
+  it('tolerates host in-place system-role message refresh during tool continuation and across turns without cold replay', () => {
+    const sysV1 = createSystemMessage('Enabled engines: exa, tavily, wechat.')
+    const sysV2 = createSystemMessage('Enabled engines: exa, firecrawl, tavily.')
+    const sysAppended = createSystemMessage('Updated system notice.')
+    const u1 = createUserMessage({ content: [{ type: 'text', text: 'run test' }], source: { kind: 'user' } })
+    const call1 = { type: 'tool-call' as const, id: ToolCallId('dsh-tools-sys-1'), name: 'wait_agent', arguments: '{}' }
+    const a1 = createAssistantMessage({ content: [call1], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } })
+    const tr1 = createToolResultMessage({ callId: ToolCallId('dsh-tools-sys-1'), content: [{ type: 'text', text: '{"timedOut":true}' }], isError: false })
 
-    const dir = mkdtempSync(join(tmpdir(), 'agy-iso-'))
-    dirs.push(dir)
-    const store = createFileSessionStore(dir)
-    const catalog = new CatalogStore({ cacheDir: dir, acpVersion: '1.5.0' })
-
-    let linkInst: AgentLink | undefined
-    let linkReady: Promise<AgentLink> | undefined
-    const recycleSpy = vi.fn(async (l: AgentLink) => { await l.close() })
-    const adapter = new AntigravityAcpAdapter({
-      catalog,
-      getLink: (handlers) => {
-        linkReady ??= (async () => {
-          const created = new AgentLink({ stream, handlers })
-          created.start()
-          await created.initialize({ clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } })
-          linkInst = created
-          return created
-        })()
-        return linkReady
-      },
-      recycleLink: recycleSpy,
-      sessionStore: store,
-      cwd: '/work',
-      readSettings: () => ({ resumeSessions: true, idleRecycleMs: 0, promptTimeoutMs: 45 }),
-    })
-
-    const collect = async (opts: GenerateOptions) => {
-      let text = ''
-      let finish = ''
-      let code: string | undefined
-      for await (const chunk of adapter.stream(opts)) {
-        if (chunk.type === 'text-delta') text += chunk.text
-        if (chunk.type === 'finish') {
-          finish = chunk.reason.kind
-          if (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted') code = chunk.reason.failure?.code
-        }
-      }
-      return { text, finish, code }
-    }
-
-    // 1. 并发：FAIL_TIMEOUT 超时时，不能误杀同时运行的 HEALTHY 会话
-    const [badRes, okRes] = await Promise.all([
-      collect({
-        provider: 'antigravity-acp',
-        model: 'gemini-4-neon',
-        sessionId: 'conv-bad' as GenerateOptions['sessionId'],
-        messages: [createUserMessage({ content: [{ type: 'text', text: 'FAIL_TIMEOUT' }], source: { kind: 'user' } })],
-      }),
-      collect({
-        provider: 'antigravity-acp',
-        model: 'gemini-4-neon',
-        sessionId: 'conv-ok' as GenerateOptions['sessionId'],
-        messages: [createUserMessage({ content: [{ type: 'text', text: 'HEALTHY' }], source: { kind: 'user' } })],
-      }),
-    ])
-    expect(badRes.finish).toBe('error')
-    expect(okRes).toEqual({ text: 'healthy-ok', finish: 'stop', code: undefined })
-    expect(recycleSpy).not.toHaveBeenCalled()
-    expect(closedSessions).toHaveLength(1)
-
-    // 2. 干净失败（429 通告）后保留会话并写盘 cancelled: true，下一轮直接复用不报 SESSION_UNRECOVERABLE
-    const m1 = createUserMessage({ content: [{ type: 'text', text: 'NOTICE_429' }], source: { kind: 'user' } })
-    const r1 = await collect({
+    // 1. 工具续轮中途宿主原地替换 messages[0]（surfaceOp: replace）：必须继续接受，不得强杀会话
+    const step1Opts: GenerateOptions = {
       provider: 'antigravity-acp',
       model: 'gemini-4-neon',
-      sessionId: 'conv-retry' as GenerateOptions['sessionId'],
-      messages: [m1],
-    })
-    expect(r1.finish).toBe('error')
-    expect(r1.code).toBe('AGY_UPSTREAM_ERROR_NOTICE')
-    await store.flush()
-    const saved = await store.get('conv-retry::chat')
-    expect(saved?.cancelled).toBe(true)
-
-    const m2 = createUserMessage({ content: [{ type: 'text', text: 'RETRY_NOW' }], source: { kind: 'user' } })
-    const sessionsBeforeRetry = sessionSeq
-    const r2 = await collect({
-      provider: 'antigravity-acp',
-      model: 'gemini-4-neon',
-      sessionId: 'conv-retry' as GenerateOptions['sessionId'],
-      messages: [m1, m2],
-    })
-    expect(r2).toEqual({ text: 'healthy-ok', finish: 'stop', code: undefined })
-    expect(sessionSeq).toBe(sessionsBeforeRetry) // 复用了原会话，没有新建
-
-    await adapter.dispose()
-    await linkInst?.close()
-    await store.close()
-  })
-})
-
-describe('tool continuation ledger rotation (rc.1 regression)', () => {
-  it('同一 ACP 会话连续两段工具调用不再报废（AGY_SESSION_UNRECOVERABLE）', async () => {
-    // 真机复现：2026-11-27 09:50 的会话，第 1 步 glob、第 2 步 grep 都成功回喂，
-    // 第 3 步却报「没有可发送的增量消息」。根因是续轮被接受后账本没轮换：
-    // 旧的 #history 停在首个请求上、#emitted 跨步累加，第二段续轮 accepts() 恒假
-    // → abort 整个回合 → 会话被标 cancelled → 下一轮判定 unrecoverable。
-    const TOOL: ToolSchema = {
-      name: 'glob',
-      description: 'list files',
-      parameters: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] },
+      messages: [sysV1, u1],
     }
-    const clients: Client[] = []
-    const parkOrder: string[] = []
-    let sessionSeq = 0
-    let prompts = 0
+    const cont = new ContinuationState(step1Opts)
+    cont.emitted(call1)
+    expect(cont.accepts({ ...step1Opts, messages: [sysV2, u1, a1, tr1] }, 1)).toBe(true)
+    // 宿主在工具续轮尾部追加新的 system 消息同样不得打断续轮
+    expect(cont.accepts({ ...step1Opts, messages: [sysV2, u1, a1, tr1, sysAppended] }, 1)).toBe(true)
+    // 但若删掉 system 槽位或改写用户消息，仍必须拒绝
+    expect(cont.accepts({ ...step1Opts, messages: [u1, a1, tr1] }, 1)).toBe(false)
+    const tamperedU1 = createUserMessage({ content: [{ type: 'text', text: 'other' }], source: { kind: 'user' } })
+    expect(cont.accepts({ ...step1Opts, messages: [sysV2, tamperedU1, a1, tr1] }, 1)).toBe(false)
 
-    const stream = createLinkedAcpPair(async (msg, send) => {
-      if (!('method' in msg) || !('id' in msg)) return
-      if (msg.method === 'initialize') {
-        send({
-          jsonrpc: '2.0',
-          id: msg.id,
-          result: {
-            protocolVersion: 1,
-            agentCapabilities: { promptCapabilities: { image: false }, sessionCapabilities: { resume: {} } },
-            authMethods: [],
-          },
-        })
-        return
-      }
-      if (msg.method === 'session/new') {
-        const sid = `acp-tools-${++sessionSeq}`
-        // MCP 桥注册信息只在 session/new 下发一次（ACP 语义），续轮不会重发。
-        const server = (msg.params as { mcpServers?: Array<{ url: string; headers: Array<{ name: string; value: string }> }> })
-          .mcpServers?.[0]
-        if (server) mcpServer = server
-        send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: sid, configOptions: DEFAULT_CONFIG_OPTIONS } })
-        return
-      }
-      if (msg.method === 'session/prompt') {
-        prompts += 1
-        const params = msg.params as {
-          sessionId: string
-          prompt: Array<{ type: string; text?: string }>
-        }
-        if (!cached && mcpServer) {
-          const token = mcpServer.headers.find((h) => h.name.toLowerCase() === 'authorization')?.value ?? ''
-          const transport = new StreamableHTTPClientTransport(new URL(mcpServer.url), {
-            requestInit: { headers: { authorization: token } },
-          })
-          const client = new Client({ name: 'fake-agent', version: '1.0.0' })
-          await client.connect(transport)
-          clients.push(client)
-          cached = client
-        }
-        const client = cached
-        if (!client) throw new Error('未拿到 MCP 桥注册信息')
-        // 第一段：发 glob 工具调用，等 DSH 回喂结果
-        parkOrder.push('call-1')
-        await client.callTool({ name: 'glob', arguments: { pattern: '**/*' } })
-        // 第二段：同一 prompt 内再发一次工具调用（这一步在修复前会整轮报废）
-        parkOrder.push('call-2')
-        await client.callTool({ name: 'glob', arguments: { pattern: 'src/**' } })
-        send({
-          jsonrpc: '2.0',
-          method: 'session/update',
-          params: {
-            sessionId: params.sessionId,
-            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'all-done' } },
-          },
-        })
-        send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } })
-      }
-    })
-    let cached: Client | undefined
-    let mcpServer: { url: string; headers: Array<{ name: string; value: string }> } | undefined
+    // 2. 跨回合复用：原地刷新 role='system' 不改变 prefixHash，不得误触发 reset-fresh 全量冷重放
+    const reply1 = createAssistantMessage({ content: [{ type: 'text', text: 'done' }], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } })
+    const u2 = createUserMessage({ content: [{ type: 'text', text: 'next' }], source: { kind: 'user' } })
+    const sent = [sysV1, u1]
+    const sentHash = prefixHash(sent)
+    expect(prefixMatches([sysV2, u1, reply1, u2], sent.length, sentHash)).toBe(true)
 
-    const dir = mkdtempSync(join(tmpdir(), 'agy-tools-'))
-    dirs.push(dir)
-    const store = createFileSessionStore(dir)
-    const catalog = new CatalogStore({ cacheDir: dir, acpVersion: '1.5.0' })
-    let linkInst: AgentLink | undefined
-    let linkReady: Promise<AgentLink> | undefined
-    const adapter = new AntigravityAcpAdapter({
-      catalog,
-      getLink: (handlers) => {
-        linkReady ??= (async () => {
-          const created = new AgentLink({ stream, handlers })
-          created.start()
-          await created.initialize({ clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } })
-          linkInst = created
-          return created
-        })()
-        return linkReady
-      },
-      recycleLink: async (l: AgentLink) => { await l.close() },
-      sessionStore: store,
+    const base = { provider: 'antigravity-acp', model: 'gemini-4-neon' }
+    const record = {
+      sessionId: 'acp-sys-refresh',
       cwd: '/work',
-      readSettings: () => ({ resumeSessions: true, idleRecycleMs: 0, promptTimeoutMs: 5_000, bridgeParkSettleMs: 5, cancelGraceMs: 0 }),
-    })
-
-    const runStep = async (opts: GenerateOptions) => {
-      const blocks: unknown[] = []
-      let text = ''
-      let finish = ''
-      let code: string | undefined
-      for await (const chunk of adapter.stream(opts)) {
-        if (chunk.type === 'block-end') blocks.push(chunk.block)
-        if (chunk.type === 'text-delta') text += chunk.text
-        if (chunk.type === 'finish') {
-          finish = chunk.reason.kind
-          if (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted') code = chunk.reason.failure?.code
-        }
-      }
-      return { blocks, text, finish, code }
+      sentCount: sent.length,
+      sentHash,
+      outputHash: outputHash(reply1.content),
+      route: routeFingerprint(base),
+      routeBase: routeBaseFingerprint(base),
+      routeVersion: ROUTE_FINGERPRINT_VERSION,
+      accountId: 'primary',
     }
-
-    const base = { provider: 'antigravity-acp', model: 'gemini-4-neon', tools: [TOOL] }
-    const u1 = createUserMessage({ content: [{ type: 'text', text: '看看仓库' }], source: { kind: 'user' } })
-
-    // 第 1 步：新会话，模型发第一个工具调用
-    const step1 = await runStep({ ...base, sessionId: 'conv-tools' as GenerateOptions['sessionId'], messages: [u1] })
-    expect(step1.finish).toBe('tool-calls')
-    expect(step1.code).toBeUndefined()
-    const call1 = step1.blocks.find((b) => (b as { type: string }).type === 'tool-call') as { id: string } | undefined
-    expect(call1).toBeDefined()
-
-    const a1 = createAssistantMessage({
-      content: step1.blocks as never,
-      source: { provider: 'antigravity-acp', model: 'gemini-4-neon' },
-    })
-    const t1 = createToolResultMessage({ callId: ToolCallId(call1!.id), content: [{ type: 'text', text: 'glob-ok-1' }], isError: false })
-
-    // 第 2 步：回喂第一个结果 → 模型在同一 prompt 内发第二个工具调用（续轮，必须被接受）
-    const step2 = await runStep({
-      ...base,
-      sessionId: 'conv-tools' as GenerateOptions['sessionId'],
-      messages: [u1, a1, t1],
-    })
-    expect(step2.finish).toBe('tool-calls')
-    expect(step2.code).toBeUndefined()
-    const call2 = step2.blocks.find((b) => (b as { type: string }).type === 'tool-call') as { id: string } | undefined
-    expect(call2).toBeDefined()
-
-    const a2 = createAssistantMessage({
-      content: step2.blocks as never,
-      source: { provider: 'antigravity-acp', model: 'gemini-4-neon' },
-    })
-    const t2 = createToolResultMessage({ callId: ToolCallId(call2!.id), content: [{ type: 'text', text: 'glob-ok-2' }], isError: false })
-
-    // 第 3 步：回喂第二个结果 → 模型收尾（修复前这里直接 AGY_SESSION_UNRECOVERABLE）
-    const step3 = await runStep({
-      ...base,
-      sessionId: 'conv-tools' as GenerateOptions['sessionId'],
-      messages: [u1, a1, t1, a2, t2],
-    })
-    expect(step3.code).toBeUndefined()
-    expect(step3.finish).toBe('stop')
-    expect(step3.text).toBe('all-done')
-    expect(sessionSeq).toBe(1) // 全程同一个 ACP 会话，没有新建
-    expect(prompts).toBe(1) // 全程同一个 prompt，两段工具调用都是续轮
-    expect(parkOrder).toEqual(['call-1', 'call-2'])
-
-    for (const client of clients) await client.close().catch(() => undefined)
-    await adapter.dispose()
-    await linkInst?.close()
-    await store.close()
-  })
-})
-
-describe('effort drift must not kill a conversation', () => {
-  it('一次性请求（session-title）不得改写用户的默认思考档位', async () => {
-    // 真机复现（2026-11-27 10:16 会话）：标题请求带 reasoningEffort=low，
-    // 新建 ACP 会话后把 catalog 的 thoughtLevel.currentValue 写成 low；
-    // DSH 随后用 defaultEffort 解析聊天请求 → 档位从 high 变 low →
-    // 路由指纹不符 → AGY_SESSION_UNRECOVERABLE，对话报废。
-    const dir = mkdtempSync(join(tmpdir(), 'agy-drift-'))
-    dirs.push(dir)
-    const store = new CatalogStore({ cacheDir: dir, acpVersion: '1.5.0' })
-
-    // 用户在聊天里选了 high：权威观测
-    store.observeConfigOptions(withCurrentEffort('high'), { authoritative: true })
-    expect(store.thoughtLevel?.currentValue).toBe('high')
-    expect((await store.resolveModel('antigravity-acp', 'gemini-4-neon')).reasoning?.defaultEffort?.toString()).toBe('high')
-
-    // 标题请求的低档位会话：非权威观测
-    store.observeConfigOptions(withCurrentEffort('low'), { authoritative: false })
-    expect(store.thoughtLevel?.currentValue).toBe('high')
-    expect((await store.resolveModel('antigravity-acp', 'gemini-4-neon')).reasoning?.defaultEffort?.toString()).toBe('high')
-
-    // 关卡位选项表仍然照学（不同模型支持的档位不同）
-    const narrowed = withCurrentEffort('low').filter((o) => o.id !== 'thought_level')
-    store.observeConfigOptions([...narrowed, {
-      type: 'select', id: 'thought_level', name: 'Thought Level', category: 'thought_level', currentValue: 'low',
-      options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }],
-    }], { authoritative: false })
-    // 保留的 high 不在新选项里 → 必须丢弃，不能让 defaultEffort 指向未声明档位
-    expect(store.thoughtLevel?.currentValue ?? undefined).not.toBe('high')
-    const resolved = await store.resolveModel('antigravity-acp', 'gemini-4-neon')
-    const efforts = (resolved.reasoning?.efforts ?? []).map((e) => e.id.toString())
-    expect(efforts).toEqual(['low', 'medium'])
-    expect(efforts).toContain(resolved.reasoning?.defaultEffort?.toString())
+    expect(evaluateRecordContinuity(record, { ...base, messages: [sysV2, u1, reply1, u2] }, '/work', 'primary'))
+      .toEqual({ ok: true })
   })
 
-  it('只有思考档位变化时按新会话继续（历史保留），换模型仍然不可恢复', () => {
+  it('evaluateRecordContinuity handles effort change, account switch & compaction as reset-fresh, model/system change as unrecoverable', () => {
     const u1 = createUserMessage({ content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } })
     const a1 = createAssistantMessage({ content: [{ type: 'text', text: 'ok' }], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } })
     const u2 = createUserMessage({ content: [{ type: 'text', text: 'again' }], source: { kind: 'user' } })
     const base = { provider: 'antigravity-acp', model: 'gemini-4-neon', system: 'SYS' }
     const effort = (id: string) => ReasoningEffortId(id)
     const record = {
-      sessionId: 'acp-e', cwd: '/work', sentCount: 2, sentHash: prefixHash([u1]),
-      outputHash: outputHash(a1.content), route: routeFingerprint({ ...base, reasoningEffort: effort('high') }),
-      routeBase: routeBaseFingerprint(base), routeVersion: ROUTE_FINGERPRINT_VERSION,
+      sessionId: 'acp-e',
+      cwd: '/work',
+      sentCount: 2,
+      sentHash: prefixHash([u1]),
+      outputHash: outputHash(a1.content),
+      route: routeFingerprint({ ...base, reasoningEffort: effort('high') }),
+      routeBase: routeBaseFingerprint(base),
+      routeVersion: ROUTE_FINGERPRINT_VERSION,
+      accountId: 'primary',
     }
 
-    // 档位 high → low：可恢复，走 reset-fresh（新 ACP 会话带历史继续）
-    expect(evaluateRecordContinuity(record, { ...base, reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work'))
+    // 1. 仅思考档位变化 → reset-fresh
+    expect(evaluateRecordContinuity(record, { ...base, reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work', 'primary'))
       .toMatchObject({ ok: false, kind: 'reset-fresh' })
-    // 换模型：仍然不可恢复
-    expect(evaluateRecordContinuity(record, { ...base, model: 'claude-sonnet-5-5', reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work'))
+    // 2. 切换账号 → reset-fresh（不跨账号 resume）
+    expect(evaluateRecordContinuity(record, { ...base, reasoningEffort: effort('high'), messages: [u1, a1, u2] }, '/work', 'acc_2'))
+      .toMatchObject({ ok: false, kind: 'reset-fresh' })
+    // 3. 换模型 → unrecoverable
+    expect(evaluateRecordContinuity(record, { ...base, model: 'claude-sonnet-5-5', reasoningEffort: effort('high'), messages: [u1, a1, u2] }, '/work', 'primary'))
       .toMatchObject({ ok: false, kind: 'unrecoverable' })
-    // 换系统提示：仍然不可恢复
-    expect(evaluateRecordContinuity(record, { ...base, system: 'OTHER', reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work'))
+    // 4. 换系统提示 → unrecoverable
+    expect(evaluateRecordContinuity(record, { ...base, system: 'OTHER', reasoningEffort: effort('high'), messages: [u1, a1, u2] }, '/work', 'primary'))
       .toMatchObject({ ok: false, kind: 'unrecoverable' })
-    // 旧映射（没有 routeBase）：保持保守语义
+    // 5. 旧映射没有 routeBase 时保持保守语义
     const legacy = { ...record } as Record<string, unknown>
     delete legacy.routeBase
-    expect(evaluateRecordContinuity(legacy as never, { ...base, reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work'))
+    expect(evaluateRecordContinuity(legacy as never, { ...base, reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work', 'primary'))
+      .toMatchObject({ ok: false, kind: 'unrecoverable' })
+
+    // 6. 上下文压缩（/compact）使消息条数 ≤ sentCount 且含 compact-checkpoint → reset-fresh（不得误判死）
+    const compactedRecord = { ...record, sentCount: 413 }
+    const checkpoint = createUserMessage({
+      content: [{ type: 'text', text: 'summary' }],
+      source: { kind: 'compact-checkpoint' } as never,
+    }) as RequestMessage
+    expect(evaluateRecordContinuity(compactedRecord, { ...base, reasoningEffort: effort('high'), messages: [checkpoint, u2] }, '/work', 'primary'))
+      .toMatchObject({ ok: false, kind: 'reset-fresh' })
+    // 无 compact-checkpoint 且条数未增长仍保持 unrecoverable
+    expect(evaluateRecordContinuity(compactedRecord, { ...base, reasoningEffort: effort('high'), messages: [u1, u2] }, '/work', 'primary'))
       .toMatchObject({ ok: false, kind: 'unrecoverable' })
   })
 
-  it('routeBase 跟着映射落盘并能读回（旧格式缺字段仍可读）', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'agy-rb-'))
-    dirs.push(dir)
-    const u1 = createUserMessage({ content: [{ type: 'text', text: 'q' }], source: { kind: 'user' } })
-    const entry = {
-      sessionId: 'acp-rb', cwd: '/work', sentCount: 1, sentHash: prefixHash([u1]),
-      outputHash: outputHash([]), route: 'a'.repeat(64), routeBase: 'b'.repeat(64),
-      routeVersion: ROUTE_FINGERPRINT_VERSION, updatedAt: Date.now(),
-    }
-    await writeSessionMap(dir, { 'conv-rb::chat': entry })
-    const back = await readSessionMap(dir)
-    expect(back['conv-rb::chat']?.routeBase).toBe('b'.repeat(64))
+  it('drops failed brand-new or consecutively failing ACP sessions without stranding retry as unrecoverable', async () => {
+    // 1. classifyTurnOutcome 判定不变量
+    expect(classifyTurnOutcome('error', true, { reused: false, consecutiveErrors: 0 })).toBe('failed')
+    expect(classifyTurnOutcome('error', true, { reused: true, consecutiveErrors: 0 })).toBe('cancelled')
+    expect(classifyTurnOutcome('error', true, { reused: true, consecutiveErrors: 1 })).toBe('failed')
+    expect(classifyTurnOutcome('error', false, { reused: true, consecutiveErrors: 0 })).toBe('failed')
+    expect(classifyTurnOutcome('aborted', true, { reused: false, consecutiveErrors: 0 })).toBe('cancelled')
+    expect(classifyTurnOutcome('stop', true, { reused: false, consecutiveErrors: 0 })).toBe('delivered')
 
-    // routeBase 必须也是 64 位十六进制哈希，否则整条映射丢弃（不静默接受脏数据）
-    await writeSessionMap(dir, { 'conv-bad::chat': { ...entry, routeBase: 'not-a-hash' } })
-    const back2 = await readSessionMap(dir)
-    expect(back2['conv-bad::chat']).toBeUndefined()
+    // 2. 新建会话首轮即 429 失败：不得落盘保留毒丸会话，且下一次重试允许干净 reset-fresh
+    const dir = mkdtempSync(join(tmpdir(), 'agy-coord-retry-'))
+    dirs.push(dir)
+    const store = createFileSessionStore(dir)
+    const coord = new SessionCoordinator('/work', store)
+    const u1 = createUserMessage({ content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } })
+    const a1 = createAssistantMessage({ content: [{ type: 'text', text: 'ok' }], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } })
+    const u2 = createUserMessage({ content: [{ type: 'text', text: '继续' }], source: { kind: 'user' } })
+    const opts: GenerateOptions = { provider: 'antigravity-acp', model: 'gemini-4-neon', messages: [u1, a1, u2] }
+    const dummyLink = { closed: false } as never
+    const live = coord.registerNew({
+      key: 'sess-1::chat',
+      sessionId: 'poison-acp-session',
+      link: dummyLink,
+      options: opts,
+      systemViaMeta: false,
+    })
+
+    // 首轮失败 → 丢弃映射并标记允许干净重试
+    coord.advance(live, opts, [], true, 'failed', { allowFreshRetry: true })
+    await store.flush()
+    expect(coord.getLive('sess-1::chat')).toBeUndefined()
+    expect((await readSessionMap(dir))['sess-1::chat']).toBeUndefined()
+
+    // 下一轮带历史发「继续」→ 走 reset-fresh（而非报「没有可用的会话映射」）
+    const retryDecision = await coord.decide({
+      key: 'sess-1::chat',
+      options: opts,
+      hasPriorHistory: true,
+      resumeEnabled: true,
+      hasValidBridgeScope: () => true,
+    })
+    expect(retryDecision).toMatchObject({ kind: 'reset-fresh' })
+
+    // 一次性标记消耗后，若真的没有映射则仍保持保守的 unrecoverable
+    const missingDecision = await coord.decide({
+      key: 'sess-1::chat',
+      options: opts,
+      hasPriorHistory: true,
+      resumeEnabled: true,
+      hasValidBridgeScope: () => true,
+    })
+    expect(missingDecision).toMatchObject({ kind: 'unrecoverable' })
+  })
+
+  it('CatalogStore isolates thought_level per model, unions CLI family tiers, ignores non-authoritative currentValue, and omits tierless models', async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'agy-cat-'))
+    dirs.push(cacheDir)
+
+    const store = new CatalogStore({
+      cacheDir,
+      acpVersion: '1.4.0',
+      loadCliModels: async () => [
+        { id: 'gemini-4-neon', name: 'Gemini 4 Neon', tiers: ['low', 'medium', 'high', 'xhigh'] },
+        { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', tiers: ['low', 'medium', 'high', 'xhigh'] },
+        { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', tiers: ['low', 'medium', 'high'] },
+        { id: 'gemini-pro-orchestrator', name: 'Orchestrator (Carbon)', tiers: [] },
+      ],
+    })
+    await store.refreshCliModels(true)
+
+    // 聊天会话在 Hydrogen 上选了 xhigh
+    store.observeConfigOptions(
+      configOptionsFor('gemini-4-hydrogen', 'xhigh', [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+        { value: 'xhigh', name: 'Extra High' },
+      ]),
+      { authoritative: true },
+    )
+
+    // Hydrogen 拿到 xhigh 且 defaultEffort=xhigh
+    const hydrogen = await store.resolveModel('antigravity-acp', 'gemini-4-hydrogen')
+    expect(hydrogen.reasoning?.efforts.map((e) => e.id.toString())).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(hydrogen.reasoning?.defaultEffort?.toString()).toBe('xhigh')
+
+    // Claude Sonnet 5.5 绝不能被 Hydrogen 的 xhigh 污染！
+    const claude = await store.resolveModel('antigravity-acp', 'claude-sonnet-5-5')
+    expect(claude.reasoning?.efforts.map((e) => e.id.toString())).toEqual(['low', 'medium', 'high'])
+    expect(claude.reasoning?.defaultEffort?.toString()).toBe('medium')
+
+    // 无档位模型 Orchestrator 必须省略 reasoning
+    const orchestrator = await store.resolveModel('antigravity-acp', 'gemini-pro-orchestrator')
+    expect(orchestrator.reasoning).toBeUndefined()
+
+    // 后台标题请求在 Hydrogen 上用了 low（authoritative: false）：绝不能覆盖 Hydrogen 的 xhigh
+    store.observeConfigOptions(
+      configOptionsFor('gemini-4-hydrogen', 'low', [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+        { value: 'xhigh', name: 'Extra High' },
+      ]),
+      { authoritative: false },
+    )
+    expect((await store.resolveModel('antigravity-acp', 'gemini-4-hydrogen')).reasoning?.defaultEffort?.toString()).toBe('xhigh')
+
+    // 从磁盘重新加载缓存后，分模型 thought_level 同样恢复
+    await new Promise((r) => setTimeout(r, 30))
+    const reloaded = new CatalogStore({ cacheDir, acpVersion: '1.4.0' })
+    expect((await reloaded.resolveModel('antigravity-acp', 'gemini-4-hydrogen')).reasoning?.defaultEffort?.toString()).toBe('xhigh')
+  })
+
+  it('usage accounting, upstream error notice detection, and model-router pure helpers work accurately', () => {
+    const acc = new TurnUsageAccounting()
+    acc.noteObservedUsed(12_000)
+    const step1 = acc.emitIntermediateStep()
+    expect(step1?.outputTokens).toBe(0)
+    expect(step1?.totalTokens).toBe(12_000)
+    acc.noteObservedUsed(13_000)
+    const final = acc.reconcileFinalStep({
+      inputTokens: 15_000,
+      cachedReadTokens: 10_000,
+      cachedWriteTokens: 0,
+      outputTokens: 320,
+      thoughtTokens: 120,
+      totalTokens: 25_320,
+    })
+    expect(final?.outputTokens).toBe(320)
+    expect(final?.reasoningTokens).toBe(120)
+    expect(final!.inputTokens + (final!.cacheReadTokens ?? 0) + (final!.cacheWriteTokens ?? 0) + final!.outputTokens).toBe(final!.totalTokens)
+
+    expect(describeUpstreamErrorNotice('⚠ RESOURCE_EXHAUSTED (code 429): quota', false)).toContain('HTTP 429')
+    expect(describeUpstreamErrorNotice('⚠ RESOURCE_EXHAUSTED (code 429): quota', true)).toBeUndefined()
+
+    const opts = configOptionsFor('gemini-4-neon', 'high')
+    expect(findModelSelector(opts)?.currentValue).toBe('gemini-4-neon')
+    expect(findThoughtLevelSelector(opts)?.currentValue).toBe('high')
+    expect(normalizeEffort(ReasoningEffortId('HIGH'))).toBe('high')
   })
 })

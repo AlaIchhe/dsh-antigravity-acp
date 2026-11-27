@@ -4,6 +4,18 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.0.0-rc.4 · 2026-11-27（预发版：修复系统提示刷新触发冷重放、压缩误判死、毒丸会话复用及 v1.0 深审缺陷）
+
+- **修复：宿主中途刷新 `role === 'system'` 导致工具续轮中断并触发 1.53 MB 冷重放撞 429**。真机复现于 2026-11-27 11:31 的会话（`session-afd68c96` 与 `session-5e320b82`）：当其它插件（如 `free-search`）刷新系统提示并以 `surfaceOp: replace` 原地替换 `messages[0]` 时，`ContinuationState.accepts()` 与 `prefixMatches()` 对 `role === 'system'` 做了严格 ID/内容字节比对，误判为输入偏离/前缀变化，强杀原有缓存健康的 ACP 会话并全量冷重放 416 条历史（1.53 MB），直接触发上游连续 16 次 `HTTP 429 RESOURCE_EXHAUSTED`。现在 `messageFingerprint()` 对 `role === 'system'` 仅锚定槽位角色，`ContinuationState` 容忍工具循环中途原地刷新或尾部新增系统提示消息，并通过 `systemMessagesDigest()` 记录诊断日志。
+- **修复：`/compact` 上下文压缩后被误判为 `AGY_SESSION_UNRECOVERABLE（没有严格追加的新输入）`**。`evaluateRecordContinuity()` 原先将 `messages.length <= sentCount` 检查放在前缀检查之前，导致压缩后消息条数减少时直接判死对话。现在优先识别 `compact-checkpoint` 并平滑走 `reset-fresh`。
+- **修复：新建会话首轮即失败或老会话连续失败仍以 `cancelled: true` 落盘导致「继续」重复踩坑**。`classifyTurnOutcome()` 现在对新建会话首轮即遇 `error`（如冷重放首轮 429 `AGY_UPSTREAM_ERROR_NOTICE`）或老会话连续 2 次 `error` 判定为 `failed`，丢弃映射并关闭失效 ACP 会话；同时 `SessionCoordinator` 记录一次性 `#recoverableFreshResets`，下一次重试明确走 `reset-fresh` 开全新干净会话，不误报「没有可用的会话映射」。
+- **v1.0 深审综合修复**：
+  - 修复 `remote.antigravity` RPC 契约参数个数严格校验（客户端与服务端可选参数改用显式 `undefined`/对象契约对齐 `@deepseek-ai/dsh-api-gateway`）并将客户端挂载等待超时放宽至 20s；
+  - `CatalogStore` 按模型维度隔离 `thought_level` 并与官方 CLI 家族档位取并集，无档位模型省略 `reasoning`；
+  - `AcpRuntimeManager` 切账号/重新登录时对在途链路优雅排空（`#retired`），并发冷启动支持按调用方独立取消，老对话切账号与首次启用工具均平滑 `reset-fresh`；
+  - `AntigravityAcpAdapter` 增加 `#pendingCancels` 取消宽限等待，避免用户取消后立即续聊撞 `wait for it to finish`；
+  - `package.json` 显式声明 `rolldown` 构建依赖，全量测试移除假 agent / 假凭据 mock，补齐真机实测与纯逻辑不变量回归。
+
 ## 1.0.0-rc.3 · 2026-11-27（预发版：修复后台标题请求污染思考档位导致对话报废）
 
 - **修复：后台标题请求把用户的思考强度悄悄改成 Low，并连带让对话整轮报废（`AGY_SESSION_UNRECOVERABLE（模型、思考档位或系统提示已变化）`）**。真机复现于 2026-11-27 10:16 的会话（`session-59cfcef0`）：第 1 轮 59 步工具调用全部正常跑完（rc.2 的多段续轮修复生效），第 2 轮第 1 步 `read` 也成功，第 2 步却直接报错并删掉 `sessions.json` 映射。证据链：① `session/title-llm-request` 与聊天走同一 `provider/model`，但显式带 `reasoningEffort: low`；② 该一次性请求在 `session/new` 后把 `thoughtLevel.currentValue` 写成 `low` 并落盘（`catalog.json` 时间戳与之一致）；③ 下一次聊天请求的 `request/header` 档位从 `high` 变 `low`（DSH 侧 `effective = requested ?? reasoning.defaultEffort`，而 `defaultEffort` 正是 `currentValue`）；④ 路由指纹不符 → 判 `unrecoverable` → 映射被删。根因是 `CatalogStore.observeConfigOptions` 把**任何**会话观测到的 `currentValue` 当成用户的档位选择。现在只有聊天会话（`purpose === undefined`）有权写 `currentValue`，标题 / 压缩 / 模型探针 / 未知会话的 `config_option_update` 只更新档位**选项表**并保留原选择；保留值若不在新选项里则丢弃，避免 `defaultEffort` 指向未声明档位（DSH 会判 `INVALID_MODEL_REASONING`）。缓存加载时同样校验，被旧版本污染的 `catalog.json` 不会继续生效。
