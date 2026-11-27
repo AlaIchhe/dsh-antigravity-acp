@@ -4,7 +4,7 @@
  * v1.0 直接暴露清晰领域方法（startLogin / submitCallback / cancelLogin / activate / remove），
  * 不再经过字符串 action 联合分发，统一依赖 `src/auth/`。
  */
-import { existsSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { mkdir, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -30,6 +30,7 @@ import {
   writeCliTokenFile,
 } from '../auth/token-store.js'
 import type { KeyringReader } from '../auth/token-store.js'
+import { accountsFilePath } from './paths.js'
 import { accountDirFor, isValidAccountId, loadAccountsFile, saveAccountsFile } from './store.js'
 import type { AccountsFile } from './store.js'
 import {
@@ -89,6 +90,11 @@ interface ActiveLogin {
 const AUTH_TERMINAL_RESET_MS = 15_000
 const SYSTEM_KEYRING_CACHE_MS = 15_000
 
+export interface AccountChangeEvent {
+  readonly kind: 'activate' | 'remove' | 'login'
+  readonly accountId: string
+}
+
 export class AccountsManager {
   private file: AccountsFile
   private auth: AccountAuthView = { phase: 'idle' }
@@ -98,8 +104,10 @@ export class AccountsManager {
   private systemKeyringReady = false
   private systemKeyringCheckedAt = 0
   private systemKeyringInflight?: Promise<boolean>
+  private lastDiskSig: string | undefined
   private readonly revisions = new Map<string, number>()
   private readonly knownIds = new Set<string>()
+  private readonly changeListeners = new Set<(event: AccountChangeEvent) => void>()
   private readonly baseDir: string
   private readonly homeDir: string
   private readonly now: () => number
@@ -135,8 +143,15 @@ export class AccountsManager {
     this.onChange = options.onChange
     this.log = options.log
     this.file = loadAccountsFile(this.baseDir)
+    this.lastDiskSig = this.readDiskSig()
     for (const row of this.file.accounts) this.knownIds.add(row.id)
     this.cleanupStagingDirs()
+  }
+
+  /** 订阅账号激活、删除或重登事件（返回退订函数），供额度缓存等联动失效。 */
+  subscribe(listener: (event: AccountChangeEvent) => void): () => void {
+    this.changeListeners.add(listener)
+    return () => { this.changeListeners.delete(listener) }
   }
 
   /**
@@ -332,7 +347,7 @@ export class AccountsManager {
     }
     this.file.activeAccountId = id
     this.persist()
-    this.onChange?.()
+    this.emitChange({ kind: 'activate', accountId: id })
     return { snapshot: this.snapshot(), message: '已切换当前账号（将在下次连接时生效）' }
   }
 
@@ -341,6 +356,17 @@ export class AccountsManager {
     this.syncFromDisk()
     const index = this.file.accounts.findIndex((row) => row.id === id)
     if (index < 0) throw new Error('账号不存在或已删除')
+    // 若该账号正在重新登录，先中止并清理监听与临时目录，防止换码完成后把凭据写回已删目录。
+    if (this.login?.target.id === id) {
+      const active = this.login
+      this.login = undefined
+      active.cancel()
+      await active.listener.close().catch(() => undefined)
+      if (active.target.staging) {
+        await rm(active.target.staging, { recursive: true, force: true }).catch(() => undefined)
+      }
+      this.setAuth({ phase: 'cancelled', message: '目标账号已删除，登录已取消', accountId: id })
+    }
     const [removed] = this.file.accounts.splice(index, 1)
     if (this.file.activeAccountId === id) {
       this.file.activeAccountId = SYSTEM_ACCOUNT_ID
@@ -350,7 +376,7 @@ export class AccountsManager {
     if (removed?.dir) {
       await rm(removed.dir, { recursive: true, force: true }).catch(() => undefined)
     }
-    this.onChange?.()
+    this.emitChange({ kind: 'remove', accountId: id })
     return { snapshot: this.snapshot(), message: `已删除账号「${removed?.alias ?? id}」` }
   }
 
@@ -397,6 +423,15 @@ export class AccountsManager {
       }
       const email = await fetchUserEmail(tokens.accessToken, this.fetchImpl)
 
+      if (target.kind === 'relogin') {
+        this.syncFromDisk()
+        if (!this.file.accounts.some((row) => row.id === target.id)) {
+          if (this.login === active) this.login = undefined
+          this.setAuth({ phase: 'cancelled', message: '目标账号已删除，登录已取消', accountId: target.id })
+          return
+        }
+      }
+
       let tokenHome = target.staging ?? target.home
       await mkdir(join(tokenHome, '.gemini'), { recursive: true })
       await writeCliTokenFile(tokenHome, tokens)
@@ -427,11 +462,16 @@ export class AccountsManager {
         }
         autoActivated = this.commitNewAccount(target, tokenHome, email)
       } else {
+        this.syncFromDisk()
         const record = this.file.accounts.find((row) => row.id === target.id)
-        if (record) {
-          if (email) record.email = email
-          this.persist()
+        if (!record) {
+          this.login = undefined
+          void rm(tokenHome, { recursive: true, force: true }).catch(() => undefined)
+          this.setAuth({ phase: 'cancelled', message: '目标账号已删除，登录已取消', accountId: target.id })
+          return
         }
+        if (email) record.email = email
+        this.persist()
       }
       this.revisions.set(target.id, (this.revisions.get(target.id) ?? 0) + 1)
       this.login = undefined
@@ -441,13 +481,13 @@ export class AccountsManager {
           ? '登录成功，已切换到该账号'
           : '登录成功；点「使用此账号」切换'
       this.setAuth({ phase: 'done', message: doneMessage, accountId: target.id })
-      this.onChange?.()
+      this.emitChange({ kind: 'login', accountId: target.id })
     } catch (error) {
       if (this.login === active) this.login = undefined
       await active.listener.close().catch(() => undefined)
       if (target.staging) void rm(target.staging, { recursive: true, force: true }).catch(() => undefined)
       if (this.disposed) return
-      if (error instanceof CallbackRejected && error.message === '登录已取消') return
+      if (error instanceof CallbackRejected && error.reason === 'cancelled') return
       const message = error instanceof Error ? error.message : String(error)
       this.setAuth({ phase: 'failed', message, accountId: target.id })
       this.log?.warn?.('antigravity-acp: 账号登录失败', error)
@@ -489,10 +529,30 @@ export class AccountsManager {
     }
   }
 
+  private readDiskSig(): string {
+    try {
+      const stat = statSync(accountsFilePath(this.baseDir))
+      return `${stat.ino}:${stat.mtimeMs}:${stat.size}`
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'ENOENT'
+      return `err:${this.now()}`
+    }
+  }
+
+  private emitChange(event: AccountChangeEvent): void {
+    this.onChange?.()
+    for (const listener of this.changeListeners) {
+      try { listener(event) } catch { /* 订阅方异常不影响账号状态机 */ }
+    }
+  }
+
   private syncFromDisk(): void {
+    const sig = this.readDiskSig()
+    if (sig === this.lastDiskSig) return
     try {
       const latest = loadAccountsFile(this.baseDir)
       this.file = latest
+      this.lastDiskSig = sig
       for (const row of latest.accounts) this.knownIds.add(row.id)
     } catch {
       // 保留内存快照，避免瞬时读盘失败打断运行。
@@ -501,6 +561,7 @@ export class AccountsManager {
 
   private persist(): void {
     saveAccountsFile(this.baseDir, this.file, this.knownIds)
+    this.lastDiskSig = this.readDiskSig()
   }
 
   private activeRecordId(): string {

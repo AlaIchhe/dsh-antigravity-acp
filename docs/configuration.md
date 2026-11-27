@@ -2,7 +2,7 @@
 
 [返回主页](../README.md) · [使用与排障](reference.md) · [开发与验证](development.md)
 
-以下对应 **1.0.0**，以 [`src/settings.ts`](../src/settings.ts) 的 `Config` 为唯一来源。字段位于 `llm-antigravity-acp` 插件配置根级。设置页仅编辑 `hiddenModels`（模型显示开关），其余高级字段在配置文件中维护。
+以下对应 **1.1.0**，以 [`src/settings.ts`](../src/settings.ts) 的 `Config` 为唯一来源。字段位于 `llm-antigravity-acp` 插件配置根级。设置页提供「账号」「模型」「连接与高级」三页，可直接在线编辑 `hiddenModels` 及全部可热更新字段（`proxyUrl`、`agentMode`、`agyCliPath`、`cliQuotaEnabled`、`resumeSessions`、`idleRecycleMs`、`cancelGraceMs`）；其余启动期静态字段在配置文件中维护。
 
 ## 配置清单
 

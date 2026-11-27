@@ -11,6 +11,27 @@ export const REMOTE_SERVICE_NAME = 'antigravity'
 export const PROVIDER_ID = 'antigravity-acp'
 export const SETTINGS_ENTRY_ID = 'llm-antigravity-acp'
 
+export interface SettingsNamespaceLike {
+  ns?: string
+  patchId?: string
+  plugin?: string
+  name?: string
+  revision?: number
+  value?: Record<string, unknown>
+}
+
+/** 兼容精确 `llm-antigravity-acp`、带前缀 `include:llm-antigravity-acp` 及元信息匹配。 */
+export function matchSettingsNamespace<T extends SettingsNamespaceLike>(
+  namespaces: readonly T[] | undefined,
+): T | undefined {
+  if (!namespaces?.length) return undefined
+  return (
+    namespaces.find((item) => item?.ns === SETTINGS_ENTRY_ID)
+    ?? namespaces.find((item) => typeof item?.ns === 'string' && item.ns.endsWith(`:${SETTINGS_ENTRY_ID}`))
+    ?? namespaces.find((item) => item?.patchId === SETTINGS_ENTRY_ID || item?.plugin === PACKAGE_NAME || item?.name === PACKAGE_NAME)
+  )
+}
+
 /* ── 共享 DTO 类型 ─────────────────────────────────────────────────── */
 
 export type QuotaErrorCode =

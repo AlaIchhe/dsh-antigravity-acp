@@ -90,7 +90,7 @@ export class AgentLinkError extends Error {
 export interface AgentLinkHandlers {
   /**
    * `session/update` 通知回调（流式 chunk、工具调用、计划等）。
-   * worker2 将在此挂点上把 ACP 更新映射为 DSH StreamChunk。
+   * 上层在此挂点上把 ACP 更新映射为 DSH StreamChunk。
    */
   onSessionUpdate?(notification: SessionNotification): void | Promise<void>
   /**
@@ -99,11 +99,10 @@ export interface AgentLinkHandlers {
    */
   onRequestPermission?(request: RequestPermissionRequest): Promise<RequestPermissionResponse> | RequestPermissionResponse
   /**
-   * worker2 补丁：其余 agent→client 方法（`fs/*`、`terminal/*`、
-   * `session/create_elicitation` 等，即 clientCapabilities 未声明支持的原生
-   * 能力）的入站观测点。既有控制流不变——没有注册该回调时，仍按原样回
-   * method-not-found；注册后先回调再照旧回错误响应，便于上层在同一次交互里
-   * 记录「非预期原生活动」并终止回合。
+   * 其余 agent→client 方法（`fs/*`、`terminal/*`、`session/create_elicitation` 等，
+   * 即 clientCapabilities 未声明支持的原生能力）的入站观测点。没有注册该回调时按原样回
+   * method-not-found；注册后先回调再照旧回错误响应，便于上层在同一次交互里记录
+   * 「非预期原生活动」并终止回合。
    */
   onUnexpectedAgentRequest?(method: string, request: AnyRequest): void | Promise<void>
   /**
@@ -746,6 +745,13 @@ export function boundedFrameStream(source: ReadableStream<Uint8Array>, limitByte
       let frameStart = 0
       for (let index = 0; index < chunk.byteLength; index += 1) {
         if (chunk[index] !== 0x0a) continue
+        if (pending + (index - frameStart) > limitBytes) {
+          controller.error(new AgentLinkError(
+            AGY_LINK_ERROR.PROTOCOL_VIOLATION,
+            `ACP 单帧超过上限（>${String(limitBytes)} 字节），判定协议违规并关闭链路`,
+          ))
+          return
+        }
         frameStart = index + 1
         pending = 0
       }

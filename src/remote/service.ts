@@ -88,6 +88,7 @@ export interface AntigravityRemoteOptions {
 }
 
 interface QuotaCacheEntry {
+  revision?: number
   quota?: QuotaSnapshot
   quotaAt?: number
   credits?: CreditsSnapshot
@@ -103,6 +104,22 @@ export class AntigravityRemoteService extends TypertRemoteService {
   constructor(ctx: Context, options: AntigravityRemoteOptions) {
     super(ctx, REMOTE_SERVICE_NAME)
     this._options = options
+    const unsub = options.accounts.subscribe((event) => {
+      if (event.kind === 'remove' || event.kind === 'login') {
+        this.invalidateQuotaCache(event.accountId)
+      }
+    })
+    ctx.effect(() => unsub)
+  }
+
+  /** 清理指定账号（或全部）额度缓存，防止重登后返回旧快照或已删账号常驻内存。 */
+  invalidateQuotaCache(accountId?: string): void {
+    if (accountId === undefined) {
+      this._entries.clear()
+      return
+    }
+    this._entries.delete(`${accountId}:http`)
+    this._entries.delete(`${accountId}:cli`)
   }
 
   /* ── 账号管理 RPC ────────────────────────────────────────────────── */
@@ -138,6 +155,7 @@ export class AntigravityRemoteService extends TypertRemoteService {
   async removeAccount(request?: AccountIdRequest): Promise<AccountsResult> {
     const parsed = parseAccountIdRequest(request)
     const outcome = await this._options.accounts.remove(parsed.id)
+    this.invalidateQuotaCache(parsed.id)
     return { ...outcome.snapshot, cliInstalled: this.hasCli(), message: outcome.message }
   }
 
@@ -202,10 +220,10 @@ export class AntigravityRemoteService extends TypertRemoteService {
     return this._options.resolveCli?.() !== undefined
   }
 
-  private resolveAccount(id?: string): { id: string; home: string; system: boolean } {
+  private resolveAccount(id?: string): { id: string; home: string; system: boolean; revision: number } {
     const found = id ? this._options.accounts.resolve(id) : this._options.accounts.active()
     if (!found) throw new Error('账号不存在或已删除')
-    return { id: found.id, home: found.home, system: found.system }
+    return { id: found.id, home: found.home, system: found.system, revision: found.revision }
   }
 
   private entryFor(key: string): QuotaCacheEntry {
@@ -230,7 +248,7 @@ export class AntigravityRemoteService extends TypertRemoteService {
   }
 
   private async fetchQuotaForAccount(
-    account: { id: string; home: string; system: boolean },
+    account: { id: string; home: string; system: boolean; revision: number },
     cliOn: boolean,
     entry: QuotaCacheEntry,
     force: boolean,
@@ -244,9 +262,10 @@ export class AntigravityRemoteService extends TypertRemoteService {
         throw new Error('已开启 cliQuotaEnabled 但找不到 agy CLI：请配置 agyCliPath 或关闭该开关（不回落 HTTP）')
       }
       const now = Date.now()
-      const quotaCached = !force && entry.quota !== undefined && entry.quotaAt !== undefined
+      const sameRevision = entry.revision === account.revision
+      const quotaCached = !force && sameRevision && entry.quota !== undefined && entry.quotaAt !== undefined
         && now - entry.quotaAt < QUOTA_CACHE_MS && entry.quota.status === 'ok'
-      const creditsCached = !force && entry.credits !== undefined && entry.creditsAt !== undefined
+      const creditsCached = !force && sameRevision && entry.credits !== undefined && entry.creditsAt !== undefined
         && now - entry.creditsAt < QUOTA_CACHE_MS && entry.credits.status !== 'error'
 
       if (quotaCached && creditsCached) {
@@ -276,6 +295,7 @@ export class AntigravityRemoteService extends TypertRemoteService {
               }),
       ])
 
+      entry.revision = account.revision
       entry.quota = freshQuota
       if (freshQuota.status === 'error') delete entry.quotaAt
       else if (!quotaCached) entry.quotaAt = now

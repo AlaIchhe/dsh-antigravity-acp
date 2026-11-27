@@ -8,7 +8,7 @@
  *   所有权/claim/unclaim 复杂度；
  * - 复用 `atomic-json.ts` 统一原子写。
  */
-import { mkdir, readFile } from 'node:fs/promises'
+import { mkdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { writeAtomicJson } from '../storage/atomic-json.js'
 
@@ -39,7 +39,57 @@ interface SessionMapFile {
 }
 
 export const SESSION_MAP_FORMAT = 3
+export const SESSION_MAP_MAX_ENTRIES = 500
+export const SESSION_MAP_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const FILE_NAME = 'sessions.json'
+
+export interface SessionMapPruneOptions {
+  maxEntries?: number
+  ttlMs?: number
+  now?: number
+}
+
+/** 按 updatedAt 降序裁剪会话映射：移除超过 TTL 的陈旧条目，并限制最大保留条数。 */
+export function pruneSessionMap(
+  entries: Record<string, SessionMapEntry>,
+  options: SessionMapPruneOptions = {},
+): Record<string, SessionMapEntry> {
+  const maxEntries = options.maxEntries ?? SESSION_MAP_MAX_ENTRIES
+  const ttlMs = options.ttlMs ?? SESSION_MAP_TTL_MS
+  const now = options.now ?? Date.now()
+  const kept = Object.entries(entries)
+    .filter(([, entry]) => !(ttlMs > 0 && entry.updatedAt > 0 && now - entry.updatedAt > ttlMs))
+    .sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
+  const bounded = maxEntries > 0 && kept.length > maxEntries ? kept.slice(0, maxEntries) : kept
+  return Object.fromEntries(bounded)
+}
+
+function mergeAndPruneSessionMap(
+  onDisk: Record<string, SessionMapEntry>,
+  entries: Record<string, SessionMapEntry>,
+  deletedKeys?: ReadonlySet<string>,
+  options?: SessionMapPruneOptions,
+): Record<string, SessionMapEntry> {
+  const merged: Record<string, SessionMapEntry> = { ...onDisk }
+  if (deletedKeys) {
+    for (const key of deletedKeys) delete merged[key]
+  }
+  for (const [key, entry] of Object.entries(entries)) {
+    const existing = merged[key]
+    if (existing === undefined || entry.updatedAt >= existing.updatedAt) merged[key] = entry
+  }
+  return pruneSessionMap(merged, options)
+}
+
+async function readSessionFileSig(cacheDir: string): Promise<string> {
+  try {
+    const st = await stat(join(cacheDir, FILE_NAME))
+    return `${st.ino}:${st.mtimeMs}:${st.size}`
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'ENOENT'
+    return ''
+  }
+}
 
 function isHash(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
@@ -100,19 +150,10 @@ export async function writeSessionMap(
   cacheDir: string,
   entries: Record<string, SessionMapEntry>,
   deletedKeys?: ReadonlySet<string>,
+  options?: SessionMapPruneOptions,
 ): Promise<boolean> {
   const onDisk = await readSessionMap(cacheDir).catch(() => ({} as Record<string, SessionMapEntry>))
-  const merged: Record<string, SessionMapEntry> = { ...onDisk }
-  if (deletedKeys) {
-    for (const key of deletedKeys) delete merged[key]
-  }
-  for (const [key, entry] of Object.entries(entries)) {
-    const existing = merged[key]
-    if (existing === undefined || entry.updatedAt >= existing.updatedAt) merged[key] = entry
-  }
-  const ordered = Object.fromEntries(
-    Object.entries(merged).sort(([, a], [, b]) => b.updatedAt - a.updatedAt),
-  )
+  const ordered = mergeAndPruneSessionMap(onDisk, entries, deletedKeys, options)
   try {
     await mkdir(cacheDir, { recursive: true })
     await writeAtomicJson(join(cacheDir, FILE_NAME), { format: SESSION_MAP_FORMAT, entries: ordered }, 0o600)
@@ -201,11 +242,37 @@ export class SessionStore {
   }
 }
 
-export function createFileSessionStore(cacheDir: string, onError?: () => void): SessionStore {
+export function createFileSessionStore(
+  cacheDir: string,
+  onError?: () => void,
+  options?: SessionMapPruneOptions,
+): SessionStore {
+  let cachedSig: string | undefined
+  let cachedDisk: Record<string, SessionMapEntry> | undefined
+
   return new SessionStore({
-    load: () => readSessionMap(cacheDir),
+    load: async () => {
+      const entries = await readSessionMap(cacheDir)
+      cachedSig = await readSessionFileSig(cacheDir)
+      cachedDisk = { ...entries }
+      return entries
+    },
     save: async (entries, deletedKeys) => {
-      if (!await writeSessionMap(cacheDir, entries, deletedKeys)) throw new Error('Session map write failed')
+      const currentSig = await readSessionFileSig(cacheDir)
+      const onDisk = currentSig && currentSig === cachedSig && cachedDisk !== undefined
+        ? cachedDisk
+        : await readSessionMap(cacheDir).catch(() => ({} as Record<string, SessionMapEntry>))
+      const ordered = mergeAndPruneSessionMap(onDisk, entries, deletedKeys, options)
+      try {
+        await mkdir(cacheDir, { recursive: true })
+        await writeAtomicJson(join(cacheDir, FILE_NAME), { format: SESSION_MAP_FORMAT, entries: ordered }, 0o600)
+      } catch {
+        cachedSig = undefined
+        cachedDisk = undefined
+        throw new Error('Session map write failed')
+      }
+      cachedSig = await readSessionFileSig(cacheDir)
+      cachedDisk = { ...ordered }
     },
     onError,
   })

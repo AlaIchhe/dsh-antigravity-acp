@@ -262,10 +262,14 @@ async function fetchManifest(options: AgyCliInstallOptions, target: AgyCliTarget
   return parseAgyCliManifest(payload)
 }
 
-/** 下载并返回字节；超过上限直接中止。 */
+/** 下载并流式计算 SHA-512；超过上限立即取消流，避免在内存中无界缓冲。 */
 const MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 
-async function download(options: AgyCliInstallOptions, rawUrl: string): Promise<Buffer> {
+async function download(
+  options: AgyCliInstallOptions,
+  rawUrl: string,
+  maxBytes: number = MAX_DOWNLOAD_BYTES,
+): Promise<{ bytes: Buffer; sha512: string }> {
   const url = assertAgyCliUrl(rawUrl)
   let response: Response
   try {
@@ -281,14 +285,50 @@ async function download(options: AgyCliInstallOptions, rawUrl: string): Promise<
     throw new AgyCliInstallError(AGY_CLI_INSTALL_ERROR.DOWNLOAD_FAILED, `下载失败：HTTP ${response.status}`)
   }
   const declared = Number.parseInt(response.headers.get('content-length') ?? '', 10)
-  if (Number.isSafeInteger(declared) && declared > MAX_DOWNLOAD_BYTES) {
+  if (Number.isSafeInteger(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined)
     throw new AgyCliInstallError(AGY_CLI_INSTALL_ERROR.DOWNLOAD_FAILED, `安装包过大（${declared} 字节）`)
   }
+
+  const hash = createHash('sha512')
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader()
+    const chunks: Buffer[] = []
+    let total = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value || value.byteLength === 0) continue
+        total += value.byteLength
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => undefined)
+          throw new AgyCliInstallError(AGY_CLI_INSTALL_ERROR.DOWNLOAD_FAILED, `安装包过大（>${maxBytes} 字节）`)
+        }
+        const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+        hash.update(chunk)
+        chunks.push(chunk)
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => undefined)
+      if (error instanceof AgyCliInstallError) throw error
+      throw new AgyCliInstallError(
+        AGY_CLI_INSTALL_ERROR.DOWNLOAD_FAILED,
+        `下载流读取失败：${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      )
+    } finally {
+      reader.releaseLock()
+    }
+    return { bytes: Buffer.concat(chunks, total), sha512: hash.digest('hex') }
+  }
+
   const bytes = Buffer.from(await response.arrayBuffer())
-  if (bytes.byteLength > MAX_DOWNLOAD_BYTES) {
+  if (bytes.byteLength > maxBytes) {
     throw new AgyCliInstallError(AGY_CLI_INSTALL_ERROR.DOWNLOAD_FAILED, `安装包过大（${bytes.byteLength} 字节）`)
   }
-  return bytes
+  hash.update(bytes)
+  return { bytes, sha512: hash.digest('hex') }
 }
 
 /**
@@ -319,10 +359,9 @@ export async function installAgyCli(options: AgyCliInstallOptions): Promise<AgyC
   const manifest = await fetchManifest(options, target)
 
   options.onStage?.(`下载 ${manifest.version}…`)
-  const payload = await download(options, manifest.url)
+  const { bytes: payload, sha512: digest } = await download(options, manifest.url)
 
   options.onStage?.('校验安装包…')
-  const digest = createHash('sha512').update(payload).digest('hex')
   if (digest !== manifest.sha512) {
     throw new AgyCliInstallError(
       AGY_CLI_INSTALL_ERROR.CHECKSUM_MISMATCH,

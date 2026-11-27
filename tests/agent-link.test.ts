@@ -749,4 +749,22 @@ describe('AgentLink 活跃续期超时（onTimerControl）', () => {
       await link.close()
     }
   })
+
+  it('boundedFrameStream 遇到跨 chunk 换行前先校验整帧长度（不漏检超大帧）', async () => {
+    const chunk1 = new Uint8Array(60).fill(0x61) // 60 bytes without \n
+    const chunk2 = new Uint8Array(50).fill(0x62)
+    chunk2[49] = 0x0a // 60 + 49 = 109 bytes > limit 100
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk1)
+        controller.enqueue(chunk2)
+        controller.close()
+      },
+    })
+    const bounded = boundedFrameStream(source, 100)
+    const reader = bounded.getReader()
+    const first = await reader.read()
+    expect(first.done).toBe(false)
+    await expect(reader.read()).rejects.toMatchObject({ code: AGY_LINK_ERROR.PROTOCOL_VIOLATION })
+  })
 })

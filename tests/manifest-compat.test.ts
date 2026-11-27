@@ -12,7 +12,7 @@
  * 固化成断言，避免同一个坑再踩一次。
  */
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,6 +20,10 @@ const root = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
   name: string
   version: string
+  icon?: string
+  exports?: Record<string, string>
+  files?: string[]
+  engines?: { node?: string; dsh?: string }
   peerDependencies?: Record<string, string>
   dsh?: { client?: { inject?: string[]; platform?: string } }
 }
@@ -144,5 +148,28 @@ describe('宿主兼容性声明', () => {
       expect(inject).toContain(pkg)
     }
     expect(inject).not.toContain('@deepseek-ai/dsh-client-ui-slots')
+  })
+
+  it('声明 engines.dsh、图标与多语言展示元数据', () => {
+    expect(typeof manifest.engines?.dsh).toBe('string')
+    for (const version of ['0.2.1-alpha.4', '0.2.2', '0.2.3-alpha.2']) {
+      expect(satisfies(version, manifest.engines!.dsh!)).toBe(true)
+    }
+    expect(satisfies('0.3.0', manifest.engines!.dsh!)).toBe(false)
+
+    expect(manifest.icon).toBe('./icon.svg')
+    expect(manifest.exports?.['./icon']).toBe('./icon.svg')
+    expect(manifest.exports?.['./locale/*.json']).toBe('./locale/*.json')
+    expect(manifest.files).toContain('icon.svg')
+    expect(manifest.files).toContain('locale/*.json')
+    expect(existsSync(join(root, 'icon.svg'))).toBe(true)
+
+    for (const lang of ['en', 'zh']) {
+      const parsed = JSON.parse(readFileSync(join(root, 'locale', `${lang}.json`), 'utf8')) as {
+        meta?: { title?: string; description?: string }
+      }
+      expect(parsed.meta?.title?.length).toBeGreaterThan(0)
+      expect(parsed.meta?.description?.length).toBeGreaterThan(0)
+    }
   })
 })

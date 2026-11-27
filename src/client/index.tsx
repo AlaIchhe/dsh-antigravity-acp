@@ -7,6 +7,9 @@
  * - `remote.antigravity` 绝不写进 `inject`（贡献型 remote 须在 `$mount` 后按需查询）。
  */
 import { PACKAGE_NAME } from '../shared/rpc-contract.js'
+import { registerClientLocales } from './i18n.js'
+import type { ClientLocaleServiceLike } from './i18n.js'
+import { setOptionalRequire } from './portal.js'
 import { AgYQuotaPill } from './quota-view.js'
 import type { ModelDirectoryStoreLike } from './quota-view.js'
 import { createAntigravityClientApi, mountAntigravityRemote } from './remote.js'
@@ -29,6 +32,7 @@ interface ClientCordisContext extends ClientContextLike {
 const clientPlugin = {
   name: PACKAGE_NAME,
   inject: ['slots', 'remote', 'remote.settings', 'remote.llm'],
+  __setOptionalRequire: setOptionalRequire,
   apply(ctx: ClientCordisContext): void {
     ctx.effect(() => {
       if (typeof document === 'undefined' || !document.head || !document.createElement) return () => undefined
@@ -37,6 +41,11 @@ const clientPlugin = {
       document.head.appendChild(style)
       return () => style.remove()
     }, 'antigravity-acp: styles')
+
+    const getLocale = (): ClientLocaleServiceLike | undefined =>
+      ctx.get?.('locale') as ClientLocaleServiceLike | undefined
+
+    ctx.effect(() => registerClientLocales(getLocale()), 'antigravity-acp: locales')
 
     try {
       const unmount = mountAntigravityRemote(ctx)
@@ -56,7 +65,7 @@ const clientPlugin = {
               id: 'antigravity-acp',
               order: 42,
               label: () => 'Antigravity ACP',
-              inject: () => ({ remote: ctx.remote, api }),
+              inject: () => ({ remote: ctx.remote, api, locale: getLocale() }),
             },
             AntigravitySettingsCard,
           ),
@@ -76,6 +85,7 @@ const clientPlugin = {
                 inject: (sessionId: string) => ({
                   store: scope.modelDirectories!.directoryFor(sessionId).store,
                   api,
+                  locale: getLocale(),
                 }),
               },
               AgYQuotaPill,

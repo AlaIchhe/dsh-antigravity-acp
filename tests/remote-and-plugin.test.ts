@@ -83,7 +83,7 @@ describe('AntigravityRemoteService & plugin composition root', () => {
       fn([['proxyUrl']])
       fn([['idleRecycleMs']])
     }
-    expect(emit).toHaveBeenCalledWith('llm/adapters-updated')
+    expect(emit).toHaveBeenCalledWith('llm/models-updated', 'antigravity-acp')
 
     for (const release of cleanups.reverse()) await release()
     expect(REMOTE_SERVICE_NAME).toBe('antigravity')

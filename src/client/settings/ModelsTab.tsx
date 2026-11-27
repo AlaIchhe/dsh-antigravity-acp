@@ -4,6 +4,10 @@
 import React from 'react'
 import { MODEL_GROUPS, modelGroupFor } from '../../shared/model-groups.js'
 import type { ModelRowView } from '../../shared/rpc-contract.js'
+import { createStaticTranslator } from '../i18n.js'
+import type { TranslateFn } from '../i18n.js'
+
+const DEFAULT_T = createStaticTranslator('zh')
 
 export function ModelsTab({
   models,
@@ -12,6 +16,7 @@ export function ModelsTab({
   refreshing,
   onToggle,
   onRefresh,
+  t = DEFAULT_T,
 }: {
   models: readonly ModelRowView[]
   hiddenModels: readonly string[]
@@ -19,6 +24,7 @@ export function ModelsTab({
   refreshing: boolean
   onToggle: (id: string) => void
   onRefresh: () => void
+  t?: TranslateFn
 }) {
   const hiddenSet = new Set(hiddenModels)
   const known = new Set(models.map((m) => m.id))
@@ -29,7 +35,7 @@ export function ModelsTab({
 
   const families = [
     ...MODEL_GROUPS.map((group) => ({ ...group, rows: rows.filter((row) => modelGroupFor(row.id) === group.key) })),
-    { key: 'other' as const, name: '其它', rows: rows.filter((row) => modelGroupFor(row.id) === undefined) },
+    { key: 'other' as const, name: t('models.otherFamily'), rows: rows.filter((row) => modelGroupFor(row.id) === undefined) },
   ].filter((group) => group.rows.length > 0)
 
   const hiddenCount = rows.filter((row) => hiddenSet.has(row.id)).length
@@ -37,23 +43,23 @@ export function ModelsTab({
   return (
     <div style={{ display: 'grid', gap: '12px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-        <span style={{ fontSize: '12px', opacity: 0.85 }}>点击模型切换是否在 DSH 模型选择器中显示</span>
+        <span className="agy-muted" style={{ fontSize: '12px' }}>{t('models.hint')}</span>
         <button type="button" className="agy-btn" disabled={refreshing} onClick={onRefresh}>
-          {refreshing ? '刷新目录中…' : '刷新模型目录'}
+          {refreshing ? t('models.refreshing') : t('models.refresh')}
         </button>
       </div>
 
       {rows.length === 0 ? (
-        <p role="status" style={{ margin: 0, fontSize: '12px', opacity: 0.8 }}>
-          模型目录为空；请点击「刷新模型目录」或先发起一次对话。
+        <p role="status" className="agy-muted" style={{ margin: 0, fontSize: '12px' }}>
+          {t('models.empty')}
         </p>
       ) : (
         <div style={{ display: 'grid', gap: '10px' }}>
           {families.map((family) => (
-            <section key={family.key} aria-label={`${family.name} 模型`}>
+            <section key={family.key} aria-label={`${family.name}${t('models.familyAriaSuffix')}`}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '6px' }}>
                 <strong style={{ fontSize: '12px' }}>{family.name}</strong>
-                <span style={{ fontSize: '11px', opacity: 0.7 }}>{family.rows.length}</span>
+                <span className="agy-muted" style={{ fontSize: '11px' }}>{family.rows.length}</span>
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                 {family.rows.map((row) => {
@@ -63,7 +69,7 @@ export function ModelsTab({
                       key={row.id}
                       type="button"
                       className="agy-btn agy-chip"
-                      title={row.inCatalog ? row.id : `${row.id} · 不在当前目录`}
+                      title={row.inCatalog ? row.id : `${row.id} · ${t('models.notInCatalog')}`}
                       disabled={disabled}
                       aria-pressed={!isHidden}
                       onClick={() => onToggle(row.id)}
@@ -76,8 +82,8 @@ export function ModelsTab({
             </section>
           ))}
           {hiddenCount === rows.length ? (
-            <p role="status" style={{ margin: 0, fontSize: '11px', color: '#d99b28' }}>
-              全部隐藏后，Antigravity 将从模型选择器中消失。
+            <p role="status" style={{ margin: 0, fontSize: '11px', color: 'var(--dsw-alias-state-warn-primary, #d99b28)' }}>
+              {t('models.allHiddenWarn')}
             </p>
           ) : null}
         </div>

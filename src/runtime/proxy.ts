@@ -175,8 +175,22 @@ export function createLiveProxiedFetch(
   readProxy: () => ResolvedProxy | undefined,
   deps: ProxiedFetchDeps = {},
 ): ManagedFetch {
-  const routes = new Map<string, ManagedFetch>()
+  interface LiveRoute {
+    readonly key: string
+    readonly fetch: ManagedFetch
+    inflight: number
+    retired: boolean
+  }
+  let active: LiveRoute | undefined
+  const retiring = new Set<LiveRoute>()
   let closed = false
+
+  const closeIfDrained = (route: LiveRoute): void => {
+    if (!route.retired || route.inflight > 0) return
+    retiring.delete(route)
+    void route.fetch.close().catch(() => undefined)
+  }
+
   const request: typeof fetch = (input, init) => {
     if (closed) return Promise.reject(new ProxyConfigError('代理传输已关闭；请求未发送'))
     let proxy: ResolvedProxy | undefined
@@ -186,18 +200,33 @@ export function createLiveProxiedFetch(
       return Promise.reject(error)
     }
     const key = JSON.stringify(proxy ?? null)
-    let route = routes.get(key)
-    if (!route) {
-      route = createProxiedFetch(proxy, deps)
-      routes.set(key, route)
+    if (active && active.key !== key) {
+      const previous = active
+      active = undefined
+      previous.retired = true
+      retiring.add(previous)
+      closeIfDrained(previous)
     }
-    return route(input, init)
+    if (!active) {
+      active = { key, fetch: createProxiedFetch(proxy, deps), inflight: 0, retired: false }
+    }
+    const route = active
+    route.inflight += 1
+    return Promise.resolve()
+      .then(() => route.fetch(input, init))
+      .finally(() => {
+        route.inflight -= 1
+        closeIfDrained(route)
+      })
   }
   return Object.assign(request, {
     close: async () => {
       closed = true
-      const results = await Promise.allSettled([...routes.values()].map((route) => route.close()))
-      routes.clear()
+      const targets: LiveRoute[] = [...retiring]
+      if (active) targets.push(active)
+      active = undefined
+      retiring.clear()
+      const results = await Promise.allSettled(targets.map((route) => route.fetch.close()))
       const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
       if (failed) throw failed.reason
     },

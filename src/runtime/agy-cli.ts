@@ -64,8 +64,8 @@ export function agyCliCandidates(
 
 /* ── `agy models` 解析与家族折叠 ───────────────────────────────────── */
 
-const TIER_SUFFIX_RE = /-(low|medium|high|xhigh)$/i
-const TIER_LABEL_RE = /\s*\((Low|Medium|High|Extra High|XHigh)\)\s*$/i
+const TIER_SUFFIX_RE = /-(low|medium|high|xhigh|max)$/i
+const TIER_LABEL_RE = /\s*\((Low|Medium|High|Extra High|XHigh|Max)\)\s*$/i
 const TIER_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const EXCLUDED_FAMILIES = new Set(['gpt-oss-120b'])
 

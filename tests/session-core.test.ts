@@ -33,7 +33,7 @@ import {
   routeFingerprint,
   routeSystemFingerprint,
 } from '../src/session/session-reuse.js'
-import { createFileSessionStore, readSessionMap, writeSessionMap } from '../src/session/session-store.js'
+import { createFileSessionStore, pruneSessionMap, readSessionMap, writeSessionMap } from '../src/session/session-store.js'
 import { hasPriorConversation, hasPriorProviderConversation } from '../src/session/transcript.js'
 import { describeUpstreamErrorNotice } from '../src/session/turn-runner.js'
 import { TurnUsageAccounting } from '../src/session/usage-accounting.js'
@@ -579,5 +579,49 @@ describe('v1.0 session core pure invariants (zero mocks)', () => {
     await idleAdapter.dispose()
     await store1.close()
     await restartedStore.close()
+  })
+
+  it('prunes sessions.json by maxEntries/TTL and serializes CatalogStore cache writes after disk load', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-prune-cat-'))
+    dirs.push(dir)
+    const now = Date.now()
+    const u1 = createUserMessage({ content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } })
+    const mkEntry = (id: string, updatedAt: number) => ({
+      sessionId: id,
+      cwd: '/work',
+      sentCount: 1,
+      sentHash: prefixHash([u1]),
+      outputHash: outputHash([{ type: 'text', text: 'ok' }]),
+      route: routeFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: '' }),
+      routeBase: routeBaseFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: '' }),
+      routeSystem: routeSystemFingerprint({ provider: 'antigravity-acp', system: '' }),
+      routeVersion: ROUTE_FINGERPRINT_VERSION,
+      updatedAt,
+    })
+
+    const pruned = pruneSessionMap(
+      {
+        expired: mkEntry('s-old', now - 40 * 86_400_000),
+        newest: mkEntry('s-new', now),
+        mid: mkEntry('s-mid', now - 1_000),
+        older: mkEntry('s-older', now - 2_000),
+      },
+      { maxEntries: 2, ttlMs: 30 * 86_400_000, now },
+    )
+    expect(Object.keys(pruned)).toEqual(['newest', 'mid'])
+
+    // CatalogStore: 预写磁盘缓存含模型 A 窗口，再新建实例在未显式 load 前写入模型 B 窗口，两者应共存不互相覆盖
+    const cat1 = new CatalogStore({ cacheDir: dir, acpVersion: '1.4.0' })
+    cat1.observeConfigOptions(configOptionsFor('gemini-4-neon', 'high'))
+    cat1.noteContextWindow('gemini-4-neon', 500_000)
+    await cat1.flush()
+
+    const cat2 = new CatalogStore({ cacheDir: dir, acpVersion: '1.4.0' })
+    cat2.noteContextWindow('claude-sonnet-5-5', 250_000)
+    await cat2.flush()
+
+    const cat3 = new CatalogStore({ cacheDir: dir, acpVersion: '1.4.0' })
+    expect((await cat3.resolveModel('antigravity-acp', 'gemini-4-neon')).context?.contextWindow).toBe(500_000)
+    expect((await cat3.resolveModel('antigravity-acp', 'claude-sonnet-5-5')).context?.contextWindow).toBe(250_000)
   })
 })

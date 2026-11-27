@@ -80,7 +80,7 @@ interface InflightLaunch {
 export class AcpRuntimeManager {
   #current: ManagedRuntime | undefined
   readonly #retired = new Map<AgentLink, ManagedRuntime>()
-  #inflight: InflightLaunch | undefined
+  readonly #inflights = new Set<InflightLaunch>()
   #disposed = false
   readonly #options: AcpRuntimeManagerOptions
 
@@ -117,13 +117,9 @@ export class AcpRuntimeManager {
     }
 
     // 2. 已有同一 `(accountId, revision, proxyKey)` 的在途启动：共享等待，单方取消不误伤他人。
-    if (
-      this.#inflight
-      && this.#inflight.accountId === account.id
-      && this.#inflight.accountRevision === account.revision
-      && this.#inflight.proxyKey === proxyKey
-    ) {
-      const managed = await this.#awaitInflight(this.#inflight, signal)
+    const existingInflight = this.#findInflight(account.id, account.revision, proxyKey)
+    if (existingInflight) {
+      const managed = await this.#awaitInflight(existingInflight, signal)
       managed.link.setHandlers(handlers)
       return managed.link
     }
@@ -133,7 +129,7 @@ export class AcpRuntimeManager {
       this.#retireCurrent()
     }
 
-    // 4. 同步登记新的 `#inflight`（在任何 await 之前完成，杜绝并发双 spawn）。
+    // 4. 同步登记新的 `#inflights` 条目（在任何 await 之前完成，杜绝并发双 spawn 与切账号脱离管控）。
     const abort = new AbortController()
     const inflight: InflightLaunch = {
       accountId: account.id,
@@ -162,16 +158,14 @@ export class AcpRuntimeManager {
       },
     )
     ;(inflight as { promise: Promise<ManagedRuntime> }).promise = promise
-    // 避免所有等待者提前取消后底层 promise 变成 unhandledRejection。
-    promise.catch(() => undefined)
-    this.#inflight = inflight
+    this.#inflights.add(inflight)
+    // 避免所有等待者提前取消后底层 promise 变成 unhandledRejection，并在结算后从集合移除。
+    promise.finally(() => {
+      this.#inflights.delete(inflight)
+    }).catch(() => undefined)
 
-    try {
-      const managed = await this.#awaitInflight(inflight, signal)
-      return managed.link
-    } finally {
-      if (this.#inflight === inflight) this.#inflight = undefined
-    }
+    const managed = await this.#awaitInflight(inflight, signal)
+    return managed.link
   }
 
   /** 账号变更或重新登录后调用：立即将旧账号链路转入排空队列，空闲即回收。 */
@@ -224,12 +218,14 @@ export class AcpRuntimeManager {
     }
   }
 
-  /** 插件卸载清理闭环：先切断链路/进程，再等待在途启动收尾，最后释放全部临时目录。 */
+  /** 插件卸载清理闭环：先切断链路/进程，再等待全部在途启动收尾，最后释放全部临时目录。 */
   async dispose(): Promise<void> {
     this.#disposed = true
-    const inflight = this.#inflight
-    this.#inflight = undefined
-    inflight?.abort.abort(new Error('插件已卸载'))
+    const inflights = [...this.#inflights]
+    this.#inflights.clear()
+    for (const inflight of inflights) {
+      inflight.abort.abort(new Error('插件已卸载'))
+    }
 
     const toRecycle: ManagedRuntime[] = []
     if (this.#current) {
@@ -241,11 +237,20 @@ export class AcpRuntimeManager {
 
     await Promise.allSettled([
       ...toRecycle.map((managed) => this.#recycleManaged(managed)),
-      inflight ? inflight.promise.then((managed) => this.#recycleManaged(managed), () => undefined) : Promise.resolve(),
+      ...inflights.map((inflight) => inflight.promise.then((managed) => this.#recycleManaged(managed), () => undefined)),
     ])
   }
 
   /* ── 内部方法 ────────────────────────────────────────────────────── */
+
+  #findInflight(accountId: string, accountRevision: number, proxyKey: string): InflightLaunch | undefined {
+    for (const entry of this.#inflights) {
+      if (entry.accountId === accountId && entry.accountRevision === accountRevision && entry.proxyKey === proxyKey) {
+        return entry
+      }
+    }
+    return undefined
+  }
 
   #retireCurrent(): void {
     const prev = this.#current

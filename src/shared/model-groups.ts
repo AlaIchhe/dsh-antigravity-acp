@@ -1,6 +1,7 @@
 /**
- * Host 与 Web Client 共享的模型家族分组与隐藏列表规范化（纯函数，无 Node 依赖）。
+ * Host 与 Web Client 共享的模型家族分组、额度分组与隐藏列表规范化（纯函数，无 Node 依赖）。
  */
+import type { QuotaBucket, QuotaSnapshot } from './rpc-contract.js'
 
 export type ModelFamilyKey = 'gemini' | 'claude' | 'argon'
 
@@ -52,4 +53,73 @@ export function sameHiddenModels(a: unknown, b: unknown): boolean {
   const right = canonicalHiddenModels(b)
   if (left.length !== right.length) return false
   return left.every((value, index) => value === right[index])
+}
+
+export interface GroupedQuotaEntry {
+  key: string
+  name: string
+  buckets: QuotaBucket[]
+}
+
+/**
+ * 将后端返回的额度组按预设家族聚合，同时保留未命中预设家族的原始组（绝不静默丢弃）。
+ */
+export function groupedQuotas(
+  data: QuotaSnapshot | null | undefined,
+  fallbackOtherName = '其他额度',
+): GroupedQuotaEntry[] {
+  const byKnownKey = new Map<string, QuotaBucket[]>()
+  const unknownGroups = new Map<string, { name: string; buckets: QuotaBucket[] }>()
+
+  for (const group of data?.groups ?? []) {
+    if (!group.buckets || group.buckets.length === 0) continue
+    const key = quotaGroupKeyFor(group.name)
+    if (key) {
+      const list = byKnownKey.get(key) ?? []
+      list.push(...group.buckets)
+      byKnownKey.set(key, list)
+      continue
+    }
+    const displayName = group.name?.trim() || fallbackOtherName
+    const unknownKey = `other:${displayName.toLowerCase()}`
+    const existing = unknownGroups.get(unknownKey)
+    if (existing) {
+      existing.buckets.push(...group.buckets)
+    } else {
+      unknownGroups.set(unknownKey, { name: displayName, buckets: [...group.buckets] })
+    }
+  }
+
+  const knownEntries: GroupedQuotaEntry[] = MODEL_GROUPS.map((meta) => ({
+    key: meta.key,
+    name: meta.name,
+    buckets: byKnownKey.get(meta.key) ?? [],
+  })).filter((entry) => entry.buckets.length > 0)
+
+  const extraEntries: GroupedQuotaEntry[] = [...unknownGroups.entries()].map(([key, entry]) => ({
+    key,
+    name: entry.name,
+    buckets: entry.buckets,
+  }))
+
+  return [...knownEntries, ...extraEntries]
+}
+
+/** 为给定模型匹配最相关的额度组（优先已知家族，其次按模型词元匹配未知组）。 */
+export function matchQuotaGroupForModel(
+  groups: readonly GroupedQuotaEntry[],
+  model: string | undefined,
+): GroupedQuotaEntry | undefined {
+  const family = modelGroupFor(model)
+  if (family) return groups.find((entry) => entry.key === family)
+  if (!model || groups.length === 0) return undefined
+  const tokens = model
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 3 && !/^\d+$/.test(token))
+  for (const group of groups) {
+    const lowerName = group.name.toLowerCase()
+    if (tokens.some((token) => lowerName.includes(token))) return group
+  }
+  return groups.find((entry) => entry.key.startsWith('other:'))
 }

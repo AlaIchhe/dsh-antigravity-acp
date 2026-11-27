@@ -482,8 +482,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       this.#bridge.invalidateScope(bridgeOwner, 'prompt 构造失败')
       this.#cleanupActive(lockKey, active)
       this.#releaseLinkStream(link)
-      if (chatKey === undefined) void link.closeSession(sessionId).catch(() => undefined)
-      else if (live) this.#coordinator.drop(chatKey, true)
+      if (!link.closed) void link.closeSession(sessionId).catch(() => undefined)
+      if (chatKey !== undefined && live) this.#coordinator.drop(chatKey, !reused)
       throw error
     }
 
@@ -544,6 +544,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   ): AsyncGenerator<StreamChunk> {
     const { turn, link } = active
     this.#retainLinkStream(link)
+    let failed = false
     try {
       this.#bridge.publishTools(options.tools ?? [], turn.bridgeOwner)
       const imageOpts = this.#imageOptions(options.signal)
@@ -584,8 +585,14 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         }
         yield chunk
       }
+    } catch (error) {
+      failed = true
+      if (!turn.terminated && !turn.promptSettled) {
+        turn.abort('工具续轮失败，终止当前回合')
+      }
+      throw error
     } finally {
-      if (turn.promptSettled || turn.terminated) {
+      if (failed || turn.promptSettled || turn.terminated) {
         this.#cleanupActive(lockKey, active)
       }
       this.#releaseLinkStream(link)
@@ -671,49 +678,59 @@ export class AntigravityAcpAdapter extends LlmAdapter {
 
     const tools = options.tools ?? []
     let mcpServers: AcpMcpServer[] = []
-    if (tools.length > 0) {
-      this.#bridge.beginRound(tools, bridgeOwner)
-      if (!this.#bridge.listening) await this.#bridge.start()
-      throwIfAborted(options.signal)
-      mcpServers = this.#bridge.acpRegistration(bridgeOwner)
-    }
+    let bridgeBegun = false
+    let sessionId: string | undefined
+    try {
+      if (tools.length > 0) {
+        this.#bridge.beginRound(tools, bridgeOwner)
+        bridgeBegun = true
+        if (!this.#bridge.listening) await this.#bridge.start()
+        throwIfAborted(options.signal)
+        mcpServers = this.#bridge.acpRegistration(bridgeOwner)
+      }
 
-    const systemViaMeta = Boolean(options.system) && link.supportsSystemPromptAppend()
-    const session = await link.newSession({
-      cwd: this.#cwd,
-      mcpServers,
-      _meta: {
-        antigravity: {
-          enabledTools: [],
-          eagerMcpServers: tools.length > 0 ? [BRIDGE_MCP_SERVER_NAME] : [],
-          ...(systemViaMeta ? { systemPrompt: { append: options.system } } : {}),
+      const systemViaMeta = Boolean(options.system) && link.supportsSystemPromptAppend()
+      const session = await link.newSession({
+        cwd: this.#cwd,
+        mcpServers,
+        _meta: {
+          antigravity: {
+            enabledTools: [],
+            eagerMcpServers: tools.length > 0 ? [BRIDGE_MCP_SERVER_NAME] : [],
+            ...(systemViaMeta ? { systemPrompt: { append: options.system } } : {}),
+          },
         },
-      },
-    }, { signal: options.signal })
-    throwIfAborted(options.signal)
+      }, { signal: options.signal })
+      sessionId = session.sessionId
+      throwIfAborted(options.signal)
 
-    const authoritative = options.purpose === undefined
-    this.#catalog.observeConfigOptions(session.configOptions, { authoritative })
-    const updated = await applySessionSelection({
-      link,
-      sessionId: session.sessionId,
-      configOptions: session.configOptions,
-      model: options.model,
-      effort: options.reasoningEffort,
-      signal: options.signal,
-      log: this.#options.log,
-    })
-    if (updated) this.#catalog.observeConfigOptions(updated, { authoritative, modelId: options.model })
-    await applyAgentMode({
-      link,
-      sessionId: session.sessionId,
-      mode: settings.agentMode,
-      modes: session.modes,
-      signal: options.signal,
-      log: this.#options.log,
-    })
+      const authoritative = options.purpose === undefined
+      this.#catalog.observeConfigOptions(session.configOptions, { authoritative })
+      const updated = await applySessionSelection({
+        link,
+        sessionId: session.sessionId,
+        configOptions: session.configOptions,
+        model: options.model,
+        effort: options.reasoningEffort,
+        signal: options.signal,
+        log: this.#options.log,
+      })
+      if (updated) this.#catalog.observeConfigOptions(updated, { authoritative, modelId: options.model })
+      await applyAgentMode({
+        link,
+        sessionId: session.sessionId,
+        mode: settings.agentMode,
+        modes: session.modes,
+        signal: options.signal,
+        log: this.#options.log,
+      })
 
-    return { link, sessionId: session.sessionId, systemViaMeta }
+      return { link, sessionId: session.sessionId, systemViaMeta }
+    } catch (error) {
+      if (bridgeBegun) this.#bridge.invalidateScope(bridgeOwner, '会话初始化失败')
+      if (sessionId && !link.closed) void link.closeSession(sessionId).catch(() => undefined)
+      throw error
+    }
   }
 
   async #resumeSession(

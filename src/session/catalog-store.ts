@@ -117,6 +117,7 @@ export class CatalogStore {
   #imageSupported: boolean | undefined
   #cacheLoaded = false
   #cacheLoading: Promise<void> | undefined
+  #writes: Promise<void> = Promise.resolve()
   readonly #options: CatalogStoreOptions
 
   constructor(options: CatalogStoreOptions) {
@@ -154,7 +155,7 @@ export class CatalogStore {
     this.#contextWindows.set(modelId, rounded)
     const existing = this.#acpModels.get(modelId)
     if (existing) existing.contextWindow = rounded
-    void this.#saveCache()
+    this.#enqueueSave()
     this.#options.onCatalogChanged?.()
   }
 
@@ -228,10 +229,15 @@ export class CatalogStore {
     }
 
     if (changed) {
-      void this.#saveCache()
+      this.#enqueueSave()
       this.#options.onCatalogChanged?.()
     }
     return changed
+  }
+
+  /** 等待所有排队的目录缓存落盘完成。 */
+  async flush(): Promise<void> {
+    await this.#writes
   }
 
   /** 刷新 CLI 只读清单（用于补齐 ACP 尚未观测到的模型以及每个家族的实际思考档位）。 */
@@ -387,16 +393,23 @@ export class CatalogStore {
         if (Array.isArray(parsed.models)) {
           for (const row of parsed.models) {
             if (!row || typeof row.id !== 'string' || !row.id || typeof row.name !== 'string') continue
+            const diskWindow = typeof row.contextWindow === 'number' && row.contextWindow > 0
+              ? Math.trunc(row.contextWindow)
+              : undefined
+            if (diskWindow !== undefined && !this.#contextWindows.has(row.id)) {
+              this.#contextWindows.set(row.id, diskWindow)
+            }
+            const effectiveWindow = this.#contextWindows.get(row.id) ?? diskWindow
             if (!this.#acpModels.has(row.id)) {
               this.#acpModels.set(row.id, {
                 id: row.id,
                 name: row.name,
                 ...(typeof row.description === 'string' ? { description: row.description } : {}),
-                ...(typeof row.contextWindow === 'number' && row.contextWindow > 0 ? { contextWindow: row.contextWindow } : {}),
+                ...(effectiveWindow === undefined ? {} : { contextWindow: effectiveWindow }),
               })
-            }
-            if (typeof row.contextWindow === 'number' && row.contextWindow > 0 && !this.#contextWindows.has(row.id)) {
-              this.#contextWindows.set(row.id, Math.trunc(row.contextWindow))
+            } else if (effectiveWindow !== undefined) {
+              const existing = this.#acpModels.get(row.id)!
+              if (existing.contextWindow === undefined) existing.contextWindow = effectiveWindow
             }
           }
         }
@@ -429,6 +442,16 @@ export class CatalogStore {
     await this.#cacheLoading
   }
 
+  #enqueueSave(): void {
+    if (!this.#options.cacheDir) return
+    this.#writes = this.#writes.then(async () => {
+      await this.#ensureCacheLoaded()
+      await this.#saveCache()
+    }).catch(() => {
+      // 缓存写失败不影响正常对话。
+    })
+  }
+
   async #saveCache(): Promise<void> {
     if (!this.#options.cacheDir || this.#acpModels.size === 0) return
     const modelThoughtLevels: Record<string, CachedThoughtLevel> = {}
@@ -438,7 +461,10 @@ export class CatalogStore {
     const payload: CatalogCacheFile = {
       format: CATALOG_CACHE_FORMAT,
       acpVersion: this.#options.acpVersion,
-      models: [...this.#acpModels.values()],
+      models: [...this.#acpModels.values()].map((entry) => {
+        const win = this.#contextWindows.get(entry.id) ?? entry.contextWindow
+        return win === undefined ? entry : { ...entry, contextWindow: win }
+      }),
       ...(this.#thoughtLevel ? { thoughtLevel: serializeThoughtLevel(this.#thoughtLevel) } : {}),
       ...(Object.keys(modelThoughtLevels).length > 0 ? { modelThoughtLevels } : {}),
     }

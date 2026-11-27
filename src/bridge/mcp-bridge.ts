@@ -95,6 +95,7 @@ export class McpToolBridge {
   readonly #callOwners = new Map<string, string>()
   #attached: BridgeChannel | undefined
   #http: Server | undefined
+  #starting: Promise<void> | undefined
   #bound = false
   #closed = false
   #address: string | undefined
@@ -167,7 +168,7 @@ export class McpToolBridge {
     return true
   }
 
-  /** 作废指定作用域的凭证与挂起调用（不触碰其他对话）。 */
+  /** 作废指定作用域的凭证、挂起调用与 HTTP 通道（不触碰其他对话）。 */
   invalidateScope(owner: string, reason: string): void {
     const scope = this.#scopes.get(owner)
     if (!scope) return
@@ -176,6 +177,7 @@ export class McpToolBridge {
     scope.valid = false
     scope.tools = []
     this.resetPending(reason, owner)
+    this.#closeScopeChannels(scope)
   }
 
   /** 彻底释放指定对话作用域及其全部 HTTP 通道。 */
@@ -262,30 +264,54 @@ export class McpToolBridge {
   }
 
   async start(): Promise<void> {
+    if (this.#closed) throw new Error(`${AGY_BRIDGE_ERROR.CLOSED}: MCP 桥已关闭`)
     if (this.#bound) return
-    const http = createServer((req: IncomingMessage, res: ServerResponse) => {
-      this.#handleHttp(req, res).catch(() => {
-        if (!res.headersSent) res.statusCode = 500
-        if (!res.writableEnded) res.end()
+    if (this.#starting) return this.#starting
+    const run = (async () => {
+      const http = createServer((req: IncomingMessage, res: ServerResponse) => {
+        this.#handleHttp(req, res).catch(() => {
+          if (!res.headersSent) res.statusCode = 500
+          if (!res.writableEnded) res.end()
+        })
       })
-    })
-    http.on('error', (error: Error) => { this.#httpError = error })
-    await new Promise<void>((resolve, reject) => {
-      http.once('error', reject)
-      http.listen(this.#requestedPort, '127.0.0.1', () => {
-        http.removeListener('error', reject)
-        resolve()
-      })
-    })
-    this.#http = http
-    const address = http.address() as AddressInfo | null
-    this.#address = `http://127.0.0.1:${address?.port ?? this.#requestedPort}/mcp`
-    this.#bound = true
+      http.on('error', (error: Error) => { this.#httpError = error })
+      try {
+        await new Promise<void>((resolve, reject) => {
+          http.once('error', reject)
+          http.listen(this.#requestedPort, '127.0.0.1', () => {
+            http.removeListener('error', reject)
+            resolve()
+          })
+        })
+      } catch (error) {
+        await new Promise<void>((resolve) => http.close(() => resolve())).catch(() => undefined)
+        throw error
+      }
+      if (this.#closed) {
+        await new Promise<void>((resolve) => {
+          http.close(() => resolve())
+          http.closeIdleConnections?.()
+          http.closeAllConnections?.()
+        })
+        throw new Error(`${AGY_BRIDGE_ERROR.CLOSED}: MCP 桥在启动期间已关闭`)
+      }
+      this.#http = http
+      const address = http.address() as AddressInfo | null
+      this.#address = `http://127.0.0.1:${address?.port ?? this.#requestedPort}/mcp`
+      this.#bound = true
+    })()
+    this.#starting = run
+    try {
+      await run
+    } finally {
+      if (this.#starting === run) this.#starting = undefined
+    }
   }
 
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    await this.#starting?.catch(() => undefined)
     this.resetPending(`${AGY_BRIDGE_ERROR.CLOSED}: MCP 桥已关闭，未执行的工具调用作废`)
     const http = this.#http
     this.#http = undefined

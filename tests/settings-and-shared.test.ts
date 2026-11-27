@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { isVolatile, updateVolatile } from '@deepseek-ai/cosmokit'
 import { Config, LIVE_SETTING_KEYS, liveHostConfig } from '../src/settings.js'
-import { canonicalHiddenModels, modelGroupFor, quotaGroupKeyFor, sameHiddenModels } from '../src/shared/model-groups.js'
+import {
+  canonicalHiddenModels,
+  groupedQuotas,
+  matchQuotaGroupForModel,
+  modelGroupFor,
+  quotaGroupKeyFor,
+  sameHiddenModels,
+} from '../src/shared/model-groups.js'
 import {
   ANTIGRAVITY_REMOTE_INVOCATIONS,
   PACKAGE_NAME,
   REMOTE_SERVICE_NAME,
+  matchSettingsNamespace,
   parseAccountIdRequest,
   parseReadQuotaRequest,
   parseStartLoginRequest,
@@ -80,5 +88,22 @@ describe('v1.0 settings schema & shared contracts', () => {
     expect(parseStartLoginRequest({ mode: 'add', alias: 'Work' })).toEqual({ mode: 'add', alias: 'Work' })
     expect(parseAccountIdRequest({ id: ' acc_1 ' })).toEqual({ id: 'acc_1' })
     expect(() => parseSubmitCallbackRequest({})).toThrow(TypeError)
+  })
+
+  it('groupedQuotas preserves unknown quota groups and matchSettingsNamespace supports prefixed ns', () => {
+    const groups = groupedQuotas({
+      status: 'ok',
+      updatedAt: new Date().toISOString(),
+      groups: [
+        { name: 'Gemini Models', buckets: [{ name: '5h', window: '5h', remainingPct: 80, disabled: false }] },
+        { name: 'Vela Experimental', buckets: [{ name: '5h', window: '5h', remainingPct: 45, disabled: false }] },
+      ],
+    })
+    expect(groups.map((g) => g.name)).toEqual(['Gemini', 'Vela Experimental'])
+    expect(matchQuotaGroupForModel(groups, 'vela-2-pro')?.name).toBe('Vela Experimental')
+
+    expect(matchSettingsNamespace([{ ns: 'include:llm-antigravity-acp', revision: 2 }])?.ns).toBe('include:llm-antigravity-acp')
+    expect(matchSettingsNamespace([{ ns: 'llm-antigravity-acp', revision: 1 }])?.ns).toBe('llm-antigravity-acp')
+    expect(matchSettingsNamespace([{ ns: 'custom:row', plugin: PACKAGE_NAME, revision: 3 }])?.ns).toBe('custom:row')
   })
 })

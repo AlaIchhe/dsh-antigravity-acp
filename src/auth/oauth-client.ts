@@ -209,10 +209,14 @@ export async function fetchUserEmail(
 
 /* ── 本机 Loopback 回调监听器 & 无头手动回调解析 ───────────────────── */
 
+export type CallbackRejectReason = 'cancelled' | 'timeout' | 'error'
+
 export class CallbackRejected extends Error {
-  constructor(message: string) {
+  readonly reason: CallbackRejectReason
+  constructor(message: string, reason: CallbackRejectReason = 'error') {
     super(message)
     this.name = 'CallbackRejected'
+    this.reason = reason
   }
 }
 
@@ -243,6 +247,7 @@ export function startCallbackListener(options: {
   const path = options.path ?? OAUTH_CALLBACK_PATH
   const timeoutMs = options.timeoutMs ?? 300_000
   return new Promise((resolveListener, rejectListener) => {
+    let listening = false
     let settled = false
     let resolveResult!: (value: CallbackResult) => void
     let rejectResult!: (error: Error) => void
@@ -257,6 +262,8 @@ export function startCallbackListener(options: {
     const close = (): Promise<void> => new Promise((done) => {
       if (timer) { clearTimeout(timer); timer = undefined }
       server.close(() => done())
+      server.closeIdleConnections?.()
+      server.closeAllConnections?.()
     })
     const fail = (error: Error): void => {
       if (settled) return
@@ -303,23 +310,28 @@ export function startCallbackListener(options: {
       succeed({ code, state })
     }
 
+    const portToBind = options.port ?? OAUTH_CALLBACK_PORT
     const server: Server = createServer(handle)
     server.once('error', (error) => {
-      const wrapped = error instanceof Error ? error : new Error(String(error))
-      if (!settled) rejectListener(wrapped)
+      const err = error as NodeJS.ErrnoException
+      const wrapped = err?.code === 'EADDRINUSE'
+        ? new Error(`端口 ${portToBind} 已被占用（EADDRINUSE），请关闭占用该端口的程序或稍后重试`)
+        : (error instanceof Error ? error : new Error(String(error)))
+      if (!listening) rejectListener(wrapped)
       else fail(wrapped)
     })
-    server.listen(options.port ?? OAUTH_CALLBACK_PORT, '127.0.0.1', () => {
+    server.listen(portToBind, '127.0.0.1', () => {
+      listening = true
       const address = server.address()
-      const port = typeof address === 'object' && address ? address.port : options.port ?? OAUTH_CALLBACK_PORT
-      timer = setTimeout(() => fail(new CallbackRejected('等待浏览器授权超时')), timeoutMs)
+      const port = typeof address === 'object' && address ? address.port : portToBind
+      timer = setTimeout(() => fail(new CallbackRejected('等待浏览器授权超时', 'timeout')), timeoutMs)
       timer.unref?.()
       resolveListener({
         port,
         result,
         close,
         cancel: (reason = '登录已取消') => {
-          fail(new CallbackRejected(reason))
+          fail(new CallbackRejected(reason, 'cancelled'))
           void close()
         },
       })

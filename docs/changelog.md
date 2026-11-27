@@ -4,6 +4,33 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.1.0 · 2026-11-27（协议/并发稳定性加固、持久化裁剪、设置页高级配置与 DSH Bundle 生态完善）
+
+### 协议、并发与资源清理
+
+- **修复：`boundedFrameStream` 跨 chunk 超大单帧漏检**（[src/protocol/agent-link.ts](../src/protocol/agent-link.ts)）：遇 `0x0a` 换行归零前先校验 `pending + (index - frameStart) > limitBytes`，避免超限帧绕过 64 MiB 防线。
+- **修复：`McpToolBridge.start()` 冷启动并发双建 HTTP Server**（[src/bridge/mcp-bridge.ts](../src/bridge/mcp-bridge.ts)）：引入 `#starting` inflight 去重与启动中 `close()` 竞态清理；`invalidateScope()` 同步关闭旧作用域的 HTTP/SSE 通道。
+- **修复：会话初始化与工具续轮失败残留孤儿会话**（[src/session/adapter.ts](../src/session/adapter.ts)）：`#openNewSession` 在 `applySessionSelection`/`applyAgentMode`/abort 失败时回滚 MCP scope 并关闭 ACP 会话；`#runNewRound` prompt 构造失败时关闭会话；`#runContinuation` 异常时中止当前 turn 并清理活跃映射。
+- **修复：`AcpRuntimeManager` 切账号/代理时旧启动链脱离 `dispose()` 管控**（[src/runtime/acp-runtime.ts](../src/runtime/acp-runtime.ts)）：以 `Set<InflightLaunch>` 跟踪所有在途冷启动，卸载时统一中止并回收。
+- **修复：OAuth 回调监听器运行期错误误走 `rejectListener`**（[src/auth/oauth-client.ts](../src/auth/oauth-client.ts)）：拆分 `listening` 与 `settled` 状态位，补齐 `EADDRINUSE` 端口占用提示，并为 `CallbackRejected` 引入结构化 `reason` 字段。
+- **资源与状态清理加固**：
+  - [src/runtime/proxy.ts](../src/runtime/proxy.ts)：`createLiveProxiedFetch` 热改 `proxyUrl` 时对旧 `ProxyAgent` 按引用计数排空关闭；
+  - [src/accounts/manager.ts](../src/accounts/manager.ts)：`syncFromDisk()` 按文件 stat 签名缓存跳过热路径重复读盘；`remove(id)` 先中止目标账号正在进行的 `relogin`；
+  - [src/remote/service.ts](../src/remote/service.ts)：额度缓存按账号 `revision` 校验并在重登/删号时自动失效；
+  - [src/runtime/agy-cli.ts](../src/runtime/agy-cli.ts) 与 [src/index.ts](../src/index.ts)：补齐 `max` 思考档位折叠；模型目录变更改发精准事件 `llm/models-updated`。
+
+### 持久化、额度与安装器
+
+- **`sessions.json` 上限/TTL 裁剪与读盘优化**（[src/session/session-store.ts](../src/session/session-store.ts)）：新增 `pruneSessionMap`（默认保留最近 500 条 / 30 天）；`createFileSessionStore` 缓存文件 stat 签名避免每轮全量重读。
+- **`CatalogStore` 串行落盘队列**（[src/session/catalog-store.ts](../src/session/catalog-store.ts)）：落盘前先等待 `#ensureCacheLoaded()` 并串行排队写入，防止竞态覆盖与首轮窗口丢失。
+- **保留未知额度组**（[src/shared/model-groups.ts](../src/shared/model-groups.ts)）：`groupedQuotas()` 不再静默丢弃未命中三家族的额度组，按原始组名追加展示并支持词元匹配。
+- **官方 `agy` CLI 流式下载与增量 SHA-512 校验**（[src/runtime/agy-cli-install.ts](../src/runtime/agy-cli-install.ts)）：改用 `ReadableStream` 分块读取，增量统计字节上限与哈希，无 `Content-Length` 也不会无限占用内存。
+
+### Web UI、DSH Bundle 规范与文档
+
+- **设置页与额度药丸升级**（[src/client/](../src/client/)）：新增「连接与高级」分页支持热更新配置在线编辑；兼容带前缀的设置命名空间（如 `include:llm-antigravity-acp`）；未登录账号跳过自动额度 RPC；删除账号改为 3 秒复位内联二次确认；切账号联动刷新模型列表、隐藏账号页停止后台拉额度；`AgYQuotaPill` 切模型零重复请求并新增 `document.body` Portal 交互式 Popover；全面适配 DSH Theme Tokens（`--dsw-alias-*`）与 Client 中英文 locale 服务。
+- **补齐 Bundle 展示元数据**（[package.json](../package.json)、[locale/en.json](../locale/en.json)、[locale/zh.json](../locale/zh.json)、[icon.svg](../icon.svg)）：声明 `engines.dsh`、导出 `./icon` 与 `./locale/*.json` 并纳入发布文件清单；同步更新 [docs/reference.md](reference.md) 与 [docs/configuration.md](configuration.md)。
+
 ## 1.0.2 · 2026-11-27（修复跨/同模型切换与分叉会话误判无映射、在途中断恢复、SessionStore 竞态与热更新缺陷）
 
 - **修复：已有会话从其它 Provider 切入 Antigravity（补完 [#3](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/3) 后半程）、同 Provider 内切换模型，以及 DSH 分叉会话 / `subagent_fork` 首轮误报 `AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`**。

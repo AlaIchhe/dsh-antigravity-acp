@@ -87,4 +87,21 @@ describe('Plan A concurrent multi-scope McpToolBridge', () => {
     expect(JSON.stringify(result.content)).toContain(AGY_BRIDGE_ERROR.INVALID_ARGUMENTS)
     expect(parked).toHaveLength(0)
   })
+
+  it('deduplicates concurrent start() calls and closes channels on invalidateScope()', async () => {
+    const bridge = new McpToolBridge()
+    bridges.push(bridge)
+    await Promise.all([bridge.start(), bridge.start(), bridge.start()])
+    expect(bridge.listening).toBe(true)
+    const boundUrl = bridge.url
+    expect(boundUrl).toBeTruthy()
+    await bridge.start()
+    expect(bridge.url).toBe(boundUrl)
+
+    bridge.beginRound([READ_TOOL], 'conv-D::chat')
+    const client = await connectClient(boundUrl!, bridge.tokenFor('conv-D::chat'))
+    bridge.invalidateScope('conv-D::chat', 'session invalidated')
+    expect(bridge.hasScope('conv-D::chat')).toBe(false)
+    await expect(client.callTool({ name: 'read_note', arguments: { file_path: 'x.txt' } })).rejects.toThrow()
+  })
 })

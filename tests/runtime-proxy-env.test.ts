@@ -152,13 +152,14 @@ describe('runtime/proxy, process-env, binary, agy-cli', () => {
     const rawModels = parseAgyModels([
       'claude-opus-5-5-high\tClaude Opus 5.5 (High)',
       'claude-opus-5-5-low\tClaude Opus 5.5 (Low)',
+      'claude-opus-5-5-max\tClaude Opus 5.5 (Max)',
       'gpt-oss-120b\tGPT OSS',
       'gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)',
       'gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)',
       'gemini-pro-orchestrator\tOrchestrator (Carbon)',
     ].join('\n'))
     expect(foldCliModelFamilies(rawModels)).toEqual([
-      { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', tiers: ['low', 'high'] },
+      { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', tiers: ['low', 'high', 'max'] },
       { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', tiers: ['high', 'xhigh'] },
       { id: 'gemini-pro-orchestrator', name: 'Orchestrator (Carbon)', tiers: [] },
     ])

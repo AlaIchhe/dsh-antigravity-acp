@@ -93,7 +93,7 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
 
   const notifyCatalogChanged = (): void => {
     try {
-      (ctx as unknown as { emit(event: string): void }).emit('llm/adapters-updated')
+      (ctx as unknown as { emit(event: string, ...args: unknown[]): void }).emit('llm/models-updated', AGY_PROVIDER_ID)
     } catch {
       // 无监听方时忽略。
     }

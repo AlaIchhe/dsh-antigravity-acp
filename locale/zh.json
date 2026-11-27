@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Antigravity ACP",
+    "description": "通过官方 ACP（stdio）将 Google Antigravity 接入 DeepSeek Harness：支持按账号共享常驻进程、多对话并发私有 MCP 工具桥、原生思考强度档位、多账号管理与实时额度查看。"
+  }
+}
