@@ -29,7 +29,7 @@ import type { CatalogStore } from './catalog-store.js'
 import { applyAgentMode, applySessionSelection } from './model-router.js'
 import { SessionCoordinator } from './session-coordinator.js'
 import type { LiveSession, TurnDeliveryOutcome } from './session-coordinator.js'
-import { ContinuationState, incrementalMessages, reusableSessionKey } from './session-reuse.js'
+import { ContinuationState, incrementalMessages, reusableSessionKey, rotateContinuation } from './session-reuse.js'
 import type { SessionStore } from './session-store.js'
 import { buildDeltaPrompt, buildFullPrompt, buildToolResultContent, hasPriorConversation } from './transcript.js'
 import type { ImageReader } from './transcript.js'
@@ -229,6 +229,10 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     if (existing && !existing.turn.terminated && !existing.turn.promptSettled) {
       const tail = trailingToolResults(options.messages, existing.continuation)
       if (matchesParkedCalls(existing.turn, tail, this.#bridge) && existing.continuation.accepts(options, tail.length)) {
+        // 接受的续轮必须换一本新账本：旧账本的 #history 停在首个请求上，`#emitted`
+        // 又会跨步累加，不轮换的话从第二段工具调用起 `accepts()` 必为假，
+        // 整轮会被判成「接不上原 ACP 会话」而报废（v0.5.7 有此语义，rc.1 重构漏掉）。
+        rotateContinuation(existing, options)
         yield* this.#runContinuation(lockKey, existing, options, tail)
         return
       }
@@ -446,7 +450,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     options: GenerateOptions,
     tail: readonly RequestMessage[],
   ): AsyncGenerator<StreamChunk> {
-    const { turn, continuation } = active
+    const { turn } = active
     this.#bridge.publishTools(options.tools ?? [], turn.bridgeOwner)
     const imageOpts = this.#imageOptions(options.signal)
     const results: BridgeToolResult[] = []
@@ -466,7 +470,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     try {
       for await (const chunk of drainTurn(turn)) {
         if (chunk.type === 'block-end') {
-          continuation.emitted(chunk.block)
+          active.continuation.emitted(chunk.block)
           emitted.push(structuredClone(chunk.block))
         }
         if (chunk.type === 'finish' && live) {

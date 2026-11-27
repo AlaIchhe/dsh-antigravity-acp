@@ -183,3 +183,31 @@ export class ContinuationState {
     return stableJson(appended.flatMap((message) => [...message.content])) === stableJson(this.#emitted)
   }
 }
+
+/** 持有续轮账本的宿主（adapter 里是 `ActiveConversation`）。 */
+export interface ContinuationHost {
+  continuation: ContinuationState
+}
+
+/**
+ * 续轮被接受后立刻换一本新账本，返回新账本。
+ *
+ * `ContinuationState` 的语义是「**一次** prompt 的历史 + 这次 prompt 产出的块」：
+ * `#history` 在构造时冻结，`#emitted` 只增不减。一个 ACP 会话里 agent 可以连着
+ * 发起多段工具调用（每段都是同一 prompt 的续轮），若不换账本：
+ * - `#history` 停在最早那次请求上；
+ * - `#emitted` 把第 2、3… 段的输出全部累加。
+ *
+ * 于是从第二段工具调用起 `accepts()` 恒为假，adapter 会误判「输入已偏离当前
+ * 工具续轮」而 abort 整个回合；abort 又把会话标成 `cancelled`，下一轮
+ * `evaluateRecordContinuity` 只在尾部看到未投递的工具结果与旧 assistant 输出，
+ * 直接报 `AGY_SESSION_UNRECOVERABLE（没有可发送的增量消息）`，对话报废。
+ *
+ * 因此「接受续轮」与「换账本」必须是同一个原子动作，见
+ * `AntigravityAcpAdapter.#streamSerialized`。
+ */
+export function rotateContinuation(host: ContinuationHost, options: GenerateOptions): ContinuationState {
+  const next = new ContinuationState(options)
+  host.continuation = next
+  return next
+}

@@ -11,6 +11,8 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, RequestMessage, StreamChunk, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { AnyMessage, SessionConfigOption, Stream } from '@agentclientprotocol/sdk'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { AgentLink } from '../src/protocol/agent-link.js'
 import { AntigravityAcpAdapter, AGY_ADAPTER_ERROR } from '../src/session/adapter.js'
 import { CatalogStore } from '../src/session/catalog-store.js'
@@ -476,6 +478,176 @@ describe('v1.0 session core & bug regressions', () => {
     expect(r2).toEqual({ text: 'healthy-ok', finish: 'stop', code: undefined })
     expect(sessionSeq).toBe(sessionsBeforeRetry) // 复用了原会话，没有新建
 
+    await adapter.dispose()
+    await linkInst?.close()
+    await store.close()
+  })
+})
+
+describe('tool continuation ledger rotation (rc.1 regression)', () => {
+  it('同一 ACP 会话连续两段工具调用不再报废（AGY_SESSION_UNRECOVERABLE）', async () => {
+    // 真机复现：2026-11-27 09:50 的会话，第 1 步 glob、第 2 步 grep 都成功回喂，
+    // 第 3 步却报「没有可发送的增量消息」。根因是续轮被接受后账本没轮换：
+    // 旧的 #history 停在首个请求上、#emitted 跨步累加，第二段续轮 accepts() 恒假
+    // → abort 整个回合 → 会话被标 cancelled → 下一轮判定 unrecoverable。
+    const TOOL: ToolSchema = {
+      name: 'glob',
+      description: 'list files',
+      parameters: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] },
+    }
+    const clients: Client[] = []
+    const parkOrder: string[] = []
+    let sessionSeq = 0
+    let prompts = 0
+
+    const stream = createLinkedAcpPair(async (msg, send) => {
+      if (!('method' in msg) || !('id' in msg)) return
+      if (msg.method === 'initialize') {
+        send({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            protocolVersion: 1,
+            agentCapabilities: { promptCapabilities: { image: false }, sessionCapabilities: { resume: {} } },
+            authMethods: [],
+          },
+        })
+        return
+      }
+      if (msg.method === 'session/new') {
+        const sid = `acp-tools-${++sessionSeq}`
+        // MCP 桥注册信息只在 session/new 下发一次（ACP 语义），续轮不会重发。
+        const server = (msg.params as { mcpServers?: Array<{ url: string; headers: Array<{ name: string; value: string }> }> })
+          .mcpServers?.[0]
+        if (server) mcpServer = server
+        send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: sid, configOptions: DEFAULT_CONFIG_OPTIONS } })
+        return
+      }
+      if (msg.method === 'session/prompt') {
+        prompts += 1
+        const params = msg.params as {
+          sessionId: string
+          prompt: Array<{ type: string; text?: string }>
+        }
+        if (!cached && mcpServer) {
+          const token = mcpServer.headers.find((h) => h.name.toLowerCase() === 'authorization')?.value ?? ''
+          const transport = new StreamableHTTPClientTransport(new URL(mcpServer.url), {
+            requestInit: { headers: { authorization: token } },
+          })
+          const client = new Client({ name: 'fake-agent', version: '1.0.0' })
+          await client.connect(transport)
+          clients.push(client)
+          cached = client
+        }
+        const client = cached
+        if (!client) throw new Error('未拿到 MCP 桥注册信息')
+        // 第一段：发 glob 工具调用，等 DSH 回喂结果
+        parkOrder.push('call-1')
+        await client.callTool({ name: 'glob', arguments: { pattern: '**/*' } })
+        // 第二段：同一 prompt 内再发一次工具调用（这一步在修复前会整轮报废）
+        parkOrder.push('call-2')
+        await client.callTool({ name: 'glob', arguments: { pattern: 'src/**' } })
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'all-done' } },
+          },
+        })
+        send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } })
+      }
+    })
+    let cached: Client | undefined
+    let mcpServer: { url: string; headers: Array<{ name: string; value: string }> } | undefined
+
+    const dir = mkdtempSync(join(tmpdir(), 'agy-tools-'))
+    dirs.push(dir)
+    const store = createFileSessionStore(dir)
+    const catalog = new CatalogStore({ cacheDir: dir, acpVersion: '1.5.0' })
+    let linkInst: AgentLink | undefined
+    let linkReady: Promise<AgentLink> | undefined
+    const adapter = new AntigravityAcpAdapter({
+      catalog,
+      getLink: (handlers) => {
+        linkReady ??= (async () => {
+          const created = new AgentLink({ stream, handlers })
+          created.start()
+          await created.initialize({ clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } })
+          linkInst = created
+          return created
+        })()
+        return linkReady
+      },
+      recycleLink: async (l: AgentLink) => { await l.close() },
+      sessionStore: store,
+      cwd: '/work',
+      readSettings: () => ({ resumeSessions: true, idleRecycleMs: 0, promptTimeoutMs: 5_000, bridgeParkSettleMs: 5, cancelGraceMs: 0 }),
+    })
+
+    const runStep = async (opts: GenerateOptions) => {
+      const blocks: unknown[] = []
+      let text = ''
+      let finish = ''
+      let code: string | undefined
+      for await (const chunk of adapter.stream(opts)) {
+        if (chunk.type === 'block-end') blocks.push(chunk.block)
+        if (chunk.type === 'text-delta') text += chunk.text
+        if (chunk.type === 'finish') {
+          finish = chunk.reason.kind
+          if (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted') code = chunk.reason.failure?.code
+        }
+      }
+      return { blocks, text, finish, code }
+    }
+
+    const base = { provider: 'antigravity-acp', model: 'gemini-4-neon', tools: [TOOL] }
+    const u1 = createUserMessage({ content: [{ type: 'text', text: '看看仓库' }], source: { kind: 'user' } })
+
+    // 第 1 步：新会话，模型发第一个工具调用
+    const step1 = await runStep({ ...base, sessionId: 'conv-tools' as GenerateOptions['sessionId'], messages: [u1] })
+    expect(step1.finish).toBe('tool-calls')
+    expect(step1.code).toBeUndefined()
+    const call1 = step1.blocks.find((b) => (b as { type: string }).type === 'tool-call') as { id: string } | undefined
+    expect(call1).toBeDefined()
+
+    const a1 = createAssistantMessage({
+      content: step1.blocks as never,
+      source: { provider: 'antigravity-acp', model: 'gemini-4-neon' },
+    })
+    const t1 = createToolResultMessage({ callId: ToolCallId(call1!.id), content: [{ type: 'text', text: 'glob-ok-1' }], isError: false })
+
+    // 第 2 步：回喂第一个结果 → 模型在同一 prompt 内发第二个工具调用（续轮，必须被接受）
+    const step2 = await runStep({
+      ...base,
+      sessionId: 'conv-tools' as GenerateOptions['sessionId'],
+      messages: [u1, a1, t1],
+    })
+    expect(step2.finish).toBe('tool-calls')
+    expect(step2.code).toBeUndefined()
+    const call2 = step2.blocks.find((b) => (b as { type: string }).type === 'tool-call') as { id: string } | undefined
+    expect(call2).toBeDefined()
+
+    const a2 = createAssistantMessage({
+      content: step2.blocks as never,
+      source: { provider: 'antigravity-acp', model: 'gemini-4-neon' },
+    })
+    const t2 = createToolResultMessage({ callId: ToolCallId(call2!.id), content: [{ type: 'text', text: 'glob-ok-2' }], isError: false })
+
+    // 第 3 步：回喂第二个结果 → 模型收尾（修复前这里直接 AGY_SESSION_UNRECOVERABLE）
+    const step3 = await runStep({
+      ...base,
+      sessionId: 'conv-tools' as GenerateOptions['sessionId'],
+      messages: [u1, a1, t1, a2, t2],
+    })
+    expect(step3.code).toBeUndefined()
+    expect(step3.finish).toBe('stop')
+    expect(step3.text).toBe('all-done')
+    expect(sessionSeq).toBe(1) // 全程同一个 ACP 会话，没有新建
+    expect(prompts).toBe(1) // 全程同一个 prompt，两段工具调用都是续轮
+    expect(parkOrder).toEqual(['call-1', 'call-2'])
+
+    for (const client of clients) await client.close().catch(() => undefined)
     await adapter.dispose()
     await linkInst?.close()
     await store.close()
