@@ -55,6 +55,23 @@ export function routeFingerprint(
   })).digest('hex')
 }
 
+/**
+ * 去掉思考档位的路由指纹（provider / 模型 / system）。
+ *
+ * 思考档位是 ACP 的 `config_option`，可以在会话存活期间改；DSH 也允许用户随时切档位。
+ * 只有 provider / 模型 / system 变了才真的接不上原 ACP 会话。用它区分「只是换了个档位」
+ * （可新建会话继续）与「换了模型或系统提示」（不可恢复）。
+ */
+export function routeBaseFingerprint(
+  options: Pick<GenerateOptions, 'provider' | 'model' | 'system'>,
+): string {
+  return createHash('sha256').update(stableJson({
+    provider: options.provider,
+    model: options.model,
+    system: options.system ?? '',
+  })).digest('hex')
+}
+
 export function toolsDigest(tools: GenerateOptions['tools'] | undefined): string {
   return createHash('sha256').update(stableJson(
     [...(tools ?? [])].sort((a, b) => a.name.localeCompare(b.name)),

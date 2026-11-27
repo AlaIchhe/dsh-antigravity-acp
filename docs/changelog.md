@@ -4,6 +4,11 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.0.0-rc.3 · 2026-11-27（预发版：修复后台标题请求污染思考档位导致对话报废）
+
+- **修复：后台标题请求把用户的思考强度悄悄改成 Low，并连带让对话整轮报废（`AGY_SESSION_UNRECOVERABLE（模型、思考档位或系统提示已变化）`）**。真机复现于 2026-11-27 10:16 的会话（`session-59cfcef0`）：第 1 轮 59 步工具调用全部正常跑完（rc.2 的多段续轮修复生效），第 2 轮第 1 步 `read` 也成功，第 2 步却直接报错并删掉 `sessions.json` 映射。证据链：① `session/title-llm-request` 与聊天走同一 `provider/model`，但显式带 `reasoningEffort: low`；② 该一次性请求在 `session/new` 后把 `thoughtLevel.currentValue` 写成 `low` 并落盘（`catalog.json` 时间戳与之一致）；③ 下一次聊天请求的 `request/header` 档位从 `high` 变 `low`（DSH 侧 `effective = requested ?? reasoning.defaultEffort`，而 `defaultEffort` 正是 `currentValue`）；④ 路由指纹不符 → 判 `unrecoverable` → 映射被删。根因是 `CatalogStore.observeConfigOptions` 把**任何**会话观测到的 `currentValue` 当成用户的档位选择。现在只有聊天会话（`purpose === undefined`）有权写 `currentValue`，标题 / 压缩 / 模型探针 / 未知会话的 `config_option_update` 只更新档位**选项表**并保留原选择；保留值若不在新选项里则丢弃，避免 `defaultEffort` 指向未声明档位（DSH 会判 `INVALID_MODEL_REASONING`）。缓存加载时同样校验，被旧版本污染的 `catalog.json` 不会继续生效。
+- **思考档位变化不再判死对话**。此前只要请求档位与映射里的指纹不同就报 `unrecoverable` 并删映射——用户随手切一次档位即失去整段上下文。现在映射额外保存去掉档位的 `routeBase`（provider / 模型 / system）：**只有档位变**时走 `reset-fresh`，新建一个 ACP 会话并保留历史继续；换模型或换系统提示仍按不可恢复处理。旧格式映射没有 `routeBase` 时保持原有保守语义。
+
 ## 1.0.0-rc.2 · 2026-11-27（预发版：修复同会话多段工具调用导致对话报废）
 
 - **修复：同一 ACP 会话里出现第二段工具调用时整轮报废（`AGY_SESSION_UNRECOVERABLE（没有可发送的增量消息）`）**。真机复现于 2026-11-27 09:50 的会话：第 1 步 `glob`、第 2 步 `grep` 都正常回喂，第 3 步直接报错。根因是 rc.1 重构 `ContinuationState` 时漏掉了 v0.5.7 的「续轮接受后轮换账本」语义——`#history` 在构造时冻结在首个请求上、`#emitted` 只增不减，于是从第二段工具调用起 `accepts()` 恒为假；adapter 误判「输入已偏离当前工具续轮」而 abort 回合，abort 又把会话标成 `cancelled`，紧接着 `evaluateRecordContinuity` 只看得到未投递的工具结果与上一段 assistant 输出（`skipToolResults` 后为空），直接判 `unrecoverable` 并删掉磁盘映射。现在「接受续轮」与「换账本」是同一个原子动作（`rotateContinuation`），并补了真机路径的回归用例：一个会话、一个 prompt、连续两段 MCP 工具调用必须全部走通。

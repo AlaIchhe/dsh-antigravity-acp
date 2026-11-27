@@ -18,7 +18,7 @@ import { AntigravityAcpAdapter, AGY_ADAPTER_ERROR } from '../src/session/adapter
 import { CatalogStore } from '../src/session/catalog-store.js'
 import { AGY_ROUTING_ERROR, applySessionSelection } from '../src/session/model-router.js'
 import { evaluateRecordContinuity } from '../src/session/session-coordinator.js'
-import { ContinuationState, ROUTE_FINGERPRINT_VERSION, outputHash, prefixHash, routeFingerprint } from '../src/session/session-reuse.js'
+import { ContinuationState, ROUTE_FINGERPRINT_VERSION, outputHash, prefixHash, routeBaseFingerprint, routeFingerprint } from '../src/session/session-reuse.js'
 import { createFileSessionStore, readSessionMap, writeSessionMap } from '../src/session/session-store.js'
 import { describeUpstreamErrorNotice } from '../src/session/turn-runner.js'
 import { TurnUsageAccounting } from '../src/session/usage-accounting.js'
@@ -69,6 +69,13 @@ const DEFAULT_CONFIG_OPTIONS: SessionConfigOption[] = [
     ],
   },
 ]
+
+/** 造一份 thought_level.currentValue 指定的 configOptions。 */
+function withCurrentEffort(current: 'low' | 'medium' | 'high' | 'xhigh'): SessionConfigOption[] {
+  return DEFAULT_CONFIG_OPTIONS.map((option) =>
+    option.id === 'thought_level' ? { ...option, currentValue: current } as SessionConfigOption : option,
+  )
+}
 
 describe('v1.0 session core & bug regressions', () => {
   it('BUG FIX #1: session-store preserves routeVersion across disk read/write', async () => {
@@ -651,5 +658,87 @@ describe('tool continuation ledger rotation (rc.1 regression)', () => {
     await adapter.dispose()
     await linkInst?.close()
     await store.close()
+  })
+})
+
+describe('effort drift must not kill a conversation', () => {
+  it('一次性请求（session-title）不得改写用户的默认思考档位', async () => {
+    // 真机复现（2026-11-27 10:16 会话）：标题请求带 reasoningEffort=low，
+    // 新建 ACP 会话后把 catalog 的 thoughtLevel.currentValue 写成 low；
+    // DSH 随后用 defaultEffort 解析聊天请求 → 档位从 high 变 low →
+    // 路由指纹不符 → AGY_SESSION_UNRECOVERABLE，对话报废。
+    const dir = mkdtempSync(join(tmpdir(), 'agy-drift-'))
+    dirs.push(dir)
+    const store = new CatalogStore({ cacheDir: dir, acpVersion: '1.5.0' })
+
+    // 用户在聊天里选了 high：权威观测
+    store.observeConfigOptions(withCurrentEffort('high'), { authoritative: true })
+    expect(store.thoughtLevel?.currentValue).toBe('high')
+    expect((await store.resolveModel('antigravity-acp', 'gemini-4-neon')).reasoning?.defaultEffort?.toString()).toBe('high')
+
+    // 标题请求的低档位会话：非权威观测
+    store.observeConfigOptions(withCurrentEffort('low'), { authoritative: false })
+    expect(store.thoughtLevel?.currentValue).toBe('high')
+    expect((await store.resolveModel('antigravity-acp', 'gemini-4-neon')).reasoning?.defaultEffort?.toString()).toBe('high')
+
+    // 关卡位选项表仍然照学（不同模型支持的档位不同）
+    const narrowed = withCurrentEffort('low').filter((o) => o.id !== 'thought_level')
+    store.observeConfigOptions([...narrowed, {
+      type: 'select', id: 'thought_level', name: 'Thought Level', category: 'thought_level', currentValue: 'low',
+      options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }],
+    }], { authoritative: false })
+    // 保留的 high 不在新选项里 → 必须丢弃，不能让 defaultEffort 指向未声明档位
+    expect(store.thoughtLevel?.currentValue ?? undefined).not.toBe('high')
+    const resolved = await store.resolveModel('antigravity-acp', 'gemini-4-neon')
+    const efforts = (resolved.reasoning?.efforts ?? []).map((e) => e.id.toString())
+    expect(efforts).toEqual(['low', 'medium'])
+    expect(efforts).toContain(resolved.reasoning?.defaultEffort?.toString())
+  })
+
+  it('只有思考档位变化时按新会话继续（历史保留），换模型仍然不可恢复', () => {
+    const u1 = createUserMessage({ content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } })
+    const a1 = createAssistantMessage({ content: [{ type: 'text', text: 'ok' }], source: { provider: 'antigravity-acp', model: 'gemini-4-neon' } })
+    const u2 = createUserMessage({ content: [{ type: 'text', text: 'again' }], source: { kind: 'user' } })
+    const base = { provider: 'antigravity-acp', model: 'gemini-4-neon', system: 'SYS' }
+    const effort = (id: string) => ReasoningEffortId(id)
+    const record = {
+      sessionId: 'acp-e', cwd: '/work', sentCount: 2, sentHash: prefixHash([u1]),
+      outputHash: outputHash(a1.content), route: routeFingerprint({ ...base, reasoningEffort: effort('high') }),
+      routeBase: routeBaseFingerprint(base), routeVersion: ROUTE_FINGERPRINT_VERSION,
+    }
+
+    // 档位 high → low：可恢复，走 reset-fresh（新 ACP 会话带历史继续）
+    expect(evaluateRecordContinuity(record, { ...base, reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work'))
+      .toMatchObject({ ok: false, kind: 'reset-fresh' })
+    // 换模型：仍然不可恢复
+    expect(evaluateRecordContinuity(record, { ...base, model: 'claude-sonnet-5-5', reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work'))
+      .toMatchObject({ ok: false, kind: 'unrecoverable' })
+    // 换系统提示：仍然不可恢复
+    expect(evaluateRecordContinuity(record, { ...base, system: 'OTHER', reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work'))
+      .toMatchObject({ ok: false, kind: 'unrecoverable' })
+    // 旧映射（没有 routeBase）：保持保守语义
+    const legacy = { ...record } as Record<string, unknown>
+    delete legacy.routeBase
+    expect(evaluateRecordContinuity(legacy as never, { ...base, reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work'))
+      .toMatchObject({ ok: false, kind: 'unrecoverable' })
+  })
+
+  it('routeBase 跟着映射落盘并能读回（旧格式缺字段仍可读）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-rb-'))
+    dirs.push(dir)
+    const u1 = createUserMessage({ content: [{ type: 'text', text: 'q' }], source: { kind: 'user' } })
+    const entry = {
+      sessionId: 'acp-rb', cwd: '/work', sentCount: 1, sentHash: prefixHash([u1]),
+      outputHash: outputHash([]), route: 'a'.repeat(64), routeBase: 'b'.repeat(64),
+      routeVersion: ROUTE_FINGERPRINT_VERSION, updatedAt: Date.now(),
+    }
+    await writeSessionMap(dir, { 'conv-rb::chat': entry })
+    const back = await readSessionMap(dir)
+    expect(back['conv-rb::chat']?.routeBase).toBe('b'.repeat(64))
+
+    // routeBase 必须也是 64 位十六进制哈希，否则整条映射丢弃（不静默接受脏数据）
+    await writeSessionMap(dir, { 'conv-bad::chat': { ...entry, routeBase: 'not-a-hash' } })
+    const back2 = await readSessionMap(dir)
+    expect(back2['conv-bad::chat']).toBeUndefined()
   })
 })

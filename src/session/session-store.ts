@@ -17,7 +17,10 @@ export interface SessionMapEntry {
   sentCount: number
   sentHash: string
   outputHash: string
+  /** 完整路由指纹（provider / 模型 / 思考档位 / system）。 */
   route: string
+  /** 去掉思考档位的路由指纹：档位是可运行时调整的旋钮，只变它不该判定会话报废。 */
+  routeBase?: string
   routeVersion: number
   updatedAt: number
   cancelled?: boolean
@@ -58,6 +61,7 @@ export async function readSessionMap(cacheDir: string): Promise<Record<string, S
       if (typeof row.cwd !== 'string' || row.cwd === '') continue
       if (!Number.isSafeInteger(row.sentCount) || row.sentCount === undefined || row.sentCount < 0) continue
       if (!isHash(row.sentHash) || !isHash(row.outputHash) || !isHash(row.route)) continue
+      if (row.routeBase !== undefined && !isHash(row.routeBase)) continue
       const routeVersion = typeof row.routeVersion === 'number' && Number.isSafeInteger(row.routeVersion)
         ? row.routeVersion
         : 0
@@ -68,6 +72,7 @@ export async function readSessionMap(cacheDir: string): Promise<Record<string, S
         sentHash: row.sentHash,
         outputHash: row.outputHash,
         route: row.route,
+        ...(isHash(row.routeBase) ? { routeBase: row.routeBase } : {}),
         routeVersion,
         updatedAt: typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) ? row.updatedAt : 0,
         ...(row.cancelled === true ? { cancelled: true } : {}),

@@ -58,6 +58,18 @@ function effortRank(id: string): number {
   return index === -1 ? EFFORT_ORDER.length : index
 }
 
+/**
+ * 非权威观测时要保留的 `currentValue`：只在它仍是这个模型声明的档位时才留下。
+ * 指向未声明档位的默认值会被 DSH 判为非法元数据，整条模型不可用。
+ */
+function keepDeclared(
+  current: string | undefined,
+  options: readonly { value: string }[],
+): string | undefined {
+  if (current === undefined) return undefined
+  return options.some((opt) => opt.value === current) ? current : undefined
+}
+
 export class CatalogStore {
   #acpModels = new Map<string, CatalogModelEntry>()
   #cliModels = new Map<string, CatalogModelEntry>()
@@ -97,8 +109,24 @@ export class CatalogStore {
     this.#options.onCatalogChanged?.()
   }
 
-  observeConfigOptions(configOptions: readonly SessionConfigOption[] | null | undefined): boolean {
+  /**
+   * 吸收一次 agent `session/new` 返回的 configOptions。
+   *
+   * `currentValue`（思考档位）会成为模型元数据的 `defaultEffort`，而 DSH 在请求未显式
+   * 指定档位时用的就是它。**只有聊天会话有权写它**：标题 / 压缩这类一次性请求（带
+   * `purpose`）会按廉价档位（实测 `low`）新建自己的 ACP 会话，若也记进去，用户的思考
+   * 强度会被后台请求悄悄改成 Low，随后的聊天请求档位突变，会话因路由指纹不符整轮报废。
+   *
+   * 非权威观测仍会学习模型清单与档位**选项表**（不同模型支持的档位不同，这部分是真实
+   * 信息），但保留已记录的 `currentValue`；保留值若不在新选项里则丢弃，避免
+   * `defaultEffort` 指向未声明的档位（DSH 会判 `INVALID_MODEL_REASONING`）。
+   */
+  observeConfigOptions(
+    configOptions: readonly SessionConfigOption[] | null | undefined,
+    options?: { readonly authoritative?: boolean },
+  ): boolean {
     if (!configOptions?.length) return false
+    const authoritative = options?.authoritative !== false
     let changed = false
 
     const modelSelector = findModelSelector(configOptions)
@@ -121,10 +149,17 @@ export class CatalogStore {
 
     const thought = findThoughtLevelSelector(configOptions)
     if (thought && thought.options.length > 0) {
+      const currentValue = authoritative
+        ? thought.currentValue
+        : keepDeclared(this.#thoughtLevel?.currentValue, thought.options)
+      const next: ThoughtLevelSelector = {
+        configId: thought.configId,
+        options: thought.options,
+        ...(currentValue === undefined ? {} : { currentValue }),
+      }
       const prevKey = JSON.stringify(this.#thoughtLevel ?? null)
-      const nextKey = JSON.stringify(thought)
-      if (prevKey !== nextKey) {
-        this.#thoughtLevel = thought
+      if (prevKey !== JSON.stringify(next)) {
+        this.#thoughtLevel = next
         changed = true
       }
     }
@@ -246,10 +281,13 @@ export class CatalogStore {
           }
         }
         if (!this.#thoughtLevel && parsed.thoughtLevel && typeof parsed.thoughtLevel.configId === 'string' && Array.isArray(parsed.thoughtLevel.options) && parsed.thoughtLevel.options.length > 0) {
+          // 缓存里的 currentValue 可能来自被旧版本污染的写入（一次性请求的低档位）：
+          // 只接受它仍然是该选项表里声明的档位，否则当作没有默认值。
+          const currentValue = keepDeclared(parsed.thoughtLevel.currentValue, parsed.thoughtLevel.options)
           this.#thoughtLevel = {
             configId: parsed.thoughtLevel.configId,
             options: parsed.thoughtLevel.options,
-            ...(parsed.thoughtLevel.currentValue ? { currentValue: parsed.thoughtLevel.currentValue } : {}),
+            ...(currentValue === undefined ? {} : { currentValue }),
           }
         }
       } catch {

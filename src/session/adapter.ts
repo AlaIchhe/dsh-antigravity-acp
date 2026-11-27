@@ -29,7 +29,13 @@ import type { CatalogStore } from './catalog-store.js'
 import { applyAgentMode, applySessionSelection } from './model-router.js'
 import { SessionCoordinator } from './session-coordinator.js'
 import type { LiveSession, TurnDeliveryOutcome } from './session-coordinator.js'
-import { ContinuationState, incrementalMessages, reusableSessionKey, rotateContinuation } from './session-reuse.js'
+import {
+  ContinuationState,
+  incrementalMessages,
+  reusableSessionKey,
+  rotateContinuation,
+  routeBaseFingerprint,
+} from './session-reuse.js'
 import type { SessionStore } from './session-store.js'
 import { buildDeltaPrompt, buildFullPrompt, buildToolResultContent, hasPriorConversation } from './transcript.js'
 import type { ImageReader } from './transcript.js'
@@ -146,7 +152,9 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       _meta: { antigravity: { enabledTools: [], eagerMcpServers: [] } },
     }, { signal })
     try {
-      this.#catalog.observeConfigOptions(session.configOptions)
+      // 探针会话只为读模型清单：它的 currentValue 是 agent 自己的默认档位，
+      // 不是用户的思考强度选择，绝不能写进 defaultEffort。
+      this.#catalog.observeConfigOptions(session.configOptions, { authoritative: false })
       return await this.#catalog.listVisibleModels(AGY_PROVIDER_ID)
     } finally {
       void link.closeSession(session.sessionId).catch(() => undefined)
@@ -309,7 +317,11 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       promptTimeoutMs: purposeTimeoutMs(options.purpose, settings.promptTimeoutMs ?? 1_800_000),
       parkSettleMs: settings.bridgeParkSettleMs ?? 50,
       oneShot: options.purpose !== undefined,
-      onConfigOptions: (opts) => { this.#catalog.observeConfigOptions(opts) },
+      // 标题 / 压缩这类一次性回合会用自己的廉价档位新建 ACP 会话，
+      // 它们无权改写用户聊天路由的默认思考强度。
+      onConfigOptions: (opts) => {
+        this.#catalog.observeConfigOptions(opts, { authoritative: options.purpose === undefined })
+      },
       onUsageUpdate: (size) => {
         if (typeof size === 'number' && size > 0) this.#catalog.noteContextWindow(options.model, size)
       },
@@ -520,7 +532,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     }, { signal: options.signal })
     throwIfAborted(options.signal)
 
-    this.#catalog.observeConfigOptions(session.configOptions)
+    const authoritative = options.purpose === undefined
+    this.#catalog.observeConfigOptions(session.configOptions, { authoritative })
     const updated = await applySessionSelection({
       link,
       sessionId: session.sessionId,
@@ -530,7 +543,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       signal: options.signal,
       log: this.#options.log,
     })
-    if (updated) this.#catalog.observeConfigOptions(updated)
+    if (updated) this.#catalog.observeConfigOptions(updated, { authoritative })
     await applyAgentMode({
       link,
       sessionId: session.sessionId,
@@ -574,7 +587,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         _meta: { antigravity: { enabledTools: [], eagerMcpServers: tools.length > 0 ? [BRIDGE_MCP_SERVER_NAME] : [] } },
       }, { signal: options.signal, timeoutMs })
 
-      this.#catalog.observeConfigOptions(response.configOptions)
+      this.#catalog.observeConfigOptions(response.configOptions, { authoritative: options.purpose === undefined })
       const updated = await applySessionSelection({
         link,
         sessionId: entry.sessionId,
@@ -584,7 +597,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         signal: options.signal,
         log: this.#options.log,
       })
-      if (updated) this.#catalog.observeConfigOptions(updated)
+      if (updated) this.#catalog.observeConfigOptions(updated, { authoritative: options.purpose === undefined })
       await applyAgentMode({
         link,
         sessionId: entry.sessionId,
@@ -595,7 +608,13 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       })
 
       this.#options.log?.info(`antigravity-acp: 已恢复 ACP 会话 session=${entry.sessionId} sent=${entry.sentCount}`)
-      return this.#coordinator.registerResumed({ key: chatKey, entry, link, usesTools: tools.length > 0 })
+      return this.#coordinator.registerResumed({
+        key: chatKey,
+        entry,
+        link,
+        usesTools: tools.length > 0,
+        routeBase: routeBaseFingerprint(options),
+      })
     } catch (error) {
       this.#bridge.invalidateScope(bridgeOwner, '恢复失败')
       this.#coordinator.drop(chatKey, true)
@@ -616,7 +635,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       return
     }
     if (notification.update.sessionUpdate === 'config_option_update') {
-      this.#catalog.observeConfigOptions(notification.update.configOptions)
+      // 无法确认这是哪一类回合：只学习档位选项表，不改写用户聊天路由的默认档位。
+      this.#catalog.observeConfigOptions(notification.update.configOptions, { authoritative: false })
     }
   }
 

@@ -18,6 +18,7 @@ import {
   prefixHash,
   prefixMatches,
   ROUTE_FINGERPRINT_VERSION,
+  routeBaseFingerprint,
   routeFingerprint,
   toolsDigest,
 } from './session-reuse.js'
@@ -32,6 +33,7 @@ export interface LiveSession {
   sentHash: string
   outputHash?: string
   route: string
+  routeBase?: string
   routeVersion: number
   usesTools: boolean
   toolsDigest?: string
@@ -54,6 +56,7 @@ export interface EvaluatedRecord {
   sentHash: string
   outputHash?: string
   route: string
+  routeBase?: string
   routeVersion: number
   cancelled?: boolean
 }
@@ -73,6 +76,11 @@ export function evaluateRecordContinuity(
     return { ok: false, kind: 'reset-fresh', reason: '会话映射来自旧的路由指纹版本，按新会话重新开始' }
   }
   if (record.route !== routeFingerprint(options)) {
+    // 思考档位是运行时可调的 config_option，用户随时会改，DSH 也会按 adapter 默认
+    // 档位重解析；只变档位不该判死整个对话，新建一个 ACP 会话把历史带过去继续。
+    if (record.routeBase !== undefined && record.routeBase === routeBaseFingerprint(options)) {
+      return { ok: false, kind: 'reset-fresh', reason: '思考档位已变化，按新会话继续（历史保留）' }
+    }
     return { ok: false, kind: 'unrecoverable', reason: '模型、思考档位或系统提示已变化' }
   }
   if (options.messages.length <= record.sentCount) {
@@ -196,6 +204,7 @@ export class SessionCoordinator {
       sentCount: input.options.messages.length,
       sentHash: prefixHash(input.options.messages),
       route: routeFingerprint(input.options),
+      routeBase: routeBaseFingerprint(input.options),
       routeVersion: ROUTE_FINGERPRINT_VERSION,
       usesTools: (input.options.tools?.length ?? 0) > 0,
       toolsDigest: toolsDigest(input.options.tools),
@@ -210,6 +219,8 @@ export class SessionCoordinator {
     entry: SessionMapEntry
     link: AgentLink
     usesTools: boolean
+    /** 旧映射没有 `routeBase` 时用它补上（调用方按当前请求算）。 */
+    routeBase?: string
   }): LiveSession {
     const live: LiveSession = {
       key: input.key,
@@ -220,6 +231,11 @@ export class SessionCoordinator {
       sentHash: input.entry.sentHash,
       outputHash: input.entry.outputHash,
       route: input.entry.route,
+      // 旧映射没有 routeBase 时由调用方按当前请求补齐；两处都没有则留空，
+      // 判定退回「不可恢复」的保守语义。
+      ...(input.entry.routeBase ?? input.routeBase) === undefined
+        ? {}
+        : { routeBase: (input.entry.routeBase ?? input.routeBase)! },
       routeVersion: input.entry.routeVersion,
       usesTools: input.usesTools,
       systemViaMeta: true,
@@ -278,6 +294,7 @@ export class SessionCoordinator {
       sentHash: live.sentHash,
       outputHash: hash,
       route: live.route,
+      routeBase: live.routeBase,
       routeVersion: live.routeVersion,
       updatedAt: Date.now(),
       ...(live.cancelled === true ? { cancelled: true } : {}),
