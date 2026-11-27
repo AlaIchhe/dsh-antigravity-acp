@@ -18,7 +18,7 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, RequestMessage, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
-import { classifyTurnOutcome } from '../src/session/adapter.js'
+import { AntigravityAcpAdapter, classifyTurnOutcome } from '../src/session/adapter.js'
 import { CatalogStore, defaultContextWindowFor } from '../src/session/catalog-store.js'
 import { findModelSelector, findThoughtLevelSelector, normalizeEffort } from '../src/session/model-router.js'
 import { SessionCoordinator, evaluateRecordContinuity } from '../src/session/session-coordinator.js'
@@ -413,5 +413,47 @@ describe('v1.0 session core pure invariants (zero mocks)', () => {
     expect(findModelSelector(opts)?.currentValue).toBe('gemini-4-neon')
     expect(findThoughtLevelSelector(opts)?.currentValue).toBe('high')
     expect(normalizeEffort(ReasoningEffortId('HIGH'))).toBe('high')
+  })
+
+  it('releaseConversation preserves persisted mapping by default (live→cold) and only deletes on explicit deletePersisted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-release-'))
+    dirs.push(dir)
+    const msg = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
+    const entry = {
+      sessionId: 'acp-sess-live',
+      cwd: '/work',
+      sentCount: 1,
+      sentHash: prefixHash([msg]),
+      outputHash: outputHash([{ type: 'text', text: 'hi' }]),
+      route: routeFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: 'sys' }),
+      routeBase: routeBaseFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: 'sys' }),
+      routeVersion: ROUTE_FINGERPRINT_VERSION,
+      updatedAt: Date.now(),
+    }
+    expect(await writeSessionMap(dir, { 'dsh-keep::chat': entry })).toBe(true)
+
+    const sessionStore = createFileSessionStore(dir)
+    const catalog = new CatalogStore({ cacheDir: dir, acpVersion: '1.4.0' })
+    const adapter = new AntigravityAcpAdapter({
+      cwd: '/work',
+      catalog,
+      getLink: async () => { throw new Error('unused') },
+      recycleLink: async () => {},
+      sessionStore,
+      readSettings: () => ({ resumeSessions: true }),
+    })
+
+    // 默认（对应 DSH session/disposed）：不得删除持久化映射
+    adapter.releaseConversation('dsh-keep')
+    await sessionStore.flush()
+    expect((await readSessionMap(dir))['dsh-keep::chat']?.sessionId).toBe('acp-sess-live')
+
+    // 显式要求彻底删除时才从磁盘移除
+    adapter.releaseConversation('dsh-keep', { deletePersisted: true })
+    await sessionStore.flush()
+    expect((await readSessionMap(dir))['dsh-keep::chat']).toBeUndefined()
+
+    await adapter.dispose()
+    await sessionStore.close()
   })
 })

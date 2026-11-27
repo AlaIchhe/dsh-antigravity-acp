@@ -196,13 +196,14 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
     }
   })
 
-  // 宿主销毁会话时同步释放 ACP 会话、MCP 作用域与磁盘映射。
+  // 宿主卸载内存活会话（含进程关闭/重启与 live → cold 切换）时仅释放内存句柄、MCP 作用域与
+  // ACP 进程侧活跃会话，保留 sessions.json 持久化映射以便重新打开或重启后 session/resume。
   const sessionEvents = ctx as unknown as {
     on(event: 'session/disposed', listener: (session: { id: string }) => void): void
   }
   sessionEvents.on('session/disposed', (session) => {
     try { adapter.releaseConversation(String(session.id)) }
-    catch (error) { log.warn('antigravity-acp: 释放已销毁会话失败', error) }
+    catch (error) { log.warn('antigravity-acp: 释放已卸载会话失败', error) }
   })
 
   const unregisterAdapter = ctx.llm.registerAdapter([AGY_PROVIDER_ID], adapter)

@@ -4,6 +4,11 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.0.1 · 2026-11-27（修复重启/卸载活会话时误删 `sessions.json` 导致老会话无法恢复）
+
+- **修复：DSH 服务重启或内存活会话卸载（live → cold）后，已有会话继续发送直接报 `AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`**。真机复现于 2026-11-27 16:05（`session-34d91994` 与 `session-0e7eb4f8`）：`dsh-web.service` 重启时会向所有内存活会话派发 `session/disposed`，插件原先在 [src/index.ts](../src/index.ts) 订阅该事件并调用 `adapter.releaseConversation(id)` 传入 `deletePersisted = true`，随后卸载阶段 `sessionStore.close()` 将删除刷盘，导致 `sessions.json` 被清空为 `{}`。现在 `releaseConversation(id, options?)` 默认保留磁盘持久化映射（仅释放内存句柄、MCP 作用域并通知 ACP 进程侧关闭活跃会话，重启或重新打开后继续通过 `session/resume` 接回），仅在显式传入 `{ deletePersisted: true }` 时才删除磁盘条目。
+- **新增回归测试**：`tests/remote-and-plugin.test.ts` 覆盖 `apply()` → `session/disposed` → 完整插件 teardown（含 `sessionStore.close()`）后 `sessions.json` 映射完好保留；`tests/session-core.test.ts` 覆盖 `releaseConversation()` 默认保留与显式 `deletePersisted: true` 删除两条路径。
+
 ## 1.0.0 · 2026-11-27（正式版：方案 A 共享常驻架构 + 修复已有会话切模型死锁与系统钥匙串登录态读取）
 
 汇总 `1.0.0-rc.1` 至 `1.0.0-rc.4` 的全部方案 A 架构重构与稳定性修复，并新增以下修复：

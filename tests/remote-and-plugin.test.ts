@@ -12,7 +12,10 @@ import { AntigravityRemoteService, registerAntigravityRemote } from '../src/remo
 import { createSubprocessCliRun, fetchAgyModels } from '../src/runtime/agy-cli.js'
 import { resolveHttpsProxy } from '../src/runtime/proxy.js'
 import { CatalogStore } from '../src/session/catalog-store.js'
+import { ROUTE_FINGERPRINT_VERSION, outputHash, prefixHash, routeBaseFingerprint, routeFingerprint } from '../src/session/session-reuse.js'
+import { readSessionMap, writeSessionMap } from '../src/session/session-store.js'
 import { apply } from '../src/index.js'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Config } from '../src/settings.js'
 import { ANTIGRAVITY_REMOTE_INVOCATIONS, PACKAGE_NAME, REMOTE_SERVICE_NAME } from '../src/shared/rpc-contract.js'
 import {
@@ -80,6 +83,77 @@ describe('AntigravityRemoteService & plugin composition root', () => {
 
     for (const release of cleanups.reverse()) await release()
     expect(REMOTE_SERVICE_NAME).toBe('antigravity')
+  })
+
+  it('preserves persisted sessions.json mapping on session/disposed and plugin teardown (restart resume)', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'agy-dsh-home-'))
+    dirs.push(dshHome)
+    const cacheDir = join(dshHome, 'cache', 'antigravity-acp')
+    const msg = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
+    const entry = {
+      sessionId: 'acp-sess-restart',
+      cwd: '/work',
+      sentCount: 1,
+      sentHash: prefixHash([msg]),
+      outputHash: outputHash([{ type: 'text', text: 'ok' }]),
+      route: routeFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: 'sys' }),
+      routeBase: routeBaseFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: 'sys' }),
+      routeVersion: ROUTE_FINGERPRINT_VERSION,
+      updatedAt: Date.now(),
+    }
+    expect(await writeSessionMap(cacheDir, { 'session-34d91994::chat': entry })).toBe(true)
+
+    const prevDshHome = process.env.DSH_HOME
+    process.env.DSH_HOME = dshHome
+    try {
+      const cleanups: Array<() => void | Promise<void>> = []
+      const listeners = new Map<string, Array<(...args: unknown[]) => void>>()
+      const ctx = {
+        subprocess: { spawn: vi.fn() },
+        llm: { registerAdapter: vi.fn(() => vi.fn()) },
+        logger: { info: vi.fn(), warn: vi.fn() },
+        emit: vi.fn(),
+        get: (name: string) => name === 'typert'
+          ? { register: () => () => {} }
+          : name === 'settings'
+            ? { configure: vi.fn(() => () => {}) }
+            : undefined,
+        on: (event: string, fn: (...args: unknown[]) => void) => {
+          const list = listeners.get(event) ?? []
+          list.push(fn)
+          listeners.set(event, list)
+        },
+        inject: (_deps: string[], fn: (scope: unknown) => void) => {
+          if (_deps.includes('typert') || _deps.includes('settings')) fn(ctx)
+        },
+        plugin: vi.fn(),
+        fiber: {},
+        effect: (cb: () => Generator<() => void | Promise<void>> | (() => void | Promise<void>)) => {
+          const res = cb()
+          if (typeof res === 'function') cleanups.push(res)
+          else cleanups.push(...res)
+        },
+      } as unknown as Context
+
+      apply(ctx, Config({ hiddenModels: [] }))
+
+      // 模拟 DSH 关闭/重启或 live→cold 切换时对活会话派发 session/disposed，随后插件完整卸载
+      for (const fn of listeners.get('session/disposed') ?? []) fn({ id: 'session-34d91994' })
+      for (const release of cleanups.reverse()) await release()
+
+      // 重启后 sessions.json 中的映射必须完好保留，不能被 session/disposed 清空
+      const persisted = await readSessionMap(cacheDir)
+      expect(persisted['session-34d91994::chat']).toMatchObject({
+        sessionId: 'acp-sess-restart',
+        cwd: '/work',
+        sentCount: 1,
+        sentHash: entry.sentHash,
+        route: entry.route,
+      })
+    } finally {
+      if (prevDshHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = prevDshHome
+    }
   })
 
   it.skipIf(!REAL_TESTS_ENABLED || REAL_CLI_TOKEN_ACCOUNTS.length === 0)(

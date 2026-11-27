@@ -202,10 +202,15 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     }
   }
 
-  /** 宿主销毁 DSH 会话时调用：同步清理内存句柄、MCP 作用域与持久化映射。 */
-  releaseConversation(dshSessionId: string): void {
+  /**
+   * 宿主卸载内存活会话（如 `session/disposed`：进程关闭/重启或 live → cold 切换）时调用。
+   *
+   * 默认仅清理内存句柄、MCP 作用域并关闭 ACP 进程侧活跃会话，保留磁盘持久化映射以便
+   * 重新打开或重启后通过 `session/resume` 接回；仅当显式传入 `deletePersisted: true` 时才删磁盘映射。
+   */
+  releaseConversation(dshSessionId: string, options?: { deletePersisted?: boolean }): void {
     const key = `${dshSessionId}::chat`
-    const live = this.#coordinator.drop(key, true)
+    const live = this.#coordinator.drop(key, options?.deletePersisted === true)
     this.#bridge.releaseScope(key)
     if (live && !live.link.closed) {
       void live.link.closeSession(live.sessionId).catch(() => undefined)
