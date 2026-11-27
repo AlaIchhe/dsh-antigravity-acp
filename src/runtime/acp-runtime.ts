@@ -65,11 +65,13 @@ interface ManagedRuntime {
   readonly directory: RuntimeDirectory
   readonly accountId: string
   readonly accountRevision: number
+  readonly proxyKey: string
 }
 
 interface InflightLaunch {
   readonly accountId: string
   readonly accountRevision: number
+  readonly proxyKey: string
   readonly abort: AbortController
   readonly promise: Promise<ManagedRuntime>
   waiters: number
@@ -100,30 +102,33 @@ export class AcpRuntimeManager {
     signal?.throwIfAborted()
 
     const account = this.#options.resolveAccount()
+    const proxyKey = this.#currentProxyKey()
 
-    // 1. 当前链路与账号一致且存活：直接复用并补齐调用方回调。
+    // 1. 当前链路与账号、代理均一致且存活：直接复用并补齐调用方回调。
     if (
       this.#current
       && !this.#current.link.closed
       && this.#current.accountId === account.id
       && this.#current.accountRevision === account.revision
+      && this.#current.proxyKey === proxyKey
     ) {
       this.#current.link.setHandlers(handlers)
       return this.#current.link
     }
 
-    // 2. 已有同一 `(accountId, revision)` 的在途启动：共享等待，单方取消不误伤他人。
+    // 2. 已有同一 `(accountId, revision, proxyKey)` 的在途启动：共享等待，单方取消不误伤他人。
     if (
       this.#inflight
       && this.#inflight.accountId === account.id
       && this.#inflight.accountRevision === account.revision
+      && this.#inflight.proxyKey === proxyKey
     ) {
       const managed = await this.#awaitInflight(this.#inflight, signal)
       managed.link.setHandlers(handlers)
       return managed.link
     }
 
-    // 3. 若已有旧链路（已断连或属于旧账号）：先移入 retired（空闲立即回收，在途则等排空）。
+    // 3. 若已有旧链路（已断连、属于旧账号或代理已变更）：先移入 retired（空闲立即回收，在途则等排空）。
     if (this.#current) {
       this.#retireCurrent()
     }
@@ -133,22 +138,24 @@ export class AcpRuntimeManager {
     const inflight: InflightLaunch = {
       accountId: account.id,
       accountRevision: account.revision,
+      proxyKey,
       abort,
       waiters: 0,
       promise: Promise.resolve(undefined as unknown as ManagedRuntime),
     }
-    const promise = this.#launch(handlers, account, abort.signal).then(
+    const promise = this.#launch(handlers, account, proxyKey, abort.signal).then(
       (managed) => {
         if (this.#disposed) {
           void this.#recycleManaged(managed).catch(() => undefined)
           throw new LlmError('Antigravity ACP 插件已卸载', AGY_LINK_ERROR.LINK_CLOSED)
         }
         const latest = this.#options.resolveAccount()
-        if (latest.id === managed.accountId && latest.revision === managed.accountRevision) {
+        const latestProxyKey = this.#currentProxyKey()
+        if (latest.id === managed.accountId && latest.revision === managed.accountRevision && latestProxyKey === managed.proxyKey) {
           if (this.#current && this.#current !== managed) this.#retireCurrent()
           this.#current = managed
         } else {
-          // 启动期间账号又切换了：先登记为 retired，让本次调用方用完后自然排空回收。
+          // 启动期间账号或代理又切换了：先登记为 retired，让本次调用方用完后自然排空回收。
           this.#retired.set(managed.link, managed)
         }
         return managed
@@ -172,6 +179,16 @@ export class AcpRuntimeManager {
     if (!this.#current) return
     const account = this.#options.resolveAccount()
     if (this.#current.accountId !== account.id || this.#current.accountRevision !== account.revision) {
+      this.#retireCurrent()
+      await this.drainRetired()
+    }
+  }
+
+  /** 热修改 `proxyUrl` 后调用：将携带旧代理环境变量的共享进程优雅排空，新回合按新代理冷启动。 */
+  async retireIfProxyChanged(): Promise<void> {
+    if (!this.#current) return
+    const proxyKey = this.#currentProxyKey()
+    if (this.#current.proxyKey !== proxyKey) {
       this.#retireCurrent()
       await this.drainRetired()
     }
@@ -267,6 +284,7 @@ export class AcpRuntimeManager {
   async #launch(
     handlers: AgentLinkHandlers,
     account: ResolvedAccount,
+    proxyKey: string,
     launchSignal: AbortSignal,
   ): Promise<ManagedRuntime> {
     const config = this.#options.readConfig()
@@ -345,6 +363,7 @@ export class AcpRuntimeManager {
         directory,
         accountId: account.id,
         accountRevision: account.revision,
+        proxyKey,
       }
     } catch (error) {
       handle?.terminate()
@@ -360,6 +379,10 @@ export class AcpRuntimeManager {
       const tail = stderr.trim() ? `（stderr: ${redactSensitiveText(stderr.trim().slice(-240))}）` : ''
       throw new LlmError(`启动 Antigravity ACP 失败：${detail}${tail}`, AGY_LINK_ERROR.LAUNCH_FAILED)
     }
+  }
+
+  #currentProxyKey(): string {
+    return (this.#options.readConfig().proxyUrl ?? '').trim()
   }
 
   #resolveProxyOrThrow(config: AntigravityHostConfig) {

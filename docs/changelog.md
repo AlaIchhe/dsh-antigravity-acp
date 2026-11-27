@@ -4,6 +4,17 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.0.2 · 2026-11-27（修复跨/同模型切换与分叉会话误判无映射、在途中断恢复、SessionStore 竞态与热更新缺陷）
+
+- **修复：已有会话从其它 Provider 切入 Antigravity（补完 [#3](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/3) 后半程）、同 Provider 内切换模型，以及 DSH 分叉会话 / `subagent_fork` 首轮误报 `AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`**。
+  - 新增 `hasPriorProviderConversation(messages, provider)`：历史回复全部来自其它 provider 时平滑 `reset-fresh` 建新 ACP 会话并保留历史；
+  - 弱读取宿主 `ctx.get('sessions')?.get(id)?.header?.isSeeded`：分叉/种子会话首轮无映射时平滑 `reset-fresh`；
+  - 新增 `routeSystemFingerprint`（仅覆盖 `provider`/`system`）：同 provider 切换模型（如 Gemini ↔ Claude）平滑 `reset-fresh`，系统提示变化仍保持保守 `unrecoverable`。
+- **修复：回合在途崩溃/重启与 `cancelGraceMs` 超时后直接把会话判死**。发 prompt 前改为 `markInFlightBeforePrompt(live)` 在 `sessions.json` 标记 `inFlight: true`（而非直接删除映射）；若进程中断、取消超时或非干净终止，下一轮识别 `inFlight: true` 后安全 `reset-fresh`，既绝不复用脏会话也不再误报无映射。
+- **修复：`SessionStore.#ensureLoaded()` 懒加载合并磁盘条目时未过滤 `#deleted`**，避免首次加载完成前已删除的旧条目被重新复活。
+- **修复：启动工作目录（`cwd`）变化时硬判 `unrecoverable`**，改为平滑 `reset-fresh`。
+- **修复：`prepareCall()` 冷启动 ACP 进程后补齐 `#scheduleIdleTimer()`**，并让 `loader/volatile-update` 同步热生效 `proxyUrl`（优雅排空旧代理进程）与 `idleRecycleMs`（重排空闲计时器）。
+
 ## 1.0.1 · 2026-11-27（修复重启/卸载活会话时误删 `sessions.json` 导致老会话无法恢复）
 
 - **修复：DSH 服务重启或内存活会话卸载（live → cold）后，已有会话继续发送直接报 `AGY_SESSION_UNRECOVERABLE（没有可用的会话映射）`**。真机复现于 2026-11-27 16:05（`session-34d91994` 与 `session-0e7eb4f8`）：`dsh-web.service` 重启时会向所有内存活会话派发 `session/disposed`，插件原先在 [src/index.ts](../src/index.ts) 订阅该事件并调用 `adapter.releaseConversation(id)` 传入 `deletePersisted = true`，随后卸载阶段 `sessionStore.close()` 将删除刷盘，导致 `sessions.json` 被清空为 `{}`。现在 `releaseConversation(id, options?)` 默认保留磁盘持久化映射（仅释放内存句柄、MCP 作用域并通知 ACP 进程侧关闭活跃会话，重启或重新打开后继续通过 `session/resume` 接回），仅在显式传入 `{ deletePersisted: true }` 时才删除磁盘条目。

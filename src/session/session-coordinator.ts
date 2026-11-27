@@ -22,6 +22,7 @@ import {
   ROUTE_FINGERPRINT_VERSION,
   routeBaseFingerprint,
   routeFingerprint,
+  routeSystemFingerprint,
   systemMessagesDigest,
   toolsDigest,
 } from './session-reuse.js'
@@ -37,6 +38,7 @@ export interface LiveSession {
   outputHash?: string
   route: string
   routeBase?: string
+  routeSystem?: string
   routeVersion: number
   accountId?: string
   accountRevision?: number
@@ -65,9 +67,11 @@ export interface EvaluatedRecord {
   outputHash?: string
   route: string
   routeBase?: string
+  routeSystem?: string
   routeVersion: number
   accountId?: string
   cancelled?: boolean
+  inFlight?: boolean
 }
 
 /**
@@ -79,8 +83,11 @@ export function evaluateRecordContinuity(
   cwd: string,
   currentAccountId?: string,
 ): { ok: true } | { ok: false; kind: 'reset-fresh' | 'unrecoverable'; reason: string } {
+  if (record.inFlight === true) {
+    return { ok: false, kind: 'reset-fresh', reason: '上一轮在途时进程中断或未正常收尾，按新会话继续（历史保留）' }
+  }
   if (record.cwd !== cwd) {
-    return { ok: false, kind: 'unrecoverable', reason: '会话工作目录与当前不一致' }
+    return { ok: false, kind: 'reset-fresh', reason: '会话工作目录已变化，按新会话继续（历史保留）' }
   }
   if (record.routeVersion !== ROUTE_FINGERPRINT_VERSION) {
     return { ok: false, kind: 'reset-fresh', reason: '会话映射来自旧的路由指纹版本，按新会话重新开始' }
@@ -93,6 +100,10 @@ export function evaluateRecordContinuity(
     // 档位重解析；只变档位不该判死整个对话，新建一个 ACP 会话把历史带过去继续。
     if (record.routeBase !== undefined && record.routeBase === routeBaseFingerprint(options)) {
       return { ok: false, kind: 'reset-fresh', reason: '思考档位已变化，按新会话继续（历史保留）' }
+    }
+    // 同 provider 下切换模型（系统提示未变）：按新会话重放历史继续，不阻断 DSH 切模型能力。
+    if (record.routeSystem !== undefined && record.routeSystem === routeSystemFingerprint(options)) {
+      return { ok: false, kind: 'reset-fresh', reason: '模型已切换，按新会话继续（历史保留）' }
     }
     return { ok: false, kind: 'unrecoverable', reason: '模型、思考档位或系统提示已变化' }
   }
@@ -157,6 +168,7 @@ export class SessionCoordinator {
     key: string
     options: GenerateOptions
     hasPriorHistory: boolean
+    isSeededSession?: boolean
     resumeEnabled: boolean
     hasValidBridgeScope: (key: string) => boolean
     currentAccountId?: string
@@ -167,6 +179,7 @@ export class SessionCoordinator {
       key,
       options,
       hasPriorHistory,
+      isSeededSession = false,
       resumeEnabled,
       hasValidBridgeScope,
       currentAccountId,
@@ -236,11 +249,18 @@ export class SessionCoordinator {
 
     // 3. 有历史：尝试从磁盘映射恢复
     if (!resumeEnabled) {
+      const existing = await this.#store?.get(key)
+      if (isSeededSession && !existing) {
+        return { kind: 'reset-fresh', reason: '分叉会话首次接入 ACP，按新会话开始（历史保留）' }
+      }
       this.#store?.delete(key)
       return { kind: 'unrecoverable', reason: 'resumeSessions 未开启' }
     }
     const entry = await this.#store?.get(key)
     if (!entry) {
+      if (isSeededSession) {
+        return { kind: 'reset-fresh', reason: '分叉会话首次接入 ACP，按新会话开始（历史保留）' }
+      }
       return { kind: 'unrecoverable', reason: '没有可用的会话映射' }
     }
     const check = evaluateRecordContinuity(entry, options, this.#cwd, currentAccountId)
@@ -270,6 +290,7 @@ export class SessionCoordinator {
       sentHash: prefixHash(input.options.messages),
       route: routeFingerprint(input.options),
       routeBase: routeBaseFingerprint(input.options),
+      routeSystem: routeSystemFingerprint(input.options),
       routeVersion: ROUTE_FINGERPRINT_VERSION,
       ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
       ...(input.accountRevision === undefined ? {} : { accountRevision: input.accountRevision }),
@@ -289,12 +310,16 @@ export class SessionCoordinator {
     usesTools: boolean
     /** 旧映射没有 `routeBase` 时用它补上（调用方按当前请求算）。 */
     routeBase?: string
+    /** 旧映射没有 `routeSystem` 时用它补上（调用方按当前请求算）。 */
+    routeSystem?: string
     systemDigest?: string
     accountId?: string
     accountRevision?: number
   }): LiveSession {
     this.#recoverableFreshResets.delete(input.key)
     const resolvedAccountId = input.entry.accountId ?? input.accountId
+    const resolvedRouteBase = input.entry.routeBase ?? input.routeBase
+    const resolvedRouteSystem = input.entry.routeSystem ?? input.routeSystem
     const live: LiveSession = {
       key: input.key,
       sessionId: input.entry.sessionId,
@@ -304,11 +329,10 @@ export class SessionCoordinator {
       sentHash: input.entry.sentHash,
       outputHash: input.entry.outputHash,
       route: input.entry.route,
-      // 旧映射没有 routeBase 时由调用方按当前请求补齐；两处都没有则留空，
+      // 旧映射没有 routeBase/routeSystem 时由调用方按当前请求补齐；两处都没有则留空，
       // 判定退回「不可恢复」的保守语义。
-      ...(input.entry.routeBase ?? input.routeBase) === undefined
-        ? {}
-        : { routeBase: (input.entry.routeBase ?? input.routeBase)! },
+      ...(resolvedRouteBase === undefined ? {} : { routeBase: resolvedRouteBase }),
+      ...(resolvedRouteSystem === undefined ? {} : { routeSystem: resolvedRouteSystem }),
       routeVersion: input.entry.routeVersion,
       ...(resolvedAccountId === undefined ? {} : { accountId: resolvedAccountId }),
       ...(input.accountRevision === undefined ? {} : { accountRevision: input.accountRevision }),
@@ -321,10 +345,29 @@ export class SessionCoordinator {
     return live
   }
 
-  /** 在 prompt 发出前清除旧磁盘游标，避免进程崩溃后拿到过期游标。 */
-  async clearPersistedBeforePrompt(key: string): Promise<void> {
+  /**
+   * 在 prompt 发出前将磁盘映射标记为 `inFlight: true` 并刷盘。
+   *
+   * 相比直接删条目：既保证进程崩溃/重启或取消宽限超时后绝不复用在途脏会话，
+   * 又保留「该会话确实存在过且是在途中断」的证据，下一轮可安全 `reset-fresh` 而不是误报无映射。
+   */
+  async markInFlightBeforePrompt(live: LiveSession): Promise<void> {
     if (!this.#store) return
-    this.#store.delete(key)
+    this.#store.set(live.key, {
+      sessionId: live.sessionId,
+      cwd: live.cwd,
+      sentCount: live.sentCount,
+      sentHash: live.sentHash,
+      outputHash: live.outputHash ?? outputHash([]),
+      route: live.route,
+      ...(live.routeBase === undefined ? {} : { routeBase: live.routeBase }),
+      ...(live.routeSystem === undefined ? {} : { routeSystem: live.routeSystem }),
+      routeVersion: live.routeVersion,
+      ...(live.accountId === undefined ? {} : { accountId: live.accountId }),
+      updatedAt: Date.now(),
+      ...(live.cancelled === true ? { cancelled: true } : {}),
+      inFlight: true,
+    })
     await this.#store.flush()
   }
 
@@ -374,7 +417,8 @@ export class SessionCoordinator {
       sentHash: live.sentHash,
       outputHash: hash,
       route: live.route,
-      routeBase: live.routeBase,
+      ...(live.routeBase === undefined ? {} : { routeBase: live.routeBase }),
+      ...(live.routeSystem === undefined ? {} : { routeSystem: live.routeSystem }),
       routeVersion: live.routeVersion,
       ...(live.accountId === undefined ? {} : { accountId: live.accountId }),
       updatedAt: Date.now(),

@@ -78,7 +78,11 @@ describe('AntigravityRemoteService & plugin composition root', () => {
     apply(ctx, parsed)
     expect(registerAdapter).toHaveBeenCalledWith(['antigravity-acp'], expect.anything())
 
-    for (const fn of listeners.get('loader/volatile-update') ?? []) fn([['hiddenModels']])
+    for (const fn of listeners.get('loader/volatile-update') ?? []) {
+      fn([['hiddenModels']])
+      fn([['proxyUrl']])
+      fn([['idleRecycleMs']])
+    }
     expect(emit).toHaveBeenCalledWith('llm/adapters-updated')
 
     for (const release of cleanups.reverse()) await release()

@@ -22,11 +22,15 @@ export interface SessionMapEntry {
   route: string
   /** 去掉思考档位的路由指纹：档位是可运行时调整的旋钮，只变它不该判定会话报废。 */
   routeBase?: string
+  /** 去掉模型与思考档位的路由指纹（仅 provider / system）：用于区分同 provider 切模型与系统提示变化。 */
+  routeSystem?: string
   routeVersion: number
   /** 建立该 ACP 会话时所属的账号 ID；切账号时走 `reset-fresh` 而非跨账号 resume。 */
   accountId?: string
   updatedAt: number
   cancelled?: boolean
+  /** prompt 已发出但尚未正常收尾（用于崩溃/重启或取消超时后安全 `reset-fresh`，避免复用脏会话也避免误报无映射）。 */
+  inFlight?: boolean
 }
 
 interface SessionMapFile {
@@ -65,6 +69,7 @@ export async function readSessionMap(cacheDir: string): Promise<Record<string, S
       if (!Number.isSafeInteger(row.sentCount) || row.sentCount === undefined || row.sentCount < 0) continue
       if (!isHash(row.sentHash) || !isHash(row.outputHash) || !isHash(row.route)) continue
       if (row.routeBase !== undefined && !isHash(row.routeBase)) continue
+      if (row.routeSystem !== undefined && !isHash(row.routeSystem)) continue
       if (row.accountId !== undefined && (typeof row.accountId !== 'string' || row.accountId.trim() === '')) continue
       const routeVersion = typeof row.routeVersion === 'number' && Number.isSafeInteger(row.routeVersion)
         ? row.routeVersion
@@ -77,10 +82,12 @@ export async function readSessionMap(cacheDir: string): Promise<Record<string, S
         outputHash: row.outputHash,
         route: row.route,
         ...(isHash(row.routeBase) ? { routeBase: row.routeBase } : {}),
+        ...(isHash(row.routeSystem) ? { routeSystem: row.routeSystem } : {}),
         routeVersion,
         ...(typeof row.accountId === 'string' && row.accountId.trim() !== '' ? { accountId: row.accountId.trim() } : {}),
         updatedAt: typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) ? row.updatedAt : 0,
         ...(row.cancelled === true ? { cancelled: true } : {}),
+        ...(row.inFlight === true ? { inFlight: true } : {}),
       }
     }
     return entries
@@ -160,7 +167,13 @@ export class SessionStore {
 
   async #ensureLoaded(): Promise<void> {
     this.#ready ??= this.backend.load().then(
-      (entries) => { this.#entries = { ...entries, ...this.#entries } },
+      (entries) => {
+        const merged: Record<string, SessionMapEntry> = { ...entries, ...this.#entries }
+        for (const deletedKey of this.#deleted.keys()) {
+          delete merged[deletedKey]
+        }
+        this.#entries = merged
+      },
       () => { this.#reportError() },
     )
     await this.#ready

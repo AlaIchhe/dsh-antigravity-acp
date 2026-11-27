@@ -155,6 +155,10 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
     getLink: (handlers, signal) => runtime.getLink(handlers, signal),
     recycleLink: (link) => runtime.recycle(link),
     resolveAccount: () => accounts.active(),
+    isSeededSession: (dshSessionId) => {
+      const sessions = ctx.get('sessions') as { get?(id: string): { header?: { isSeeded?: boolean } } | undefined } | undefined
+      return sessions?.get?.(dshSessionId)?.header?.isSeeded === true
+    },
     onLinkIdle: () => {
       void runtime.drainRetired().catch(() => undefined)
     },
@@ -189,10 +193,16 @@ export function apply(ctx: Context, rawConfig: AntigravityPluginConfig = {}): vo
     })
   })
 
-  // 响应隐藏模型等即时设置变更，刷新宿主选择器。
+  // 响应隐藏模型、代理地址与空闲回收时长等即时设置变更。
   ctx.on('loader/volatile-update', (paths) => {
     if (paths.some((path) => path[0] === 'hiddenModels')) {
       notifyCatalogChanged()
+    }
+    if (paths.some((path) => path[0] === 'proxyUrl')) {
+      void runtime.retireIfProxyChanged().catch(() => undefined)
+    }
+    if (paths.some((path) => path[0] === 'idleRecycleMs')) {
+      adapter.refreshIdleTimer()
     }
   })
 

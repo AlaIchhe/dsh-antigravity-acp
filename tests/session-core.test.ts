@@ -31,8 +31,10 @@ import {
   rotateContinuation,
   routeBaseFingerprint,
   routeFingerprint,
+  routeSystemFingerprint,
 } from '../src/session/session-reuse.js'
 import { createFileSessionStore, readSessionMap, writeSessionMap } from '../src/session/session-store.js'
+import { hasPriorConversation, hasPriorProviderConversation } from '../src/session/transcript.js'
 import { describeUpstreamErrorNotice } from '../src/session/turn-runner.js'
 import { TurnUsageAccounting } from '../src/session/usage-accounting.js'
 
@@ -208,6 +210,7 @@ describe('v1.0 session core pure invariants (zero mocks)', () => {
       outputHash: outputHash(a1.content),
       route: routeFingerprint({ ...base, reasoningEffort: effort('high') }),
       routeBase: routeBaseFingerprint(base),
+      routeSystem: routeSystemFingerprint(base),
       routeVersion: ROUTE_FINGERPRINT_VERSION,
       accountId: 'primary',
     }
@@ -218,17 +221,24 @@ describe('v1.0 session core pure invariants (zero mocks)', () => {
     // 2. 切换账号 → reset-fresh（不跨账号 resume）
     expect(evaluateRecordContinuity(record, { ...base, reasoningEffort: effort('high'), messages: [u1, a1, u2] }, '/work', 'acc_2'))
       .toMatchObject({ ok: false, kind: 'reset-fresh' })
-    // 3. 换模型 → unrecoverable
+    // 3. 同 provider 切换模型（system 不变）→ reset-fresh（历史保留）
     expect(evaluateRecordContinuity(record, { ...base, model: 'claude-sonnet-5-5', reasoningEffort: effort('high'), messages: [u1, a1, u2] }, '/work', 'primary'))
-      .toMatchObject({ ok: false, kind: 'unrecoverable' })
+      .toMatchObject({ ok: false, kind: 'reset-fresh' })
     // 4. 换系统提示 → unrecoverable
     expect(evaluateRecordContinuity(record, { ...base, system: 'OTHER', reasoningEffort: effort('high'), messages: [u1, a1, u2] }, '/work', 'primary'))
       .toMatchObject({ ok: false, kind: 'unrecoverable' })
-    // 5. 旧映射没有 routeBase 时保持保守语义
+    // 5. 旧映射同时缺少 routeBase / routeSystem 时保持保守语义
     const legacy = { ...record } as Record<string, unknown>
     delete legacy.routeBase
+    delete legacy.routeSystem
     expect(evaluateRecordContinuity(legacy as never, { ...base, reasoningEffort: effort('low'), messages: [u1, a1, u2] }, '/work', 'primary'))
       .toMatchObject({ ok: false, kind: 'unrecoverable' })
+    // 6. 工作目录变化 → reset-fresh（换启动目录后不判死老会话）
+    expect(evaluateRecordContinuity(record, { ...base, reasoningEffort: effort('high'), messages: [u1, a1, u2] }, '/other-work', 'primary'))
+      .toMatchObject({ ok: false, kind: 'reset-fresh' })
+    // 7. 上一轮在途中断（inFlight: true）→ reset-fresh（不复用脏会话也不判死）
+    expect(evaluateRecordContinuity({ ...record, inFlight: true }, { ...base, reasoningEffort: effort('high'), messages: [u1, a1, u2] }, '/work', 'primary'))
+      .toMatchObject({ ok: false, kind: 'reset-fresh' })
 
     // 6. 上下文压缩（/compact）使消息条数 ≤ sentCount 且含 compact-checkpoint → reset-fresh（不得误判死）
     const compactedRecord = { ...record, sentCount: 413 }
@@ -455,5 +465,119 @@ describe('v1.0 session core pure invariants (zero mocks)', () => {
 
     await adapter.dispose()
     await sessionStore.close()
+  })
+
+  it('handles cross-provider switch, seeded/forked sessions, inFlight crash recovery, SessionStore pre-load delete, and prepareCall idle timer', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-audit-fixes-'))
+    dirs.push(dir)
+
+    const u1 = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
+    const foreignA1 = createAssistantMessage({
+      content: [{ type: 'text', text: 'from deepseek' }],
+      source: { provider: 'deepseek', model: 'deepseek-flash' },
+    })
+    const agyA1 = createAssistantMessage({
+      content: [{ type: 'text', text: 'from agy' }],
+      source: { provider: 'antigravity-acp', model: 'gemini-4-neon' },
+    })
+    const u2 = createUserMessage({ content: [{ type: 'text', text: 'next' }], source: { kind: 'user' } })
+
+    // 1. 跨 provider 切入 Antigravity：hasPriorConversation=true，但 hasPriorProviderConversation=false
+    expect(hasPriorConversation([u1, foreignA1, u2])).toBe(true)
+    expect(hasPriorProviderConversation([u1, foreignA1, u2], 'antigravity-acp')).toBe(false)
+    expect(hasPriorProviderConversation([u1, agyA1, u2], 'antigravity-acp')).toBe(true)
+
+    // 2. 分叉/种子会话（isSeededSession=true）首轮无映射时走 reset-fresh（含 resumeEnabled=false）
+    const store1 = createFileSessionStore(dir)
+    const coord1 = new SessionCoordinator('/work', store1)
+    const agyOpts: GenerateOptions = { provider: 'antigravity-acp', model: 'gemini-4-neon', messages: [u1, agyA1, u2] }
+    expect(await coord1.decide({
+      key: 'fork-child::chat',
+      options: agyOpts,
+      hasPriorHistory: true,
+      isSeededSession: true,
+      resumeEnabled: true,
+      hasValidBridgeScope: () => true,
+    })).toMatchObject({ kind: 'reset-fresh' })
+    expect(await coord1.decide({
+      key: 'fork-child::chat',
+      options: agyOpts,
+      hasPriorHistory: true,
+      isSeededSession: true,
+      resumeEnabled: false,
+      hasValidBridgeScope: () => true,
+    })).toMatchObject({ kind: 'reset-fresh' })
+
+    // 3. markInFlightBeforePrompt：prompt 在途发生重启后，新进程读到 inFlight=true 走 reset-fresh 而非无映射
+    const dummyLink = { closed: false } as never
+    const live = coord1.registerNew({
+      key: 'crash-midturn::chat',
+      sessionId: 'acp-inflight-1',
+      link: dummyLink,
+      options: agyOpts,
+      systemViaMeta: false,
+    })
+    await coord1.markInFlightBeforePrompt(live)
+    const savedInFlight = (await readSessionMap(dir))['crash-midturn::chat']
+    expect(savedInFlight?.inFlight).toBe(true)
+
+    const restartedStore = createFileSessionStore(dir)
+    const restartedCoord = new SessionCoordinator('/work', restartedStore)
+    expect(await restartedCoord.decide({
+      key: 'crash-midturn::chat',
+      options: agyOpts,
+      hasPriorHistory: true,
+      resumeEnabled: true,
+      hasValidBridgeScope: () => true,
+    })).toMatchObject({ kind: 'reset-fresh' })
+
+    // 4. SessionStore.#ensureLoaded() 不得复活首次加载前已 delete() 的旧键
+    const entryKeep = {
+      sessionId: 'acp-keep',
+      cwd: '/work',
+      sentCount: 1,
+      sentHash: prefixHash([u1]),
+      outputHash: outputHash([{ type: 'text', text: 'ok' }]),
+      route: routeFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: '' }),
+      routeBase: routeBaseFingerprint({ provider: 'antigravity-acp', model: 'gemini-4-neon', system: '' }),
+      routeSystem: routeSystemFingerprint({ provider: 'antigravity-acp', system: '' }),
+      routeVersion: ROUTE_FINGERPRINT_VERSION,
+      updatedAt: Date.now(),
+    }
+    const dirPreDelete = mkdtempSync(join(tmpdir(), 'agy-predelete-'))
+    dirs.push(dirPreDelete)
+    await writeSessionMap(dirPreDelete, { 'stale::chat': entryKeep, 'alive::chat': entryKeep })
+    const freshStore = createFileSessionStore(dirPreDelete)
+    // 在首次 get() / #ensureLoaded() 之前就 delete('stale::chat')
+    freshStore.delete('stale::chat')
+    expect(await freshStore.get('stale::chat')).toBeUndefined()
+    expect((await freshStore.get('alive::chat'))?.sessionId).toBe('acp-keep')
+    await freshStore.flush()
+    expect((await readSessionMap(dirPreDelete))['stale::chat']).toBeUndefined()
+    expect((await readSessionMap(dirPreDelete))['alive::chat']?.sessionId).toBe('acp-keep')
+    await freshStore.close()
+
+    // 5. prepareCall 冷启动链路后必须启动空闲回收计时器，即使从未调用 stream()
+    let recycled = false
+    const fakeLink = {
+      closed: false,
+      initializeResponse: { agentCapabilities: { promptCapabilities: { image: true } } },
+    } as never
+    const catalog = new CatalogStore({ cacheDir: dir, acpVersion: '1.4.0' })
+    const idleAdapter = new AntigravityAcpAdapter({
+      cwd: '/work',
+      catalog,
+      getLink: async () => fakeLink,
+      recycleLink: async () => { recycled = true },
+      canReadImages: () => true,
+      readSettings: () => ({ idleRecycleMs: 30 }),
+    })
+    await idleAdapter.prepareCall('antigravity-acp', 'gemini-4-neon')
+    await new Promise((resolve) => setTimeout(resolve, 90))
+    expect(recycled).toBe(true)
+
+    await idleAdapter.dispose()
+    await store1.close()
+    await restartedStore.close()
   })
 })

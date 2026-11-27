@@ -39,10 +39,17 @@ import {
   reusableSessionKey,
   rotateContinuation,
   routeBaseFingerprint,
+  routeSystemFingerprint,
   systemMessagesDigest,
 } from './session-reuse.js'
 import type { SessionStore } from './session-store.js'
-import { buildDeltaPrompt, buildFullPrompt, buildToolResultContent, hasPriorConversation } from './transcript.js'
+import {
+  buildDeltaPrompt,
+  buildFullPrompt,
+  buildToolResultContent,
+  hasPriorConversation,
+  hasPriorProviderConversation,
+} from './transcript.js'
 import type { ImageReader } from './transcript.js'
 import { AGY_TURN_ERROR, PromptTurn } from './turn-runner.js'
 import type { PromptContent } from './turn-runner.js'
@@ -68,6 +75,8 @@ export interface AntigravityAdapterOptions {
   getLink: (handlers: AgentLinkHandlers, signal?: AbortSignal) => Promise<AgentLink>
   recycleLink: (link: AgentLink) => Promise<void>
   resolveAccount?: () => AdapterAccountRef
+  /** 查询指定 DSH 会话是否为分叉/种子会话（`session.header.isSeeded === true`），用于首轮允许平滑 `reset-fresh`。 */
+  isSeededSession?: (dshSessionId: string) => boolean
   onLinkIdle?: (link: AgentLink) => void
   sessionStore?: SessionStore
   cwd?: string
@@ -166,12 +175,18 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     if ((this.#options.canReadImages?.() ?? false) && this.#catalog.imageSupported === undefined) {
       const link = await this.#options.getLink(this.#handlers, signal)
       this.#observeLink(link)
+      this.#scheduleIdleTimer()
     }
     const resolved = await this.resolveModel(provider, model)
     return {
       model: resolved,
       stream: (options: GenerateOptions) => this.stream(options),
     }
+  }
+
+  /** 热更新 `idleRecycleMs` 时重排空闲回收计时器。 */
+  refreshIdleTimer(): void {
+    this.#scheduleIdleTimer()
   }
 
   /** 显式拉取 ACP 模型目录（不发任何聊天 prompt）。 */
@@ -305,6 +320,10 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     const bridgeOwner = chatKey ?? lockKey
     const tools = options.tools ?? []
     const priorHistory = options.purpose === undefined && hasPriorConversation(options.messages)
+    const priorProviderHistory = options.purpose === undefined && hasPriorProviderConversation(options.messages, options.provider)
+    const isSeededSession = options.purpose === undefined && options.sessionId !== undefined
+      ? this.#options.isSeededSession?.(String(options.sessionId)) === true
+      : false
 
     // 若该对话上一轮刚取消且 agent 尚未确认停止，先等宽限期收尾，
     // 绝不抢在确认前向同一 sessionId 发新 prompt（实测 agent 会直接拒成 wait for it to finish）。
@@ -323,7 +342,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       const decision = await this.#coordinator.decide({
         key: chatKey,
         options,
-        hasPriorHistory: priorHistory,
+        hasPriorHistory: priorProviderHistory,
+        isSeededSession,
         resumeEnabled: settings.resumeSessions !== false,
         hasValidBridgeScope: (k) => this.#bridge.hasScope(k),
         currentAccountId: account?.id,
@@ -420,7 +440,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
           return
         }
         this.#bridge.invalidateScope(bridgeOwner, reason)
-        if (chatKey !== undefined) this.#coordinator.drop(chatKey, true)
+        if (chatKey !== undefined) this.#coordinator.drop(chatKey, false, { allowFreshRetry: true })
         if (active) this.#cleanupActive(lockKey, active)
         // 方案 A 故障隔离：若共享链路仍存活且有其它并发对话运行中，只关闭故障会话，不误杀其它会话。
         if (!link.closed && this.#hasOtherActiveTurnsOnLink(link, sessionId)) {
@@ -468,7 +488,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     }
 
     try {
-      if (live) await withAbort(this.#coordinator.clearPersistedBeforePrompt(live.key), options.signal)
+      if (live) await withAbort(this.#coordinator.markInFlightBeforePrompt(live), options.signal)
       if (this.#disposed) {
         turn.abort('adapter 已卸载')
         throw new LlmError('Antigravity ACP adapter 已卸载', 'AGY_LINK_CLOSED')
@@ -755,6 +775,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
         link,
         usesTools: tools.length > 0,
         routeBase: routeBaseFingerprint(options),
+        routeSystem: routeSystemFingerprint(options),
         systemDigest: systemMessagesDigest(options.messages),
         accountId: account?.id,
         accountRevision: account?.revision,

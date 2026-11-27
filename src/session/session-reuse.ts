@@ -75,6 +75,22 @@ export function routeBaseFingerprint(
   })).digest('hex')
 }
 
+/**
+ * 去掉模型与思考档位的路由指纹（仅覆盖 provider / system）。
+ *
+ * DSH 允许用户在会话中途通过模型选择器切换到同 provider 下的其它模型（例如 Gemini ↔ Claude）。
+ * 只要 provider 与 system 保持一致，换模型应平滑 `reset-fresh`（新建 ACP 会话并保留历史），
+ * 只有 system 本身变化才视为不可恢复。
+ */
+export function routeSystemFingerprint(
+  options: Pick<GenerateOptions, 'provider' | 'system'>,
+): string {
+  return createHash('sha256').update(stableJson({
+    provider: options.provider,
+    system: options.system ?? '',
+  })).digest('hex')
+}
+
 export function toolsDigest(tools: GenerateOptions['tools'] | undefined): string {
   return createHash('sha256').update(stableJson(
     [...(tools ?? [])].sort((a, b) => a.name.localeCompare(b.name)),

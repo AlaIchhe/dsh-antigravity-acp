@@ -66,6 +66,29 @@ export function hasPriorConversation(messages: readonly RequestMessage[]): boole
   return messages.some((message) => message.role === 'assistant' || message.role === 'tool')
 }
 
+/**
+ * 判断消息历史里是否存在归属当前 provider 的已交付回复。
+ *
+ * - 若老会话此前全部回复都来自其它 provider（例如 DeepSeek / Qwenwork），首次切入
+ *   Antigravity ACP 时本地不可能存在 ACP 映射，应返回 `false` 让协调器平滑 `reset-fresh`；
+ * - 若已有当前 provider 的回复（或无 provider 标注的历史/测试消息），返回 `true` 继续走映射恢复校验。
+ */
+export function hasPriorProviderConversation(
+  messages: readonly RequestMessage[],
+  provider: string,
+): boolean {
+  let hasAssistant = false
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue
+    hasAssistant = true
+    const src = (message as { readonly source?: { readonly provider?: unknown } }).source
+    if (typeof src?.provider !== 'string' || src.provider === '' || src.provider === provider) {
+      return true
+    }
+  }
+  return !hasAssistant && messages.some((message) => message.role === 'tool')
+}
+
 export function encodeMessage(message: RequestMessage): string {
   const payload = message.role === 'tool'
     ? { toolCallId: message.toolCallId, isError: message.isError === true, content: message.content }
