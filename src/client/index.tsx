@@ -6,21 +6,20 @@
  * - `remote.settings` / `remote.llm` 逐个声明在 `inject` 中；
  * - `remote.antigravity` 绝不写进 `inject`（贡献型 remote 须在 `$mount` 后按需查询）。
  */
+import {
+  registerComposerQuotaSlot,
+  registerProviderSettings,
+  setPortalRequire,
+} from 'dsh-provider-ui'
+import type { SlotsServiceLike } from 'dsh-provider-ui'
 import { PACKAGE_NAME } from '../shared/rpc-contract.js'
 import { registerClientLocales } from './i18n.js'
 import type { ClientLocaleServiceLike } from './i18n.js'
-import { setOptionalRequire } from './portal.js'
 import { AgYQuotaPill } from './quota-view.js'
 import type { ModelDirectoryStoreLike } from './quota-view.js'
 import { createAntigravityClientApi, mountAntigravityRemote } from './remote.js'
 import type { ClientContextLike } from './remote.js'
 import { AntigravitySettingsCard } from './settings/SettingsCard.js'
-import { CLIENT_STYLES } from './styles.js'
-
-interface SlotsServiceLike {
-  inject(name: string, fn: () => () => void): () => void
-  register(row: Record<string, unknown>, component: unknown): () => void
-}
 
 interface ClientCordisContext extends ClientContextLike {
   slots: SlotsServiceLike
@@ -32,16 +31,8 @@ interface ClientCordisContext extends ClientContextLike {
 const clientPlugin = {
   name: PACKAGE_NAME,
   inject: ['slots', 'remote', 'remote.settings', 'remote.llm'],
-  __setOptionalRequire: setOptionalRequire,
+  __setOptionalRequire: setPortalRequire,
   apply(ctx: ClientCordisContext): void {
-    ctx.effect(() => {
-      if (typeof document === 'undefined' || !document.head || !document.createElement) return () => undefined
-      const style = document.createElement('style')
-      style.textContent = CLIENT_STYLES
-      document.head.appendChild(style)
-      return () => style.remove()
-    }, 'antigravity-acp: styles')
-
     const getLocale = (): ClientLocaleServiceLike | undefined =>
       ctx.get?.('locale') as ClientLocaleServiceLike | undefined
 
@@ -56,42 +47,30 @@ const clientPlugin = {
 
     const api = createAntigravityClientApi(ctx)
 
-    ctx.effect(
-      () =>
-        ctx.slots.inject('settings.section', () =>
-          ctx.slots.register(
-            {
-              name: 'settings.section',
-              id: 'antigravity-acp',
-              order: 42,
-              label: () => 'Antigravity ACP',
-              inject: () => ({ remote: ctx.remote, api, locale: getLocale() }),
-            },
-            AntigravitySettingsCard,
-          ),
-        ),
-      'antigravity-acp: settings section',
+    registerProviderSettings(
+      ctx,
+      {
+        id: 'antigravity-acp',
+        order: 42,
+        label: () => 'Antigravity ACP',
+        inject: () => ({ remote: ctx.remote, api, locale: getLocale() }),
+      },
+      AntigravitySettingsCard,
     )
 
     ctx.inject(['slots', 'modelDirectories'], (scope) => {
-      scope.effect(
-        () =>
-          scope.slots.inject('conversation.input.right', () =>
-            scope.slots.register(
-              {
-                name: 'conversation.input.right',
-                id: 'antigravity-quota',
-                order: 1002,
-                inject: (sessionId: string) => ({
-                  store: scope.modelDirectories!.directoryFor(sessionId).store,
-                  api,
-                  locale: getLocale(),
-                }),
-              },
-              AgYQuotaPill,
-            ),
-          ),
-        'antigravity-acp: quota pill',
+      registerComposerQuotaSlot(
+        scope,
+        {
+          id: 'antigravity-quota',
+          order: 1002,
+          inject: (sessionId: string) => ({
+            store: scope.modelDirectories!.directoryFor(sessionId).store,
+            api,
+            locale: getLocale(),
+          }),
+        },
+        AgYQuotaPill,
       )
     })
   },

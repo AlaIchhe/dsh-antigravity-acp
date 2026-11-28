@@ -1,18 +1,17 @@
 /**
- * 额度展示与输入框旁额度药丸（TSX 版）。
+ * 额度展示与输入框旁额度药丸（基于 dsh-provider-ui 统一组件）。
  *
  * - 保留未知额度组（不静默丢弃），支持前端切模型零重复请求；
- * - 额度药丸支持点击弹出 fixed popover（经 portal 挂载到 `document.body`）查看全部额度组与手动刷新；
- * - 全量适配 DSH Theme Tokens（`--dsw-alias-*`）与 Client locale 服务。
+ * - 额度药丸支持点击弹出 fixed popover（经 portal 挂载到 `document.body`）查看全部额度组与手动刷新。
  */
 import React from 'react'
+import { ComposerQuotaPill, KeyValueRow, Notice, QuotaProgressBar, resolveQuotaTone } from 'dsh-provider-ui'
 import { MODEL_GROUPS, groupedQuotas as groupQuotaEntries, matchQuotaGroupForModel, modelGroupFor } from '../shared/model-groups.js'
 import type { GroupedQuotaEntry } from '../shared/model-groups.js'
 import { PROVIDER_ID } from '../shared/rpc-contract.js'
 import type { CreditsSnapshot, QuotaBucket, QuotaSnapshot } from '../shared/rpc-contract.js'
 import { createStaticTranslator, useClientTranslator } from './i18n.js'
 import type { ClientLocaleServiceLike, TranslateFn } from './i18n.js'
-import { renderInBodyPortal } from './portal.js'
 import type { AntigravityClientApi } from './remote.js'
 
 const POLL_INTERVAL_MS = 180_000
@@ -53,13 +52,6 @@ function resetCountdown(resetTime: string | undefined, t: TranslateFn): string {
   return t('quota.resetDayHour', { d: days, h: hours % 24 })
 }
 
-function barColor(pct: number | undefined, disabled: boolean): string {
-  if (disabled || pct === undefined) return 'var(--dsw-alias-state-idle-primary, #8b909a)'
-  if (pct <= 10) return 'var(--dsw-alias-state-error-primary, #e5534b)'
-  if (pct <= 25) return 'var(--dsw-alias-state-warn-primary, #d99b28)'
-  return 'var(--dsw-alias-state-success-primary, #25b879)'
-}
-
 /**
  * 将后端返回的额度组按预设家族聚合，同时保留未命中预设家族的原始组（绝不静默丢弃）。
  */
@@ -68,49 +60,6 @@ export function groupedQuotas(
   t: TranslateFn = DEFAULT_T,
 ): GroupedQuotaEntry[] {
   return groupQuotaEntries(data, t('quota.otherGroup'))
-}
-
-function RemainingBar({
-  bucket,
-  mini,
-  height,
-  label,
-}: {
-  bucket: QuotaBucket
-  mini?: boolean
-  height?: number
-  label: string
-}) {
-  const pct = bucketPercentage(bucket)
-  const width = bucket.disabled || pct === undefined ? 0 : Math.max(0, Math.min(100, pct))
-  const h = height ?? (mini ? 4 : 6)
-  return (
-    <span
-      role="progressbar"
-      aria-label={label}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={pct === undefined ? undefined : Math.round(pct)}
-      style={{
-        display: 'block',
-        width: mini ? '28px' : '100%',
-        height: `${h}px`,
-        borderRadius: '99px',
-        background: 'var(--dsw-alias-bg-layer-2, rgba(128,128,128,.22))',
-        overflow: 'hidden',
-      }}
-    >
-      <span
-        style={{
-          display: 'block',
-          width: `${width}%`,
-          height: '100%',
-          background: barColor(pct, bucket.disabled),
-          borderRadius: '99px',
-        }}
-      />
-    </span>
-  )
 }
 
 export function CreditsDetails({
@@ -136,12 +85,9 @@ export function CreditsDetails({
       aria-label={t('quota.creditsAria')}
       style={{ padding: '8px 0 0', borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.16))' }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '12px' }}>
-        <strong style={{ fontSize: '12px' }}>{t('quota.creditsLabel')}</strong>
-        <span style={{ fontSize: '12px', fontVariantNumeric: 'tabular-nums', opacity: valid ? 1 : 0.7 }}>{label}</span>
-      </div>
+      <KeyValueRow label={<strong>{t('quota.creditsLabel')}</strong>} value={label} />
       {!valid && credits?.error?.message ? (
-        <div style={{ fontSize: '11px', opacity: 0.75, marginTop: '2px' }}>{credits.error.message}</div>
+        <div className="dpui-field-desc" style={{ marginTop: '2px' }}>{credits.error.message}</div>
       ) : null}
     </section>
   )
@@ -160,9 +106,7 @@ export function QuotaDetails({
   return (
     <div style={{ display: 'grid', gap: '10px' }}>
       {data?.status === 'error' && data.error?.message ? (
-        <p className="agy-notice" data-kind="error" role="alert">
-          {data.error.message}
-        </p>
+        <Notice kind="error">{data.error.message}</Notice>
       ) : null}
       {groups.length > 0 ? (
         groups.map((group) => (
@@ -174,13 +118,14 @@ export function QuotaDetails({
                 const value = bucket.disabled ? t('quota.disabled') : pct === undefined ? t('quota.unknown') : `${Math.round(pct)}%`
                 return (
                   <div key={`${group.key}-${idx}`} style={{ display: 'grid', gap: '3px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', gap: '8px' }}>
-                      <span>{windowLabel(bucket, t)}</span>
-                      <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.9 }}>{value}</span>
-                    </div>
-                    <RemainingBar bucket={bucket} label={`${group.name} ${windowLabel(bucket, t)}${t('quota.remainingSuffix')}`} />
+                    <KeyValueRow label={windowLabel(bucket, t)} value={value} />
+                    <QuotaProgressBar
+                      pct={pct}
+                      disabled={bucket.disabled}
+                      label={`${group.name} ${windowLabel(bucket, t)}${t('quota.remainingSuffix')}`}
+                    />
                     {bucket.resetTime || bucket.disabled ? (
-                      <div style={{ fontSize: '11px', opacity: 0.72 }}>
+                      <div className="dpui-field-desc">
                         {bucket.disabled ? (bucket.description ?? t('quota.disabledWindow')) : resetCountdown(bucket.resetTime, t)}
                       </div>
                     ) : null}
@@ -191,7 +136,7 @@ export function QuotaDetails({
           </section>
         ))
       ) : data?.status !== 'error' ? (
-        <span style={{ fontSize: '11px', opacity: 0.75 }}>{data ? t('quota.noData') : t('quota.loadingQuota')}</span>
+        <span className="dpui-field-desc">{data ? t('quota.noData') : t('quota.loadingQuota')}</span>
       ) : null}
       {showCredits ? <CreditsDetails credits={data?.credits} pending={!data} t={t} /> : null}
     </div>
@@ -218,18 +163,11 @@ export function AgYQuotaPill({
   const model = snapshot?.current?.model
   const [data, setData] = React.useState<QuotaSnapshot | null>(null)
   const [refreshing, setRefreshing] = React.useState(false)
-  const [open, setOpen] = React.useState(false)
-  const [popoverPos, setPopoverPos] = React.useState<{ left: number; bottom: number }>({ left: 16, bottom: 56 })
-  const pillRef = React.useRef<HTMLButtonElement | null>(null)
-  const popoverRef = React.useRef<HTMLDivElement | null>(null)
   const loadRef = React.useRef<((force: boolean) => Promise<void>) | undefined>(undefined)
 
   // 同账号下切模型不重发 RPC：单次快照已含所有额度组，仅前端切换展示分组。
   React.useEffect(() => {
-    if (!isAcp) {
-      setOpen(false)
-      return
-    }
+    if (!isAcp) return
     let alive = true
     const load = async (force: boolean) => {
       if (alive && force) setRefreshing(true)
@@ -263,40 +201,6 @@ export function AgYQuotaPill({
     }
   }, [api, isAcp])
 
-  const updatePopoverPosition = React.useCallback(() => {
-    if (typeof window === 'undefined' || !pillRef.current) return
-    const rect = pillRef.current.getBoundingClientRect()
-    const width = Math.min(320, Math.max(220, window.innerWidth - 24))
-    const left = Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12))
-    const bottom = Math.max(12, window.innerHeight - rect.top + 8)
-    setPopoverPos({ left, bottom })
-  }, [])
-
-  React.useEffect(() => {
-    if (!open || typeof document === 'undefined' || typeof window === 'undefined') return
-    updatePopoverPosition()
-    const onPointerDown = (event: MouseEvent) => {
-      const target = event.target as Node | null
-      if (!target) return
-      if (pillRef.current?.contains(target) || popoverRef.current?.contains(target)) return
-      setOpen(false)
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    const onReposition = () => updatePopoverPosition()
-    document.addEventListener('mousedown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown)
-    window.addEventListener('resize', onReposition)
-    window.addEventListener('scroll', onReposition, true)
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('resize', onReposition)
-      window.removeEventListener('scroll', onReposition, true)
-    }
-  }, [open, updatePopoverPosition])
-
   if (!isAcp) return null
 
   const groups = groupedQuotas(data, t)
@@ -318,71 +222,33 @@ export function AgYQuotaPill({
         : worst === undefined
           ? (buckets.some((b) => b.disabled) ? t('quota.disabled') : t('quota.unknown'))
           : `${Math.round(worst)}%`
-  const tone = failed || (worst !== undefined && worst <= 10)
-    ? 'error'
-    : worst !== undefined && worst <= 25
-      ? 'warn'
-      : undefined
+  const tone = failed ? 'error' : resolveQuotaTone(worst)
   const label = failed
     ? `${familyName} ${t('quota.readFailed')}${data?.error?.message ? `：${data.error.message}` : ''}`
     : `${familyName} ${value}${buckets.length ? ` · ${buckets.map((b) => `${windowLabel(b, t)} ${b.disabled ? t('quota.disabled') : bucketPercentage(b) === undefined ? t('quota.unknown') : `${Math.round(bucketPercentage(b)!)}%`}`).join(' · ')}` : ''}`
-  const miniBuckets = buckets.slice(0, 5)
-  const miniHeight = miniBuckets.length <= 1 ? 6 : miniBuckets.length === 2 ? 5 : miniBuckets.length === 3 ? 4 : 3
-
-  const popover = open
-    ? renderInBodyPortal(
-        <div
-          ref={popoverRef}
-          className="agy-popover"
-          role="dialog"
-          aria-label={t('quota.popoverTitle')}
-          style={{ left: `${popoverPos.left}px`, bottom: `${popoverPos.bottom}px` }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-            <strong>{data?.plan ? `${t('accounts.planPrefix')}${data.plan}` : t('quota.popoverTitle')}</strong>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              <button
-                type="button"
-                className="agy-btn"
-                disabled={refreshing}
-                onClick={() => { void loadRef.current?.(true) }}
-              >
-                {refreshing ? t('accounts.refreshing') : t('quota.refresh')}
-              </button>
-              <button type="button" className="agy-btn" onClick={() => setOpen(false)}>
-                {t('quota.close')}
-              </button>
-            </div>
-          </div>
-          <QuotaDetails data={data} showCredits={true} t={t} />
-        </div>,
-      )
-    : null
 
   return (
-    <>
-      <button
-        ref={pillRef}
-        type="button"
-        className="agy-pill antigravity-usage-pill"
-        data-tone={tone}
-        aria-label={label}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        title={label}
-        onClick={() => setOpen((prev) => !prev)}
-      >
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{familyName}</span>
-        <span style={{ fontVariantNumeric: 'tabular-nums' }}>{value}</span>
-        {miniBuckets.length > 0 ? (
-          <span aria-hidden={true} style={{ display: 'grid', gap: miniBuckets.length <= 2 ? '3px' : '2px' }}>
-            {miniBuckets.map((bucket, idx) => (
-              <RemainingBar key={idx} bucket={bucket} mini height={miniHeight} label={`${familyName} ${windowLabel(bucket, t)}${t('quota.remainingSuffix')}`} />
-            ))}
-          </span>
-        ) : null}
-      </button>
-      {popover}
-    </>
+    <ComposerQuotaPill
+      className="antigravity-usage-pill"
+      label={familyName}
+      value={value}
+      ariaLabel={label}
+      title={label}
+      tone={tone}
+      miniBars={buckets.map((bucket) => ({
+        pct: bucketPercentage(bucket),
+        disabled: bucket.disabled,
+        label: `${familyName} ${windowLabel(bucket, t)}${t('quota.remainingSuffix')}`,
+      }))}
+      popoverTitle={data?.plan ? `${t('accounts.planPrefix')}${data.plan}` : t('quota.popoverTitle')}
+      popoverAriaLabel={t('quota.popoverTitle')}
+      onRefresh={() => { void loadRef.current?.(true) }}
+      refreshing={refreshing}
+      refreshLabel={t('quota.refresh')}
+      refreshingLabel={t('accounts.refreshing')}
+      closeLabel={t('quota.close')}
+    >
+      <QuotaDetails data={data} showCredits={true} t={t} />
+    </ComposerQuotaPill>
   )
 }

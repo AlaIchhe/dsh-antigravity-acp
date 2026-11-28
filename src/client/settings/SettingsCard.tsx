@@ -6,6 +6,7 @@
  * - 经 `remote.settings.mutate` 原子提交 `hiddenModels` 与全部热更新高级配置。
  */
 import React from 'react'
+import { DirtyBar, Notice, ProviderShell } from 'dsh-provider-ui'
 import { canonicalHiddenModels, sameHiddenModels } from '../../shared/model-groups.js'
 import { SETTINGS_ENTRY_ID, matchSettingsNamespace } from '../../shared/rpc-contract.js'
 import type { ModelRowView, SettingsNamespaceLike } from '../../shared/rpc-contract.js'
@@ -225,68 +226,74 @@ export function AntigravitySettingsCard({
   }
 
   return (
-    <div className="agy-card antigravity-settings-card">
-      <div className="agy-tabs" role="tablist" aria-label={t('settings.tablist')}>
-        <button type="button" role="tab" className="agy-tab" aria-selected={tab === 'account'} onClick={() => setTab('account')}>
-          {t('settings.tab.account')}
-        </button>
-        <button type="button" role="tab" className="agy-tab" aria-selected={tab === 'models'} onClick={() => setTab('models')}>
-          {t('settings.tab.models')}
-        </button>
-        <button type="button" role="tab" className="agy-tab" aria-selected={tab === 'advanced'} onClick={() => setTab('advanced')}>
-          {t('settings.tab.advanced')}
-        </button>
-      </div>
-
-      <div style={{ display: tab === 'account' ? 'block' : 'none' }}>
-        <AccountsTab api={api} active={tab === 'account'} t={t} />
-      </div>
-
-      <div style={{ display: tab === 'models' ? 'grid' : 'none', gap: '12px' }}>
-        {status ? <p className="agy-notice" data-kind={status.kind} role={status.kind === 'error' ? 'alert' : 'status'}>{status.text}</p> : null}
-        <ModelsTab
-          models={models}
-          hiddenModels={draft}
-          disabled={!writable || saving}
-          refreshing={refreshingModels}
-          onToggle={toggleModel}
-          onRefresh={() => { void loadModels(true) }}
-          t={t}
-        />
-        {modelsDirty ? (
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button type="button" className="agy-btn agy-btn-primary" disabled={saving} onClick={saveModels}>
-              {saving ? t('settings.saving') : t('settings.saveModels')}
-            </button>
-            <button type="button" className="agy-btn" disabled={saving} onClick={() => setDraft(baseline)}>
-              {t('settings.discard')}
-            </button>
-          </div>
-        ) : null}
-      </div>
-
-      <div style={{ display: tab === 'advanced' ? 'grid' : 'none', gap: '12px' }}>
-        {status ? <p className="agy-notice" data-kind={status.kind} role={status.kind === 'error' ? 'alert' : 'status'}>{status.text}</p> : null}
-        {!writable ? (
-          <p className="agy-notice" data-kind="busy" role="status">{t('settings.readonly')}</p>
-        ) : null}
-        <AdvancedTab
-          draft={advDraft}
-          disabled={!writable || saving}
-          onChange={setAdvDraft}
-          t={t}
-        />
-        {advDirty ? (
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button type="button" className="agy-btn agy-btn-primary" disabled={saving || !advValid || !writable} onClick={saveAdvanced}>
-              {saving ? t('settings.saving') : t('settings.saveAdvanced')}
-            </button>
-            <button type="button" className="agy-btn" disabled={saving} onClick={() => setAdvDraft(advBaseline)}>
-              {t('settings.discard')}
-            </button>
-          </div>
-        ) : null}
-      </div>
-    </div>
+    <ProviderShell
+      className="antigravity-settings-card"
+      activeTab={tab}
+      onTabChange={setTab}
+      tablistAriaLabel={t('settings.tablist')}
+      tabs={[
+        {
+          id: 'account',
+          label: t('settings.tab.account'),
+          keepMounted: true,
+          content: <AccountsTab api={api} active={tab === 'account'} t={t} />,
+        },
+        {
+          id: 'models',
+          label: t('settings.tab.models'),
+          keepMounted: true,
+          content: (
+            <>
+              {status ? <Notice kind={status.kind}>{status.text}</Notice> : null}
+              <ModelsTab
+                models={models}
+                hiddenModels={draft}
+                disabled={!writable || saving}
+                refreshing={refreshingModels}
+                onToggle={toggleModel}
+                onRefresh={() => { void loadModels(true) }}
+                t={t}
+              />
+              <DirtyBar
+                dirty={modelsDirty}
+                saving={saving}
+                saveLabel={t('settings.saveModels')}
+                savingLabel={t('settings.saving')}
+                discardLabel={t('settings.discard')}
+                onSave={saveModels}
+                onDiscard={() => setDraft(baseline)}
+              />
+            </>
+          ),
+        },
+        {
+          id: 'advanced',
+          label: t('settings.tab.advanced'),
+          keepMounted: true,
+          content: (
+            <>
+              {status ? <Notice kind={status.kind}>{status.text}</Notice> : null}
+              {!writable ? <Notice kind="busy">{t('settings.readonly')}</Notice> : null}
+              <AdvancedTab
+                draft={advDraft}
+                disabled={!writable || saving}
+                onChange={setAdvDraft}
+                t={t}
+              />
+              <DirtyBar
+                dirty={advDirty}
+                saving={saving}
+                canSave={advValid && writable}
+                saveLabel={t('settings.saveAdvanced')}
+                savingLabel={t('settings.saving')}
+                discardLabel={t('settings.discard')}
+                onSave={saveAdvanced}
+                onDiscard={() => setAdvDraft(advBaseline)}
+              />
+            </>
+          ),
+        },
+      ]}
+    />
   )
 }

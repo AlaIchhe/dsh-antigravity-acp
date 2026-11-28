@@ -3,6 +3,7 @@
  * （proxyUrl、agentMode、agyCliPath、cliQuotaEnabled、resumeSessions、idleRecycleMs、cancelGraceMs）。
  */
 import React from 'react'
+import { Field, SwitchRow, TextInput } from 'dsh-provider-ui'
 import type { TranslateFn } from '../i18n.js'
 
 export interface AdvancedSettingsDraft {
@@ -69,120 +70,88 @@ export function AdvancedTab({
 
   return (
     <div style={{ display: 'grid', gap: '12px' }}>
-      <span className="agy-muted" style={{ fontSize: '12px' }}>
-        {t('advanced.hint')}
-      </span>
+      <span className="dpui-muted">{t('advanced.hint')}</span>
 
-      <label className="agy-field">
-        <span className="agy-field-label">{t('advanced.proxyUrl.label')}</span>
-        <input
+      <Field label={t('advanced.proxyUrl.label')} description={t('advanced.proxyUrl.desc')}>
+        <TextInput
           type="text"
-          className="agy-input"
           disabled={disabled}
           placeholder={t('advanced.proxyUrl.placeholder')}
           value={draft.proxyUrl}
           onChange={(e) => onChange({ ...draft, proxyUrl: e.target.value })}
         />
-        <span className="agy-field-desc">{t('advanced.proxyUrl.desc')}</span>
-      </label>
+      </Field>
 
-      <label className="agy-field">
-        <span className="agy-field-label">{t('advanced.agentMode.label')}</span>
-        <input
+      <Field label={t('advanced.agentMode.label')} description={t('advanced.agentMode.desc')}>
+        <TextInput
           type="text"
-          className="agy-input"
           disabled={disabled}
           placeholder={t('advanced.agentMode.placeholder')}
           value={draft.agentMode}
           onChange={(e) => onChange({ ...draft, agentMode: e.target.value })}
         />
-        <span className="agy-field-desc">{t('advanced.agentMode.desc')}</span>
-      </label>
+      </Field>
 
-      <label className="agy-field">
-        <span className="agy-field-label">{t('advanced.agyCliPath.label')}</span>
-        <input
+      <Field label={t('advanced.agyCliPath.label')}>
+        <TextInput
           type="text"
-          className="agy-input"
           disabled={disabled}
           placeholder={t('advanced.agyCliPath.placeholder')}
           value={draft.agyCliPath}
           onChange={(e) => onChange({ ...draft, agyCliPath: e.target.value })}
         />
-      </label>
+      </Field>
 
-      <div className="agy-switch-row">
-        <div className="agy-field">
-          <span className="agy-field-label">{t('advanced.cliQuotaEnabled.label')}</span>
-          <span className="agy-field-desc">{t('advanced.cliQuotaEnabled.desc')}</span>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          className="agy-switch"
-          aria-label={t('advanced.cliQuotaEnabled.label')}
-          aria-checked={draft.cliQuotaEnabled}
-          disabled={disabled}
-          onClick={() => onChange({ ...draft, cliQuotaEnabled: !draft.cliQuotaEnabled })}
+      <SwitchRow
+        label={t('advanced.cliQuotaEnabled.label')}
+        description={t('advanced.cliQuotaEnabled.desc')}
+        checked={draft.cliQuotaEnabled}
+        disabled={disabled}
+        onChange={(checked) => onChange({ ...draft, cliQuotaEnabled: checked })}
+      />
+
+      <SwitchRow
+        label={t('advanced.resumeSessions.label')}
+        description={t('advanced.resumeSessions.desc')}
+        checked={draft.resumeSessions}
+        disabled={disabled}
+        onChange={(checked) => onChange({ ...draft, resumeSessions: checked })}
+      />
+
+      <div className="dpui-grid-2">
+        <Field
+          label={t('advanced.idleRecycleMs.label')}
+          description={t('advanced.idleRecycleMs.desc')}
+          error={!idleValid ? t('advanced.invalidRange') : undefined}
         >
-          <span className="agy-switch-thumb" />
-        </button>
-      </div>
-
-      <div className="agy-switch-row">
-        <div className="agy-field">
-          <span className="agy-field-label">{t('advanced.resumeSessions.label')}</span>
-          <span className="agy-field-desc">{t('advanced.resumeSessions.desc')}</span>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          className="agy-switch"
-          aria-label={t('advanced.resumeSessions.label')}
-          aria-checked={draft.resumeSessions}
-          disabled={disabled}
-          onClick={() => onChange({ ...draft, resumeSessions: !draft.resumeSessions })}
-        >
-          <span className="agy-switch-thumb" />
-        </button>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
-        <label className="agy-field">
-          <span className="agy-field-label">{t('advanced.idleRecycleMs.label')}</span>
-          <input
+          <TextInput
             type="number"
             min={0}
             max={3_600_000}
             step={60_000}
-            className="agy-input"
             disabled={disabled}
             aria-invalid={!idleValid}
             value={draft.idleRecycleMs}
             onChange={(e) => onChange({ ...draft, idleRecycleMs: e.target.value })}
           />
-          <span className="agy-field-desc">
-            {idleValid ? t('advanced.idleRecycleMs.desc') : t('advanced.invalidRange')}
-          </span>
-        </label>
+        </Field>
 
-        <label className="agy-field">
-          <span className="agy-field-label">{t('advanced.cancelGraceMs.label')}</span>
-          <input
+        <Field
+          label={t('advanced.cancelGraceMs.label')}
+          description={t('advanced.cancelGraceMs.desc')}
+          error={!graceValid ? t('advanced.invalidRange') : undefined}
+        >
+          <TextInput
             type="number"
             min={0}
             max={60_000}
             step={1_000}
-            className="agy-input"
             disabled={disabled}
             aria-invalid={!graceValid}
             value={draft.cancelGraceMs}
             onChange={(e) => onChange({ ...draft, cancelGraceMs: e.target.value })}
           />
-          <span className="agy-field-desc">
-            {graceValid ? t('advanced.cancelGraceMs.desc') : t('advanced.invalidRange')}
-          </span>
-        </label>
+        </Field>
       </div>
     </div>
   )

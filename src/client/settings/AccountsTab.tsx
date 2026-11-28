@@ -3,6 +3,7 @@
  * 无头手动回调粘贴、已登录账号按需读取额度与官方 CLI 一键安装按钮。
  */
 import React from 'react'
+import { Button, Card, CodeBlock, ConfirmButton, Notice, Tag, TextInput } from 'dsh-provider-ui'
 import type { AccountView, AccountsResult, QuotaSnapshot } from '../../shared/rpc-contract.js'
 import { createStaticTranslator } from '../i18n.js'
 import type { TranslateFn } from '../i18n.js'
@@ -10,7 +11,6 @@ import type { AntigravityClientApi } from '../remote.js'
 import { QuotaDetails } from '../quota-view.js'
 
 const DEFAULT_T = createStaticTranslator('zh')
-const DELETE_CONFIRM_RESET_MS = 3_000
 
 function AccountQuotaBlock({
   api,
@@ -56,16 +56,16 @@ function AccountQuotaBlock({
 
   return (
     <div style={{ display: 'grid', gap: '6px', paddingTop: '6px', borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.16))' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-        <span className="agy-muted" style={{ fontSize: '11px' }}>
+      <div className="dpui-row-between">
+        <span className="dpui-field-desc">
           {data?.plan ? `${t('accounts.planPrefix')}${data.plan}` : t('accounts.planQuota')}
         </span>
-        <button type="button" className="agy-btn" disabled={refreshing} onClick={() => { void load(true) }}>
+        <Button disabled={refreshing} onClick={() => { void load(true) }}>
           {refreshing ? t('accounts.refreshing') : t('accounts.refreshQuota')}
-        </button>
+        </Button>
       </div>
       {!account.ready && !data ? (
-        <span className="agy-muted" style={{ fontSize: '11px' }}>{t('accounts.notReadyQuotaHint')}</span>
+        <span className="dpui-field-desc">{t('accounts.notReadyQuotaHint')}</span>
       ) : (
         <QuotaDetails data={data} showCredits={true} t={t} />
       )}
@@ -89,17 +89,14 @@ export function AccountsTab({
   const [callbackUrl, setCallbackUrl] = React.useState('')
   const [copiedState, setCopiedState] = React.useState<'idle' | 'copied' | 'failed'>('idle')
   const [installingCli, setInstallingCli] = React.useState(false)
-  const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null)
   const aliveRef = React.useRef(true)
   const copyTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const deleteTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   React.useEffect(() => {
     aliveRef.current = true
     return () => {
       aliveRef.current = false
       if (copyTimerRef.current !== undefined) clearTimeout(copyTimerRef.current)
-      if (deleteTimerRef.current !== undefined) clearTimeout(deleteTimerRef.current)
     }
   }, [])
 
@@ -189,53 +186,35 @@ export function AccountsTab({
     }
   }
 
-  const handleDeleteClick = (accountId: string) => {
-    if (confirmDeleteId === accountId) {
-      if (deleteTimerRef.current !== undefined) {
-        clearTimeout(deleteTimerRef.current)
-        deleteTimerRef.current = undefined
-      }
-      setConfirmDeleteId(null)
-      void runAction(() => api.removeAccount(accountId), true)
-      return
-    }
-    setConfirmDeleteId(accountId)
-    if (deleteTimerRef.current !== undefined) clearTimeout(deleteTimerRef.current)
-    deleteTimerRef.current = setTimeout(() => {
-      deleteTimerRef.current = undefined
-      if (aliveRef.current) setConfirmDeleteId((prev) => (prev === accountId ? null : prev))
-    }, DELETE_CONFIRM_RESET_MS)
-  }
-
   const auth = state?.auth
   const authInFlight = auth?.phase === 'preparing' || auth?.phase === 'waiting' || auth?.phase === 'exchanging'
 
   return (
     <div style={{ display: 'grid', gap: '12px' }}>
       {notice ? (
-        <div className="agy-notice" data-kind={notice.kind} role={notice.kind === 'error' ? 'alert' : 'status'} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-          <span>{notice.text}</span>
-          {!state && notice.kind === 'error' ? (
-            <button type="button" className="agy-btn" onClick={() => { void refresh() }}>
-              {t('accounts.retry')}
-            </button>
-          ) : null}
-        </div>
+        <Notice kind={notice.kind}>
+          <div className="dpui-row-between">
+            <span>{notice.text}</span>
+            {!state && notice.kind === 'error' ? (
+              <Button onClick={() => { void refresh() }}>
+                {t('accounts.retry')}
+              </Button>
+            ) : null}
+          </div>
+        </Notice>
       ) : null}
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-        <input
+      <div className="dpui-row">
+        <TextInput
           type="text"
-          className="agy-input"
           style={{ flex: '1 1 160px', width: 'auto' }}
           placeholder={t('accounts.newAliasPlaceholder')}
           value={newAlias}
           disabled={busy || authInFlight}
           onChange={(e) => setNewAlias(e.target.value)}
         />
-        <button
-          type="button"
-          className="agy-btn agy-btn-primary"
+        <Button
+          variant="primary"
           disabled={busy || authInFlight}
           onClick={() => {
             const alias = newAlias.trim()
@@ -244,111 +223,99 @@ export function AccountsTab({
           }}
         >
           {t('accounts.addLogin')}
-        </button>
+        </Button>
         {state && !state.cliInstalled ? (
-          <button type="button" className="agy-btn" disabled={installingCli} onClick={() => { void handleInstallCli() }}>
+          <Button disabled={installingCli} onClick={() => { void handleInstallCli() }}>
             {installingCli ? t('accounts.installingCli') : t('accounts.installCli')}
-          </button>
+          </Button>
         ) : null}
       </div>
 
       {authInFlight ? (
-        <section className="agy-account-card" aria-label={t('accounts.authInProgress')}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+        <Card aria-label={t('accounts.authInProgress')}>
+          <div className="dpui-row-between">
             <strong>{auth?.message ?? t('accounts.waitingAuth')}</strong>
-            <button type="button" className="agy-btn" onClick={() => { void runAction(() => api.cancelAccountLogin()) }}>
+            <Button onClick={() => { void runAction(() => api.cancelAccountLogin()) }}>
               {t('accounts.cancelLogin')}
-            </button>
+            </Button>
           </div>
           {auth?.authUrl ? (
             <div style={{ display: 'grid', gap: '8px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                <button type="button" className="agy-btn" onClick={() => copyAuthUrl(auth.authUrl!)}>
+              <div className="dpui-row">
+                <Button onClick={() => copyAuthUrl(auth.authUrl!)}>
                   {copiedState === 'copied'
                     ? t('accounts.copied')
                     : copiedState === 'failed'
                       ? t('accounts.copyFailed')
                       : t('accounts.copyAuthUrl')}
-                </button>
+                </Button>
                 <a href={auth.authUrl} target="_blank" rel="noreferrer noopener" style={{ fontSize: '12px' }}>
                   {t('accounts.openAuthPage')}
                 </a>
               </div>
-              <code style={{ fontSize: '11px', lineHeight: 1.5, wordBreak: 'break-all', padding: '6px 8px', borderRadius: '6px', background: 'var(--dsw-alias-bg-layer-2, rgba(128,128,128,.10))', userSelect: 'all' }}>
-                {auth.authUrl}
-              </code>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <input
+              <CodeBlock>{auth.authUrl}</CodeBlock>
+              <div className="dpui-row">
+                <TextInput
                   type="text"
-                  className="agy-input"
+                  style={{ flex: '1 1 200px', width: 'auto' }}
                   placeholder={t('accounts.callbackPlaceholder')}
                   value={callbackUrl}
                   onChange={(e) => setCallbackUrl(e.target.value)}
                 />
-                <button
-                  type="button"
-                  className="agy-btn agy-btn-primary"
+                <Button
+                  variant="primary"
                   disabled={!callbackUrl.trim() || busy}
                   onClick={() => { void runAction(() => api.submitAccountCallback(callbackUrl.trim())) }}
                 >
                   {t('accounts.submitCallback')}
-                </button>
+                </Button>
               </div>
             </div>
           ) : null}
-        </section>
+        </Card>
       ) : null}
 
       <div style={{ display: 'grid', gap: '10px' }}>
-        {(state?.accounts ?? []).map((account) => {
-          const confirmingDelete = confirmDeleteId === account.id
-          return (
-            <article key={account.id} className="agy-account-card" data-active={account.active ? 'true' : 'false'}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
-                  <strong>{account.alias}</strong>
-                  {account.email ? <span className="agy-muted" style={{ fontSize: '12px' }}>{account.email}</span> : null}
-                  {account.active ? <span className="agy-tag agy-tag-ok">{t('accounts.activeTag')}</span> : null}
-                  <span className="agy-tag">{account.ready ? t('accounts.readyTag') : t('accounts.notReadyTag')}</span>
-                </div>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  {!account.active ? (
-                    <button
-                      type="button"
-                      className="agy-btn agy-btn-primary"
-                      disabled={busy}
-                      onClick={() => { void runAction(() => api.activateAccount(account.id), true) }}
-                    >
-                      {t('accounts.useAccount')}
-                    </button>
-                  ) : null}
-                  {!account.system ? (
-                    <>
-                      <button
-                        type="button"
-                        className="agy-btn"
-                        disabled={busy || authInFlight}
-                        onClick={() => { void runAction(() => api.startAccountLogin({ mode: 'relogin', id: account.id })) }}
-                      >
-                        {t('accounts.relogin')}
-                      </button>
-                      <button
-                        type="button"
-                        className="agy-btn agy-btn-danger"
-                        data-confirm={confirmingDelete ? 'true' : 'false'}
-                        disabled={busy}
-                        onClick={() => handleDeleteClick(account.id)}
-                      >
-                        {confirmingDelete ? t('accounts.confirmDelete') : t('accounts.delete')}
-                      </button>
-                    </>
-                  ) : null}
-                </div>
+        {(state?.accounts ?? []).map((account) => (
+          <Card key={account.id} as="article" active={account.active}>
+            <div className="dpui-row-between">
+              <div className="dpui-row">
+                <strong>{account.alias}</strong>
+                {account.email ? <span className="dpui-muted">{account.email}</span> : null}
+                {account.active ? <Tag tone="ok">{t('accounts.activeTag')}</Tag> : null}
+                <Tag>{account.ready ? t('accounts.readyTag') : t('accounts.notReadyTag')}</Tag>
               </div>
-              <AccountQuotaBlock api={api} account={account} active={active} t={t} />
-            </article>
-          )
-        })}
+              <div className="dpui-row">
+                {!account.active ? (
+                  <Button
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() => { void runAction(() => api.activateAccount(account.id), true) }}
+                  >
+                    {t('accounts.useAccount')}
+                  </Button>
+                ) : null}
+                {!account.system ? (
+                  <>
+                    <Button
+                      disabled={busy || authInFlight}
+                      onClick={() => { void runAction(() => api.startAccountLogin({ mode: 'relogin', id: account.id })) }}
+                    >
+                      {t('accounts.relogin')}
+                    </Button>
+                    <ConfirmButton
+                      label={t('accounts.delete')}
+                      confirmLabel={t('accounts.confirmDelete')}
+                      disabled={busy}
+                      onConfirm={() => { void runAction(() => api.removeAccount(account.id), true) }}
+                    />
+                  </>
+                ) : null}
+              </div>
+            </div>
+            <AccountQuotaBlock api={api} account={account} active={active} t={t} />
+          </Card>
+        ))}
       </div>
     </div>
   )
