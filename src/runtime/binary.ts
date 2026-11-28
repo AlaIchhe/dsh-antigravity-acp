@@ -45,7 +45,7 @@ export const ACP_DISTRIBUTIONS = {
 
 export function isAgyCliExecutable(executablePath: string): boolean {
   const base = executablePath.split(/[\\/]/).at(-1)?.toLowerCase() ?? ''
-  return base === 'agy' || base === 'agy.exe'
+  return base === 'agy' || base === 'agy.exe' || base === 'antigravity' || base === 'antigravity.exe'
 }
 
 export function defaultAgentArgs(

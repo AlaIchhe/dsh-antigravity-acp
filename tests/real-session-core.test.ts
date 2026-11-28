@@ -9,7 +9,7 @@
  * 5. 多账号切换（当本机存在 ≥2 个已登录账号时）：旧账号在途回合不被中断、空闲后自动排空旧进程、
  *    老对话切账号后平滑 `reset-fresh`（历史保留）并在 `sessions.json` 落盘新 `accountId`。
  */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -47,16 +47,6 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-/** 构造调用本机真实 `agy acp` 的临时包装脚本（剥离 Linux 默认 `--uid=` 参数）。 */
-function createAgyAcpWrapper(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'agy-wrap-'))
-  dirs.push(dir)
-  const wrapper = join(dir, 'agy-acp.sh')
-  writeFileSync(wrapper, `#!/bin/sh\nexec "${REAL_AGY_BIN}" acp --dangerously-skip-permissions\n`, { mode: 0o755 })
-  chmodSync(wrapper, 0o755)
-  return wrapper
-}
-
 interface RealStack {
   runtime: AcpRuntimeManager
   adapter: AntigravityAcpAdapter
@@ -69,7 +59,6 @@ interface RealStack {
 async function createRealStack(initialAccount: ResolvedAccount, cancelGraceMs = 15_000): Promise<RealStack> {
   const cacheDir = mkdtempSync(join(tmpdir(), 'agy-real-stack-'))
   dirs.push(cacheDir)
-  const wrapperPath = createAgyAcpWrapper()
   const { runtime: subprocess, killAll } = createRealSubprocessRuntime()
   const realFetch = createRealProxiedFetch()
   const cliRun = createSubprocessCliRun(subprocess, () => resolveHttpsProxy(undefined))
@@ -90,7 +79,7 @@ async function createRealStack(initialAccount: ResolvedAccount, cancelGraceMs = 
   const sessionStore = createFileSessionStore(cacheDir)
   const runtime = new AcpRuntimeManager({
     subprocess,
-    readConfig: () => ({ binaryPath: wrapperPath, acpVersion: '1.4.0', cancelGraceMs, idleRecycleMs: 0 }),
+    readConfig: () => ({ binaryPath: REAL_AGY_BIN!, acpVersion: '1.4.0', cancelGraceMs, idleRecycleMs: 0 }),
     resolveAccount: () => currentAccount,
     isLinkBusy: (link) => adapterRef?.isLinkBusy(link) ?? false,
     fetchImpl: realFetch,

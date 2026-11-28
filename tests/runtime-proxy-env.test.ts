@@ -208,6 +208,8 @@ describe('runtime/proxy, process-env, binary, agy-cli', () => {
     // 统一 agy CLI 与旧版独立 agy_acp_server 的参数区分
     expect(isAgyCliExecutable('/Users/alice/.local/bin/agy')).toBe(true)
     expect(isAgyCliExecutable('C:\\Users\\alice\\AppData\\Local\\agy\\bin\\agy.exe')).toBe(true)
+    expect(isAgyCliExecutable('/usr/local/bin/antigravity')).toBe(true)
+    expect(isAgyCliExecutable('C:\\tools\\antigravity.exe')).toBe(true)
     expect(isAgyCliExecutable('/opt/agy/agy_acp_server.par')).toBe(false)
     expect(defaultAgentArgs('linux', '/usr/local/bin/agy')).toEqual(['acp'])
     expect(defaultAgentArgs('darwin', '/Users/alice/.local/bin/agy')).toEqual(['acp'])

@@ -355,6 +355,13 @@ export class PromptTurn {
       return
     }
     if (response.stopReason === 'end_turn' && !this.#hasOutput) {
+      if (this.#nativeRefusals > 0) {
+        this.#fail({
+          code: AGY_TURN_ERROR.NATIVE_ACTIVITY_REFUSED,
+          message: `Antigravity ACP 本轮因拒绝了 ${this.#nativeRefusals} 次非预期原生能力或未识别工具权限请求而空结束回合`,
+        }, true)
+        return
+      }
       this.#fail({
         code: AGY_TURN_ERROR.EMPTY_RESPONSE,
         message: 'Antigravity ACP 已结束回合，但没有返回可见文本或工具调用；本次不是成功回复',

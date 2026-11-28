@@ -58,7 +58,7 @@ export async function createRealAdapter(
   const getLink = async (handlers: AgentLinkHandlers, signal?: AbortSignal): Promise<AgentLinkType> => {
     signal?.throwIfAborted()
     if (activeLink && !activeLink.closed) return activeLink
-    const child = spawn(REAL_ADAPTER_BIN, ['acp', '--dangerously-skip-permissions'], {
+    const child = spawn(REAL_ADAPTER_BIN, ['acp'], {
       cwd: options.cwd ?? process.cwd(),
       env: {
         ...process.env,

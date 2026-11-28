@@ -21,6 +21,7 @@ import type { SessionConfigOption } from '@agentclientprotocol/sdk'
 import { AntigravityAcpAdapter, classifyTurnOutcome } from '../src/session/adapter.js'
 import { CatalogStore, defaultContextWindowFor } from '../src/session/catalog-store.js'
 import { findModelSelector, findThoughtLevelSelector, normalizeEffort } from '../src/session/model-router.js'
+import { describePermissionRequest, parsePermissionHandoff } from '../src/session/permission.js'
 import { SessionCoordinator, evaluateRecordContinuity } from '../src/session/session-coordinator.js'
 import {
   ContinuationState,
@@ -623,5 +624,101 @@ describe('v1.0 session core pure invariants (zero mocks)', () => {
     const cat3 = new CatalogStore({ cacheDir: dir, acpVersion: '1.4.0' })
     expect((await cat3.resolveModel('antigravity-acp', 'gemini-4-neon')).context?.contextWindow).toBe(500_000)
     expect((await cat3.resolveModel('antigravity-acp', 'claude-sonnet-5-5')).context?.contextWindow).toBe(250_000)
+  })
+
+  it('parsePermissionHandoff accepts agy 1.5+ mcp_<server>[_<hash>]_<tool> bridge requests and rejects native or foreign tools', () => {
+    const tools: ToolSchema[] = [
+      {
+        name: 'glob',
+        description: 'find files',
+        parameters: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] },
+      },
+      {
+        name: 'working_directory',
+        description: 'get cwd',
+        parameters: { type: 'object', properties: {} },
+      },
+    ]
+    const ctx = { sessionId: 'sess-1', serverName: 'dsh-tools', tools }
+    const options = [
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' as const },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' as const },
+    ]
+
+    // agy 1.5.18 单会话直连格式（无 _meta，无 ?）
+    const directReq = {
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'call-1',
+        name: 'mcp_dsh-tools_glob',
+        kind: 'other' as const,
+        title: 'Run mcp_dsh-tools_glob',
+        rawInput: { pattern: '*.ts', toolSummary: 'Find TS files' },
+      },
+      options,
+    }
+    expect(parsePermissionHandoff(directReq, ctx)).toEqual({
+      name: 'glob',
+      arguments: JSON.stringify({ pattern: '*.ts', toolSummary: 'Find TS files' }),
+    })
+    expect(describePermissionRequest(directReq, { ...ctx, toolNames: ['glob', 'working_directory'] }).programmaticName)
+      .toBe('bridge-mcp')
+
+    // agy 1.5.18 多会话哈希后缀格式（mcp_dsh-tools_<8hex>_<tool>）
+    const hashedReq = {
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'call-2',
+        name: 'mcp_dsh-tools_c3f49ada_working_directory',
+        kind: 'other' as const,
+        title: 'Run mcp_dsh-tools_c3f49ada_working_directory',
+        rawInput: {},
+      },
+      options,
+    }
+    expect(parsePermissionHandoff(hashedReq, ctx)).toEqual({
+      name: 'working_directory',
+      arguments: '{}',
+    })
+
+    // 旧版 wrapped MCP 格式（含哈希 serverName）仍兼容
+    const wrappedReq = {
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'call-3',
+        name: 'call_mcp_tool',
+        kind: 'other' as const,
+        title: 'Run glob?',
+        _meta: { is_mcp_tool_call: true, mcp: { server: 'dsh-tools_ee5cdb32', tool: 'glob' } },
+        rawInput: { arguments: { pattern: '**/*.md' } },
+      },
+      options,
+    }
+    expect(parsePermissionHandoff(wrappedReq, ctx)).toEqual({
+      name: 'glob',
+      arguments: JSON.stringify({ pattern: '**/*.md' }),
+    })
+
+    // 必须继续拒绝：原生工具、未知 MCP server、未声明的工具名、错误会话
+    expect(parsePermissionHandoff({
+      sessionId: 'sess-1',
+      toolCall: { toolCallId: 'call-4', name: 'run_command', kind: 'execute', title: 'Run run_command', rawInput: { cmd: 'ls' } },
+      options,
+    }, ctx)).toBeUndefined()
+    expect(parsePermissionHandoff({
+      sessionId: 'sess-1',
+      toolCall: { toolCallId: 'call-5', name: 'mcp_other-server_glob', kind: 'other', title: 'Run mcp_other-server_glob', rawInput: {} },
+      options,
+    }, ctx)).toBeUndefined()
+    expect(parsePermissionHandoff({
+      sessionId: 'sess-1',
+      toolCall: { toolCallId: 'call-6', name: 'mcp_dsh-tools_evil_tool', kind: 'other', title: 'Run mcp_dsh-tools_evil_tool', rawInput: {} },
+      options,
+    }, ctx)).toBeUndefined()
+    expect(parsePermissionHandoff({
+      sessionId: 'other-sess',
+      toolCall: { toolCallId: 'call-7', name: 'mcp_dsh-tools_glob', kind: 'other', title: 'Run mcp_dsh-tools_glob', rawInput: {} },
+      options,
+    }, ctx)).toBeUndefined()
   })
 })

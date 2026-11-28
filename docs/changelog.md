@@ -4,6 +4,13 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.1.2 · 2026-11-28（修复 `agy 1.5+` 权限请求被误拒导致工具回合报 `AGY_EMPTY_RESPONSE`）
+
+- **修复（[#5](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/5)、[#4](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/4)）：兼容 `agy 1.5+` 的 MCP 桥权限请求格式**（[src/session/permission.ts](../src/session/permission.ts)）：`agy acp`（不带 `--dangerously-skip-permissions`）调用 DSH MCP 桥工具时发出 `toolCall.name = "mcp_dsh-tools_<tool>"`（多会话下带 8 位 hex 哈希 `mcp_dsh-tools_<hash>_<tool>`）、`title = "Run <toolCall.name>"`（无 `?`）、无 `_meta`。旧版 `parsePermissionHandoff` 未识别该格式，导致合法的桥工具调用被插件误拒为原生能力请求并使回合空结束。现已精确匹配 `mcp_<serverName>[_<8hex>]_<tool>` 与哈希 `serverName`，同时继续严格拒绝原生能力与非本桥工具；脱敏诊断 `describePermissionRequest` 同步新增 `programmaticName: 'bridge-mcp'`。
+- **修复：权限/原生能力被拒绝导致空回合时不再吞成笼统的 `AGY_EMPTY_RESPONSE`**（[src/session/turn-runner.ts](../src/session/turn-runner.ts)）：当本轮存在被拒绝的原生能力或未识别工具权限请求（`nativeRefusals > 0`）且随后以 `end_turn` 空结束时，明确报 `AGY_NATIVE_ACTIVITY_REFUSED` 并给出拒绝次数。
+- **修复：`isAgyCliExecutable` 兼容官方 CLI 别名 `antigravity` / `antigravity.exe`**（[src/runtime/binary.ts](../src/runtime/binary.ts)）：指向 `antigravity` / `antigravity.exe` 时同样自动补齐 `acp` 子命令且不附带旧版 Linux `--uid=`。
+- **测试加固**：移除 [tests/real-session-core.test.ts](../tests/real-session-core.test.ts) 与 [tests/helpers/real-adapter.ts](../tests/helpers/real-adapter.ts) 中的 `--dangerously-skip-permissions`，使真机回归套件直接覆盖真实生产权限握手链路；在 [tests/session-core.test.ts](../tests/session-core.test.ts) 与 [docs/claims.md](claims.md) 补齐单元测试与 #34 真机断言。
+
 ## 1.1.1 · 2026-11-27（修复本机仅安装新版 `agy` CLI 时找不到 ACP server 二进制及未自动传 `acp` 子命令）
 
 - **修复（[#4](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/4)）：`ensureAgentBinary` 支持自动回退发现本机官方 `agy` CLI**（[src/runtime/binary.ts](../src/runtime/binary.ts)、[src/runtime/acp-runtime.ts](../src/runtime/acp-runtime.ts)）：当 `config.binaryPath`、`AGY_ACP_BIN` 与缓存目录（1.4.0）均未命中时，自动复用 `agyCliCandidates` 依次查找 `config.agyCliPath`、`AGY_CLI_BIN`、`PATH` 与平台默认安装目录（`~/.local/bin/agy`、`~/bin/agy`、`%LOCALAPPDATA%\agy\bin\agy.exe`），不再因 DSH 进程未继承 shell 环境变量或缺少旧版 1.4.0 独立缓存而报错 `AGY_BINARY_MISSING`。
