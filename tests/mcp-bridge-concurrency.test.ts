@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import { AGY_BRIDGE_ERROR, McpToolBridge } from '../src/bridge/mcp-bridge.js'
 import type { BridgeParkedCall } from '../src/bridge/mcp-bridge.js'
+import { compactToolSchemas, MCP_TOOLS_SAFE_BUDGET_BYTES } from '../src/session/tool-args.js'
 
 const READ_TOOL: ToolSchema = {
   name: 'read_note',
@@ -103,5 +104,58 @@ describe('Plan A concurrent multi-scope McpToolBridge', () => {
     bridge.invalidateScope('conv-D::chat', 'session invalidated')
     expect(bridge.hasScope('conv-D::chat')).toBe(false)
     await expect(client.callTool({ name: 'read_note', arguments: { file_path: 'x.txt' } })).rejects.toThrow()
+  })
+
+  it('compacts oversized MCP tool lists within safe budget while preserving schema structure and description params', async () => {
+    const longProse = 'Detailed instructions for executing commands safely. '.repeat(25)
+    const bashLike: ToolSchema = {
+      name: 'bash',
+      description: longProse,
+      parameters: {
+        type: 'object',
+        properties: {
+          description: { type: 'string', description: longProse },
+          command: { type: 'string', description: longProse },
+          sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: longProse },
+        },
+        required: ['description', 'command'],
+      },
+    }
+    // 小规模工具集不应被裁剪
+    expect(compactToolSchemas([READ_TOOL, bashLike])).toEqual([READ_TOOL, bashLike])
+
+    // 超出预算的大规模工具集（模拟 110 个工具，总字节 > 100 KB）应被压缩到安全预算内
+    const oversized: ToolSchema[] = [
+      bashLike,
+      ...Array.from({ length: 109 }, (_, idx) => ({
+        name: `extra_tool_${idx}`,
+        description: `Tool ${idx}: ${'verbose description text '.repeat(18)}`,
+        parameters: {
+          type: 'object',
+          properties: {
+            target: { type: 'string', description: `Target parameter ${idx}: ${'details '.repeat(20)}` },
+          },
+          required: ['target'],
+        },
+      })),
+    ]
+    expect(Buffer.byteLength(JSON.stringify(oversized), 'utf8')).toBeGreaterThan(MCP_TOOLS_SAFE_BUDGET_BYTES)
+
+    const bridge = new McpToolBridge()
+    bridges.push(bridge)
+    await bridge.start()
+    bridge.beginRound(oversized, 'conv-E::chat')
+
+    const client = await connectClient(bridge.url!, bridge.tokenFor('conv-E::chat'))
+    const listed = await client.listTools()
+    expect(listed.tools).toHaveLength(110)
+    expect(Buffer.byteLength(JSON.stringify(listed.tools), 'utf8')).toBeLessThanOrEqual(MCP_TOOLS_SAFE_BUDGET_BYTES)
+
+    const listedBash = listed.tools.find((t) => t.name === 'bash')
+    expect(listedBash).toBeDefined()
+    const props = (listedBash!.inputSchema as { properties?: Record<string, Record<string, unknown>>; required?: string[] }).properties
+    expect(Object.keys(props ?? {})).toEqual(['description', 'command', 'sandbox_permissions'])
+    expect(props?.sandbox_permissions?.enum).toEqual(['workspace-write', 'danger-full-access'])
+    expect((listedBash!.inputSchema as { required?: string[] }).required).toEqual(['description', 'command'])
   })
 })

@@ -4,6 +4,11 @@
 
 记录源码与发布内容，不将本地构建、npm 发布和本机升级混为同一状态。日期采用 Asia/Hong_Kong。更早历史见 [Git 提交记录](https://github.com/KouzakiUmi/dsh-antigravity-acp/commits/main/)。
 
+## 1.1.3 · 2026-11-28（适配 `agy 1.5+` MCP 工具总字节预算，防止工具过多时静默淘汰 `bash` / `edit` 等核心工具）
+
+- **修复（[#4](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/4)）：MCP 桥工具清单超预算时自动渐进压缩 `description`**（[src/session/tool-args.ts](../src/session/tool-args.ts)、[src/bridge/mcp-bridge.ts](../src/bridge/mcp-bridge.ts)）：上游 `agy 1.5+` 对 `eagerMcpServers` 暴露给模型的 MCP 工具存在 ~64 KiB 总 schema 字节上限，当 DSH 启用较多插件/MCP 工具导致总体积超限时，`agy` 会按体积从大到小静默淘汰工具，最先被丢弃的是描述较长的 `bash`、`edit`、`subagent`、`workflow` 等核心工具。现新增 `compactToolSchemas()`：总字节在安全预算内原样透传，超限时分档渐进精简 `description` 文本，绝不改动工具名、参数名（含名为 `description` 的参数键）、`type`、`enum`、`required`、`items` 等结构字段；桥内 `scope.tools` 仍保留完整原始 schema 供参数预检与权限匹配使用。
+- **测试与断言**：在 [tests/mcp-bridge-concurrency.test.ts](../tests/mcp-bridge-concurrency.test.ts) 补齐 110 工具超预算压缩单元测试，在 [docs/claims.md](claims.md) 登记 #35 真机 `agy 1.5.18` 断言（实测 150 工具全部可见）。
+
 ## 1.1.2 · 2026-11-28（修复 `agy 1.5+` 权限请求被误拒导致工具回合报 `AGY_EMPTY_RESPONSE`）
 
 - **修复（[#5](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/5)、[#4](https://github.com/AlaIchhe/dsh-antigravity-acp/issues/4)）：兼容 `agy 1.5+` 的 MCP 桥权限请求格式**（[src/session/permission.ts](../src/session/permission.ts)）：`agy acp`（不带 `--dangerously-skip-permissions`）调用 DSH MCP 桥工具时发出 `toolCall.name = "mcp_dsh-tools_<tool>"`（多会话下带 8 位 hex 哈希 `mcp_dsh-tools_<hash>_<tool>`）、`title = "Run <toolCall.name>"`（无 `?`）、无 `_meta`。旧版 `parsePermissionHandoff` 未识别该格式，导致合法的桥工具调用被插件误拒为原生能力请求并使回合空结束。现已精确匹配 `mcp_<serverName>[_<8hex>]_<tool>` 与哈希 `serverName`，同时继续严格拒绝原生能力与非本桥工具；脱敏诊断 `describePermissionRequest` 同步新增 `programmaticName: 'bridge-mcp'`。

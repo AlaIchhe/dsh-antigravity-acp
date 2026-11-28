@@ -18,7 +18,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
 import type { McpServer as AcpMcpServer } from '@agentclientprotocol/sdk'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
-import { inspectToolArguments, renderToolSignature, safeKeyNames } from '../session/tool-args.js'
+import { compactToolSchemas, inspectToolArguments, renderToolSignature, safeKeyNames } from '../session/tool-args.js'
 
 export const AGY_BRIDGE_ERROR = {
   NOT_LISTENING: 'AGY_BRIDGE_NOT_LISTENING',
@@ -474,7 +474,7 @@ export class McpToolBridge {
   }
 
   #mcpTools(scope: BridgeScope): Tool[] {
-    return scope.tools.map((tool) => ({
+    return compactToolSchemas(scope.tools).map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.parameters as Tool['inputSchema'],

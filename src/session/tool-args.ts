@@ -80,3 +80,70 @@ export function inspectToolArguments(tool: Pick<ToolSchema, 'parameters'>, args:
 export function safeKeyNames(keys: readonly string[], limit = 8): string[] {
   return keys.filter((key) => /^[A-Za-z_][\w.-]{0,39}$/.test(key)).slice(0, limit)
 }
+
+/**
+ * `agy 1.5+` 对单次 `eagerMcpServers` 暴露给模型的 MCP 工具清单有总字节预算（实测 ~64 KiB，
+ * 超限时按体积从大到小静默丢弃工具，最先被裁掉的是 `bash` / `edit` / `subagent` 等描述较长的核心工具）。
+ *
+ * 为避免核心工具被静默淘汰：
+ * - 总预算充足时原样透传，不做任何裁剪；
+ * - 超出安全预算时按档位渐进压缩 `description` 文本，绝不改动工具名、参数名、`type` / `enum` / `required` / `items` 等结构字段。
+ */
+export const MCP_TOOLS_SAFE_BUDGET_BYTES = 52_000
+export const MCP_TOOL_OVERHEAD_BYTES = 120
+export const MCP_TOOLS_MIN_BUDGET_BYTES = 20_000
+
+const COMPACT_TIERS: readonly { toolDesc: number; propDesc: number }[] = [
+  { toolDesc: 180, propDesc: 96 },
+  { toolDesc: 96, propDesc: 48 },
+  { toolDesc: 56, propDesc: 0 },
+  { toolDesc: 0, propDesc: 0 },
+]
+
+function truncateText(text: string, maxChars: number): string {
+  if (maxChars <= 0) return ''
+  if (text.length <= maxChars) return text
+  const chars = Array.from(text)
+  if (chars.length <= maxChars) return text
+  return `${chars.slice(0, maxChars - 1).join('').trimEnd()}…`
+}
+
+function compactSchemaNode(node: unknown, maxPropDesc: number): unknown {
+  if (node === null || typeof node !== 'object') return node
+  if (Array.isArray(node)) return node.map((item) => compactSchemaNode(item, maxPropDesc))
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'description' && typeof value === 'string') {
+      if (maxPropDesc > 0) out[key] = truncateText(value, maxPropDesc)
+      continue
+    }
+    out[key] = compactSchemaNode(value, maxPropDesc)
+  }
+  return out
+}
+
+function serializedToolsBytes(tools: readonly ToolSchema[]): number {
+  return Buffer.byteLength(JSON.stringify(tools), 'utf8')
+}
+
+export function compactToolSchemas(
+  tools: readonly ToolSchema[],
+  options?: { maxBytes?: number; perToolOverheadBytes?: number },
+): readonly ToolSchema[] {
+  if (tools.length === 0) return tools
+  const maxBytes = options?.maxBytes ?? MCP_TOOLS_SAFE_BUDGET_BYTES
+  const overhead = options?.perToolOverheadBytes ?? MCP_TOOL_OVERHEAD_BYTES
+  const budget = Math.max(MCP_TOOLS_MIN_BUDGET_BYTES, maxBytes - tools.length * overhead)
+  if (serializedToolsBytes(tools) <= budget) return tools
+
+  let current: readonly ToolSchema[] = tools
+  for (const tier of COMPACT_TIERS) {
+    current = tools.map((tool) => ({
+      name: tool.name,
+      description: tier.toolDesc > 0 ? truncateText(tool.description, tier.toolDesc) : '',
+      parameters: compactSchemaNode(tool.parameters, tier.propDesc) as ToolSchema['parameters'],
+    }))
+    if (serializedToolsBytes(current) <= budget) return current
+  }
+  return current
+}
